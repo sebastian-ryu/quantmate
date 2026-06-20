@@ -3,25 +3,18 @@
   import {
     fetchDashboard,
     fetchDataStatus,
-    fetchPaperConfig,
     type Dashboard,
-    type DataStatus,
-    type PaperConfig
+    type DataStatus
   } from '$lib/api';
 
   let dashboard: Dashboard | null = null;
   let dataStatus: DataStatus | null = null;
-  let paperConfig: PaperConfig | null = null;
   let loading = true;
   let error = '';
 
   onMount(async () => {
     try {
-      [dashboard, dataStatus, paperConfig] = await Promise.all([
-        fetchDashboard(),
-        fetchDataStatus(),
-        fetchPaperConfig()
-      ]);
+      [dashboard, dataStatus] = await Promise.all([fetchDashboard(), fetchDataStatus()]);
     } catch (err) {
       error = err instanceof Error ? err.message : '설정 상태를 불러오지 못했습니다.';
     } finally {
@@ -39,14 +32,13 @@
     <p class="eyebrow">환경설정</p>
     <h1>API 권한, 데이터베이스, 실행 모드를 한 곳에서 점검합니다.</h1>
   </div>
-  <a class="button secondary" href="/paper">모의투자 설정</a>
 </header>
 
 {#if loading}
   <section class="state-panel">설정을 불러오는 중입니다.</section>
 {:else if error}
   <section class="state-panel error">{error}</section>
-{:else if dashboard && dataStatus && paperConfig}
+{:else if dashboard && dataStatus}
   <section class="summary-grid">
     <article class="panel">
       <div class="panel-heading">
@@ -66,17 +58,6 @@
       </div>
     </article>
 
-    <article class="panel">
-      <div class="panel-heading">
-        <span>모의투자</span>
-        <strong>{paperConfig.enabled ? '사용 가능' : '비활성'}</strong>
-      </div>
-      <ul class="checklist">
-        <li><span>초기 자금</span><strong>{paperConfig.initial_cash.toLocaleString('ko-KR')}원</strong></li>
-        <li><span>종목당 주문 한도</span><strong>{paperConfig.max_order_amount.toLocaleString('ko-KR')}원</strong></li>
-        <li><span>일 주문 횟수</span><strong>{paperConfig.daily_order_limit}회</strong></li>
-      </ul>
-    </article>
   </section>
 
   <section class="content-grid">

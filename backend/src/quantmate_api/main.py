@@ -16,7 +16,6 @@ from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market
 
 class AppMode(StrEnum):
     RESEARCH = "research"
-    PAPER = "paper"
     LIVE_READONLY = "live-readonly"
     LIVE_TRADING = "live-trading"
 
@@ -83,19 +82,6 @@ class DataStatusResponse(BaseModel):
     message: str
 
 
-class PaperTradingConfig(BaseModel):
-    enabled: bool
-    initial_cash: int
-    max_order_amount: int
-    daily_order_limit: int
-    daily_loss_limit: int
-    fill_model: str
-
-
-class PaperTradingConfigUpdate(BaseModel):
-    enabled: bool
-
-
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -113,7 +99,7 @@ def _allowed_origins() -> list[str]:
 app = FastAPI(
     title="QuantMate API",
     version="0.1.0",
-    description="Local API for Korean equity screening, backtesting, and paper trading.",
+    description="Local API for Korean equity screening, backtesting, and future KIS broker integration.",
 )
 
 app.add_middleware(
@@ -216,16 +202,6 @@ BACKTEST = BacktestPreview(
     ],
 )
 
-PAPER_CONFIG = PaperTradingConfig(
-    enabled=_env_bool("PAPER_TRADING_ENABLED", True),
-    initial_cash=10_000_000,
-    max_order_amount=100_000,
-    daily_order_limit=10,
-    daily_loss_limit=50_000,
-    fill_model="다음 거래일 시가 체결 가정",
-)
-
-
 @app.get("/api/health")
 async def health() -> HealthResponse:
     return HealthResponse(
@@ -251,24 +227,12 @@ async def backtest_preview() -> BacktestPreview:
     return BACKTEST
 
 
-@app.get("/api/paper/config")
-async def paper_config() -> PaperTradingConfig:
-    return PAPER_CONFIG
-
-
-@app.put("/api/paper/config")
-async def update_paper_config(config: PaperTradingConfigUpdate) -> PaperTradingConfig:
-    PAPER_CONFIG.enabled = config.enabled
-    return PAPER_CONFIG
-
-
 @app.get("/api/dashboard")
 async def dashboard() -> DashboardResponse:
     return DashboardResponse(
         as_of=date.today(),
         modes=[
             {"code": AppMode.RESEARCH.value, "label": "리서치", "enabled": True},
-            {"code": AppMode.PAPER.value, "label": "모의 투자", "enabled": PAPER_CONFIG.enabled},
             {"code": AppMode.LIVE_READONLY.value, "label": "실계좌 읽기", "enabled": False},
             {"code": AppMode.LIVE_TRADING.value, "label": "실거래", "enabled": _env_bool("LIVE_TRADING_ENABLED")},
         ],

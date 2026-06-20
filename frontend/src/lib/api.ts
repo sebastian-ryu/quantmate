@@ -57,15 +57,6 @@ export type DataStatus = {
   message: string;
 };
 
-export type PaperConfig = {
-  enabled: boolean;
-  initial_cash: number;
-  max_order_amount: number;
-  daily_order_limit: number;
-  daily_loss_limit: number;
-  fill_model: string;
-};
-
 export async function fetchDashboard(): Promise<Dashboard> {
   const response = await fetch(`${API_BASE_URL}/api/dashboard`);
 
@@ -81,30 +72,6 @@ export async function fetchDataStatus(): Promise<DataStatus> {
 
   if (!response.ok) {
     throw new Error(`데이터 상태를 불러오지 못했습니다. (${response.status})`);
-  }
-
-  return response.json();
-}
-
-export async function fetchPaperConfig(): Promise<PaperConfig> {
-  const response = await fetch(`${API_BASE_URL}/api/paper/config`);
-
-  if (!response.ok) {
-    throw new Error(`모의 투자 설정을 불러오지 못했습니다. (${response.status})`);
-  }
-
-  return response.json();
-}
-
-export async function updatePaperConfig(enabled: boolean): Promise<PaperConfig> {
-  const response = await fetch(`${API_BASE_URL}/api/paper/config`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled })
-  });
-
-  if (!response.ok) {
-    throw new Error(`모의 투자 설정을 저장하지 못했습니다. (${response.status})`);
   }
 
   return response.json();

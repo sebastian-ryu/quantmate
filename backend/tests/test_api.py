@@ -25,6 +25,7 @@ def test_dashboard_contains_initial_mvp_data() -> None:
     assert len(data["recommendations"]) >= 3
     assert data["backtest"]["metrics"]
     assert data["modes"][0]["code"] == "research"
+    assert all(mode["code"] != "paper" for mode in data["modes"])
 
 
 def test_data_status_returns_table_counts(monkeypatch) -> None:
@@ -55,20 +56,3 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["connected"] is True
     assert data["table_counts"]["markets"] == 1
     assert data["table_counts"]["instruments"] == 3
-
-
-def test_paper_config_toggle_updates_dashboard_mode() -> None:
-    original_enabled = main_module.PAPER_CONFIG.enabled
-
-    try:
-        response = client.put("/api/paper/config", json={"enabled": False})
-        assert response.status_code == 200
-        assert response.json()["enabled"] is False
-
-        dashboard_response = client.get("/api/dashboard")
-        paper_mode = next(
-            mode for mode in dashboard_response.json()["modes"] if mode["code"] == "paper"
-        )
-        assert paper_mode["enabled"] is False
-    finally:
-        main_module.PAPER_CONFIG.enabled = original_enabled

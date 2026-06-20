@@ -7,7 +7,6 @@
     { href: '/screener', label: '검색기' },
     { href: '/strategy', label: '전략' },
     { href: '/strategies', label: '백테스트' },
-    { href: '/paper', label: '모의투자' },
     { href: '/settings', label: '환경설정' }
   ];
 

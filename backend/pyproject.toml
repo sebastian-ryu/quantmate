@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "quantmate-api"
 version = "0.1.0"
-description = "QuantMate local API for research, screening, backtesting, and paper trading."
+description = "QuantMate local API for research, screening, backtesting, and future KIS broker integration."
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.17.0,<1.18.0",

@@ -4,7 +4,7 @@
 
 ## 배경
 
-QuantMate는 한국 주식 종목 추천, 백테스트, 선택형 모의 투자를 우선 제공한다.
+QuantMate는 한국 주식 종목 추천과 백테스트를 우선 제공한다. 매매 기능은 이후 한국투자증권 Open API 연동 단계에서 다룬다.
 
 사용자는 Python을 다룰 수 있고, 전략/데이터/백테스트 생태계도 Python이 적합하다. 따라서 초기 MVP는 Java/Spring Boot 없이 Python 백엔드와 SvelteKit 웹 클라이언트로 시작한다.
 

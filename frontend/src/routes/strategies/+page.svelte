@@ -77,8 +77,8 @@
 
   const chartWidth = 760;
   const chartHeight = 360;
-  const chartLeft = 96;
-  const chartRight = 28;
+  const chartLeft = 72;
+  const chartRight = 12;
   const chartTop = 28;
   const chartBottom = 310;
   const chartPlotWidth = chartWidth - chartLeft - chartRight;
@@ -120,11 +120,6 @@
   $: annualRows = buildAnnualRows(initialAmount, startYear, endYear);
   $: growthRows = buildGrowthRows(initialAmount, startYear, endYear);
   $: rebalanceRows = buildRebalanceRows();
-  $: incomeRows = annualRows.map((row) => ({
-    year: row.year,
-    income: row.income,
-    yieldPct: row.yieldPct
-  }));
   $: performanceRows = buildPerformanceRows(initialAmount);
   $: growthValues = growthRows.map((row) => row.portfolio);
   $: growthMin = Math.min(...growthValues, initialAmount);
@@ -134,7 +129,6 @@
   $: portfolioLine = growthChartPoints.map((point) => `${point.x},${point.y}`).join(' ');
   $: growthYAxisTicks = buildYAxisTicks(growthScale.min, growthScale.max);
   $: growthXAxisTicks = buildXAxisTicks(growthRows);
-  $: incomeMax = Math.max(...incomeRows.map((row) => row.income), 1);
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
     return {
@@ -650,40 +644,6 @@
         </div>
       </section>
 
-      <section class="panel backtest-panel">
-        <div class="panel-heading">
-          <span>포트폴리오 인컴</span>
-          <strong>배당/분배금 흐름</strong>
-        </div>
-        <div class="income-chart" aria-label="포트폴리오 인컴">
-          {#each incomeRows as row}
-            <div class="income-bar">
-              <span style={`height: ${(row.income / incomeMax) * 100}%`}></span>
-              <small>{row.year}</small>
-            </div>
-          {/each}
-        </div>
-        <div class="table-wrap">
-          <table class="compact-table">
-            <thead>
-              <tr>
-                <th>연도</th>
-                <th>인컴 금액</th>
-                <th>인컴 수익률</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each incomeRows as row}
-                <tr>
-                  <td>{row.year}</td>
-                  <td>{formatKrw(row.income)}</td>
-                  <td>{row.yieldPct}%</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      </section>
     {:else}
       <section class="state-panel">백테스트를 실행하면 결과 블록이 아래에 표시됩니다.</section>
     {/if}

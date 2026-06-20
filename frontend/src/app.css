@@ -272,6 +272,42 @@ button.secondary,
   color: #233139;
 }
 
+button:disabled,
+.button.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.filter-toolbar {
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.toolbar label {
+  display: grid;
+  gap: 6px;
+}
+
+.score-control {
+  min-width: 220px;
+}
+
+.score-control input {
+  accent-color: #1f6b8f;
+  width: 100%;
+}
+
+.check-control {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.check-control input {
+  accent-color: #1f6b8f;
+}
+
 .table-wrap {
   max-width: 100%;
   overflow-x: auto;
@@ -309,6 +345,26 @@ td:first-child {
 td:first-child strong,
 td:first-child span {
   display: block;
+}
+
+.rank-cell {
+  color: #1f6b8f;
+  font-weight: 800;
+}
+
+.compact-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.empty-state {
+  background: #f5f7f8;
+  border: 1px solid #e1e8ea;
+  border-radius: 6px;
+  color: #55666d;
+  padding: 18px;
 }
 
 meter {

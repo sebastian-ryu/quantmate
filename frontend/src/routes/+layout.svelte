@@ -5,6 +5,7 @@
   const navItems = [
     { href: '/', label: '대시보드' },
     { href: '/universe', label: '데이터' },
+    { href: '/recommendations', label: '추천' },
     { href: '/strategies', label: '전략' },
     { href: '/backtests', label: '백테스트' },
     { href: '/paper', label: '모의 투자' },
@@ -31,4 +32,3 @@
     <slot />
   </section>
 </main>
-

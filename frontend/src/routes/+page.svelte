@@ -114,7 +114,7 @@
           <span>추천 후보</span>
           <strong>{recommendations.length}개 종목</strong>
         </div>
-        <button type="button">다시 계산</button>
+        <a class="button secondary" href="/recommendations">전체 보기</a>
       </div>
       <div class="table-wrap">
         <table>
@@ -171,4 +171,3 @@
     </article>
   </section>
 {/if}
-

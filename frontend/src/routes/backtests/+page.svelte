@@ -3,12 +3,14 @@
   import { fetchDashboard, type Dashboard } from '$lib/api';
 
   let dashboard: Dashboard | null = null;
+  let selectedStrategy = 'momentum-core';
   let loading = true;
   let error = '';
 
   onMount(async () => {
     try {
       dashboard = await fetchDashboard();
+      selectedStrategy = dashboard.backtest.strategy_code;
     } catch (err) {
       error = err instanceof Error ? err.message : '백테스트 데이터를 불러오지 못했습니다.';
     } finally {
@@ -17,6 +19,7 @@
   });
 
   $: maxEquity = Math.max(...(dashboard?.backtest.equity_curve.map((point) => point.value) ?? [100]));
+  $: strategy = dashboard?.strategies.find((item) => item.code === selectedStrategy);
 </script>
 
 <svelte:head>
@@ -28,7 +31,7 @@
     <p class="eyebrow">백테스트</p>
     <h1>전략 성과와 가정을 분리해서 검토합니다.</h1>
   </div>
-  <button type="button">새 백테스트</button>
+  <a class="button secondary" href="/recommendations">추천 결과 보기</a>
 </header>
 
 {#if loading}
@@ -36,6 +39,16 @@
 {:else if error}
   <section class="state-panel error">{error}</section>
 {:else if dashboard}
+  <section class="toolbar" aria-label="백테스트 전략 선택">
+    <label for="backtest-strategy">전략</label>
+    <select id="backtest-strategy" bind:value={selectedStrategy}>
+      {#each dashboard.strategies as item}
+        <option value={item.code}>{item.name} · {item.style}</option>
+      {/each}
+    </select>
+    <span>현재 결과는 {dashboard.backtest.strategy_code} 샘플 기준입니다.</span>
+  </section>
+
   <section class="summary-grid">
     <article class="panel">
       <div class="panel-heading">
@@ -54,12 +67,13 @@
 
     <article class="panel">
       <div class="panel-heading">
-        <span>가정</span>
-        <strong>검토 필요</strong>
+        <span>전략 설명</span>
+        <strong>{strategy?.name ?? '전략 선택 필요'}</strong>
       </div>
-      <ul>
-        {#each dashboard.backtest.assumptions as assumption}
-          <li>{assumption}</li>
+      <p>{strategy?.summary ?? '선택한 전략 정보가 없습니다.'}</p>
+      <ul class="assumptions">
+        {#each strategy?.risk_notes ?? [] as note}
+          <li>{note}</li>
         {/each}
       </ul>
     </article>
@@ -78,6 +92,10 @@
         </div>
       {/each}
     </div>
+    <ul class="assumptions">
+      {#each dashboard.backtest.assumptions as assumption}
+        <li>{assumption}</li>
+      {/each}
+    </ul>
   </section>
 {/if}
-

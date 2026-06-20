@@ -59,8 +59,27 @@ start_managed_process() {
     return
   fi
 
-  nohup "$@" </dev/null >"$log_file" 2>&1 &
-  echo $! >"$pid_file"
+  python3 - "$pid_file" "$log_file" "$@" <<'PY'
+import os
+import subprocess
+import sys
+
+pid_file, log_file, *command = sys.argv[1:]
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+with open(log_file, "ab", buffering=0) as log:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+with open(pid_file, "w", encoding="utf-8") as file:
+    file.write(str(process.pid))
+PY
   sleep 2
 
   if ! is_running "$pid_file"; then

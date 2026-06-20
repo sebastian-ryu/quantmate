@@ -23,24 +23,44 @@ QuantMate는 주식 종목 선정, 전략 연구, 백테스트를 위한 로컬 
 
 ## 로컬 실행
 
-백엔드:
+최초 1회 설치:
 
 ```bash
 make install-backend
-make backend-dev
+make install-frontend
 ```
 
-프론트엔드:
+전체 실행:
 
 ```bash
-make install-frontend
-make frontend-dev
+make dev
 ```
 
-기본 주소:
+전체 종료:
 
-- API: http://127.0.0.1:8000
+```bash
+make dev-stop
+```
+
+`make dev`는 MySQL, 백엔드 API, 프론트엔드 웹 서버를 함께 실행합니다. 실행 후 아래 주소를 사용합니다.
+
+`make dev-stop`은 이 프로젝트의 기본 개발 포트인 8000, 5173 프로세스와 MySQL 컨테이너를 함께 종료합니다.
+
 - Web: http://127.0.0.1:5173
+- API: http://127.0.0.1:8000
+
+로그 확인:
+
+```bash
+make dev-logs
+```
+
+서버를 따로 실행해야 할 때:
+
+```bash
+make backend-dev
+make frontend-dev
+```
 
 MySQL 마이그레이션:
 

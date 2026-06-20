@@ -52,6 +52,7 @@ mysql/
 
 # Logs and runtime files
 logs/
+.run/
 *.log
 *.pid
 
@@ -60,4 +61,3 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
-

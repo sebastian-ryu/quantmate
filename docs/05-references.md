@@ -35,3 +35,11 @@
 - QuantConnect: https://www.quantconnect.com/
 - Portfolio Visualizer: https://www.portfoliovisualizer.com/
 - Naver Finance: https://finance.naver.com/
+
+## 전략 참고 자료
+
+- Jegadeesh/Titman 모멘텀 논문: https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.1993.tb04702.x
+- Fama/French 팩터 논문: https://www.bauer.uh.edu/rsusmel/phd/Fama-French_JFE93.pdf
+- Piotroski F-Score 논문 정보: https://www.gsb.stanford.edu/faculty-research/publications/value-investing-use-historical-financial-statement-information
+- IBD CAN SLIM 소개: https://www.investors.com/ibd-videos/homestudy/1-introduction-to-can-slim/
+- Donchian Channel 설명: https://www.investopedia.com/donchian-channels-formula-8415235

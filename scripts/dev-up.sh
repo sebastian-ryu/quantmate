@@ -59,7 +59,7 @@ start_managed_process() {
     return
   fi
 
-  nohup "$@" >"$log_file" 2>&1 &
+  nohup "$@" </dev/null >"$log_file" 2>&1 &
   echo $! >"$pid_file"
   sleep 2
 

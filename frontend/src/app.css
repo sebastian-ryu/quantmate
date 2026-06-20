@@ -949,18 +949,18 @@ td b {
 }
 
 .growth-chart {
-  background: #f7fafa;
-  border: 1px solid #e1e8ea;
+  background: #ffffff;
+  border: 1px solid #dfe6ea;
   border-radius: 6px;
   display: grid;
   gap: 10px;
-  padding: 12px;
+  padding: 14px;
 }
 
 .growth-chart svg {
   background: #ffffff;
   border-radius: 4px;
-  height: 260px;
+  height: 380px;
   overflow: visible;
   width: 100%;
 }
@@ -969,35 +969,69 @@ td b {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 4;
+  stroke-width: 2.5;
 }
 
 .chart-grid-line {
-  stroke: #e1e8ea;
+  stroke: #e8edf0;
   stroke-width: 1;
 }
 
 .chart-grid-line.vertical {
-  stroke-dasharray: 3 4;
+  stroke: #eef2f4;
 }
 
 .chart-axis-line {
-  stroke: #8ca0a8;
-  stroke-width: 1.2;
+  stroke: #b8c5cb;
+  stroke-width: 1;
 }
 
 .chart-axis-label {
-  fill: #4f6067;
-  font-size: 11px;
-  font-weight: 700;
+  fill: #5c6c73;
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .y-axis-label {
   font-size: 10px;
 }
 
+.x-axis-label {
+  font-size: 9.5px;
+}
+
+.chart-title {
+  fill: #405159;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chart-svg-legend line {
+  stroke: #1f6b8f;
+  stroke-linecap: round;
+  stroke-width: 2.5;
+}
+
+.chart-svg-legend text {
+  fill: #4f6067;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .portfolio-line {
   stroke: #1f6b8f;
+}
+
+.chart-point-hitbox {
+  cursor: default;
+  fill: transparent;
+  stroke: transparent;
+}
+
+.chart-end-point {
+  fill: #ffffff;
+  stroke: #1f6b8f;
+  stroke-width: 2;
 }
 
 .chart-legend,

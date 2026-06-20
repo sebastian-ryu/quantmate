@@ -39,6 +39,21 @@
     y?: number;
   };
 
+  type GrowthRow = {
+    label: string;
+    portfolio: number;
+  };
+
+  type ChartPoint = GrowthRow & {
+    x: number;
+    y: number;
+  };
+
+  type ValueScale = {
+    min: number;
+    max: number;
+  };
+
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'momentum-core';
   let registeredStrategies: StrategyDraft[] = [];
@@ -60,12 +75,12 @@
     { year: '2025', portfolioReturn: 9.6, yieldPct: 2.3 }
   ];
 
-  const chartWidth = 680;
-  const chartHeight = 260;
-  const chartLeft = 92;
-  const chartRight = 22;
-  const chartTop = 18;
-  const chartBottom = 224;
+  const chartWidth = 760;
+  const chartHeight = 360;
+  const chartLeft = 96;
+  const chartRight = 28;
+  const chartTop = 28;
+  const chartBottom = 310;
   const chartPlotWidth = chartWidth - chartLeft - chartRight;
   const chartPlotHeight = chartBottom - chartTop;
 
@@ -102,8 +117,8 @@
   ];
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
-  $: annualRows = buildAnnualRows(initialAmount);
-  $: growthRows = buildGrowthRows(initialAmount);
+  $: annualRows = buildAnnualRows(initialAmount, startYear, endYear);
+  $: growthRows = buildGrowthRows(initialAmount, startYear, endYear);
   $: rebalanceRows = buildRebalanceRows();
   $: incomeRows = annualRows.map((row) => ({
     year: row.year,
@@ -114,9 +129,11 @@
   $: growthValues = growthRows.map((row) => row.portfolio);
   $: growthMin = Math.min(...growthValues, initialAmount);
   $: growthMax = Math.max(...growthValues, initialAmount);
-  $: portfolioLine = buildLinePoints(growthValues, growthMin, growthMax);
-  $: growthYAxisTicks = buildYAxisTicks(growthMin, growthMax);
-  $: growthXAxisTicks = buildXAxisTicks(startYear, endYear);
+  $: growthScale = buildValueScale(growthMin, growthMax);
+  $: growthChartPoints = buildChartPoints(growthRows, growthScale.min, growthScale.max);
+  $: portfolioLine = growthChartPoints.map((point) => `${point.x},${point.y}`).join(' ');
+  $: growthYAxisTicks = buildYAxisTicks(growthScale.min, growthScale.max);
+  $: growthXAxisTicks = buildXAxisTicks(growthRows);
   $: incomeMax = Math.max(...incomeRows.map((row) => row.income), 1);
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
@@ -159,46 +176,67 @@
     backtestNotice = '';
   }
 
-  function buildAnnualRows(amount: number) {
+  function buildAnnualRows(amount: number, start: string, end: string) {
     let balance = amount;
 
-    return annualReturnTemplate.map((row) => {
-      balance *= 1 + row.portfolioReturn / 100;
+    return getYearRange(start, end).map((year) => {
+      const portfolioReturn = getAnnualReturnForYear(year);
+      const yieldPct = getYieldForYear(year);
+      balance *= 1 + portfolioReturn / 100;
 
       return {
-        ...row,
+        year: String(year),
+        portfolioReturn,
+        yieldPct,
         balance: Math.round(balance),
-        income: Math.round(balance * (row.yieldPct / 100))
+        income: Math.round(balance * (yieldPct / 100))
       };
     });
   }
 
-  function buildGrowthRows(amount: number) {
-    const baseCurve = dashboard?.backtest.equity_curve ?? [
-      { day: '1', value: 100 },
-      { day: '2', value: 103 },
-      { day: '3', value: 106 },
-      { day: '4', value: 102 },
-      { day: '5', value: 111 },
-      { day: '6', value: 118 }
-    ];
+  function buildGrowthRows(amount: number, start: string, end: string): GrowthRow[] {
+    const startValue = Number(start);
+    const endValue = Number(end);
+    const from = Number.isFinite(startValue) ? startValue : new Date().getFullYear();
+    const to = Number.isFinite(endValue) ? endValue : from;
+    const firstYear = Math.min(from, to);
+    const lastYear = Math.max(from, to);
+    const monthCount = Math.max((lastYear - firstYear + 1) * 12, 1);
+    let balance = amount;
 
-    return baseCurve.map((point) => ({
-      label: point.day,
-      portfolio: Math.round(amount * (point.value / 100))
-    }));
+    return Array.from({ length: monthCount }, (_, index) => {
+      if (index > 0) {
+        const previousYear = firstYear + Math.floor((index - 1) / 12);
+        const annualReturn = getAnnualReturnForYear(previousYear);
+        const monthDivisor = previousYear === lastYear ? 11 : 12;
+        const monthlyReturn = Math.pow(1 + annualReturn / 100, 1 / monthDivisor) - 1;
+        balance *= 1 + monthlyReturn;
+      }
+
+      const year = firstYear + Math.floor(index / 12);
+      const month = index % 12;
+
+      return {
+        label: `${year}.${String(month + 1).padStart(2, '0')}`,
+        portfolio: Math.round(balance)
+      };
+    });
   }
 
   function buildPerformanceRows(amount: number): PerformanceRow[] {
     const finalPortfolio = annualRows.at(-1)?.balance ?? amount;
+    const yearCount = Math.max(annualRows.length, 1);
+    const cagr = amount > 0 ? (finalPortfolio / amount) ** (1 / yearCount) - 1 : 0;
+    const bestReturn = annualRows.reduce((best, row) => (row.portfolioReturn > best.portfolioReturn ? row : best), annualRows[0]);
+    const worstReturn = annualRows.reduce((worst, row) => (row.portfolioReturn < worst.portfolioReturn ? row : worst), annualRows[0]);
 
     return [
       { metric: '시작금액', value: formatKrw(amount) },
       { metric: '종료금액', value: formatKrw(finalPortfolio) },
-      { metric: '연평균 수익률(CAGR)', value: '18.4%' },
+      { metric: '연평균 수익률(CAGR)', value: formatPercent(cagr * 100) },
       { metric: '변동성', value: '13.7%' },
-      { metric: '최고 연도', value: '18.4%' },
-      { metric: '최저 연도', value: '-8.6%' },
+      { metric: '최고 연도', value: `${bestReturn.year} · ${formatPercent(bestReturn.portfolioReturn)}` },
+      { metric: '최저 연도', value: `${worstReturn.year} · ${formatPercent(worstReturn.portfolioReturn)}` },
       { metric: '최대 낙폭(MDD)', value: '-12.7%' },
       { metric: '샤프 비율', value: '0.92' },
       { metric: '소르티노 비율', value: '1.38' },
@@ -239,17 +277,41 @@
     ];
   }
 
-  function buildLinePoints(values: number[], min: number, max: number) {
+  function buildChartPoints(rows: GrowthRow[], min: number, max: number): ChartPoint[] {
     const range = Math.max(max - min, 1);
-    const step = values.length > 1 ? chartPlotWidth / (values.length - 1) : chartPlotWidth;
+    const step = rows.length > 1 ? chartPlotWidth / (rows.length - 1) : chartPlotWidth;
 
-    return values
-      .map((value, index) => {
-        const x = Math.round(chartLeft + index * step);
-        const y = Math.round(chartBottom - ((value - min) / range) * chartPlotHeight);
-        return `${x},${y}`;
-      })
-      .join(' ');
+    return rows.map((row, index) => {
+      const x = Math.round(chartLeft + index * step);
+      const y = Math.round(chartBottom - ((row.portfolio - min) / range) * chartPlotHeight);
+
+      return {
+        ...row,
+        x,
+        y
+      };
+    });
+  }
+
+  function buildValueScale(min: number, max: number): ValueScale {
+    if (min === max) {
+      const padding = Math.max(Math.round(max * 0.05), 100000);
+      return {
+        min: Math.max(0, min - padding),
+        max: max + padding
+      };
+    }
+
+    const range = max - min;
+    const padding = range * 0.08;
+    const rawMin = Math.max(0, min - padding);
+    const rawMax = max + padding;
+    const step = getNiceStep((rawMax - rawMin) / 4);
+
+    return {
+      min: Math.floor(rawMin / step) * step,
+      max: Math.ceil(rawMax / step) * step
+    };
   }
 
   function buildYAxisTicks(min: number, max: number): ChartTick[] {
@@ -267,23 +329,59 @@
     });
   }
 
-  function buildXAxisTicks(start: string, end: string): ChartTick[] {
+  function buildXAxisTicks(rows: GrowthRow[]): ChartTick[] {
+    const lastIndex = rows.length - 1;
+    const interval = getMonthTickInterval(rows.length);
+    const ticks = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ index }) => index === 0 || index === lastIndex || index % interval === 0);
+
+    return ticks.map(({ row, index }) => ({
+      label: row.label,
+      x: rows.length === 1 ? chartLeft + chartPlotWidth / 2 : chartLeft + (index / lastIndex) * chartPlotWidth
+    }));
+  }
+
+  function getAnnualReturnForYear(year: number) {
+    const matched = annualReturnTemplate.find((row) => Number(row.year) === year);
+    if (matched) return matched.portfolioReturn;
+
+    const fallbackIndex = Math.abs(year) % annualReturnTemplate.length;
+    return annualReturnTemplate[fallbackIndex].portfolioReturn;
+  }
+
+  function getYieldForYear(year: number) {
+    const matched = annualReturnTemplate.find((row) => Number(row.year) === year);
+    if (matched) return matched.yieldPct;
+
+    const fallbackIndex = Math.abs(year) % annualReturnTemplate.length;
+    return annualReturnTemplate[fallbackIndex].yieldPct;
+  }
+
+  function getYearRange(start: string, end: string) {
     const startValue = Number(start);
     const endValue = Number(end);
     const from = Number.isFinite(startValue) ? startValue : new Date().getFullYear();
     const to = Number.isFinite(endValue) ? endValue : from;
     const firstYear = Math.min(from, to);
     const lastYear = Math.max(from, to);
-    const span = Math.max(lastYear - firstYear, 0);
-    const years =
-      span <= 6
-        ? Array.from({ length: span + 1 }, (_, index) => firstYear + index)
-        : [firstYear, Math.round((firstYear + lastYear) / 2), lastYear];
 
-    return years.map((year) => ({
-      label: String(year),
-      x: span === 0 ? chartLeft + chartPlotWidth / 2 : chartLeft + ((year - firstYear) / span) * chartPlotWidth
-    }));
+    return Array.from({ length: lastYear - firstYear + 1 }, (_, index) => firstYear + index);
+  }
+
+  function getMonthTickInterval(rowCount: number) {
+    if (rowCount <= 18) return 1;
+    if (rowCount <= 49) return 3;
+    if (rowCount <= 85) return 6;
+    return 12;
+  }
+
+  function getNiceStep(rawStep: number) {
+    const magnitude = 10 ** Math.floor(Math.log10(Math.max(rawStep, 1)));
+    const normalized = rawStep / magnitude;
+    const multiplier = [1, 2, 2.5, 5, 10].find((item) => normalized <= item) ?? 10;
+
+    return multiplier * magnitude;
   }
 
   function formatKrw(value: number) {
@@ -312,6 +410,10 @@
     return new Intl.NumberFormat('ko-KR', {
       maximumFractionDigits: value >= 10 ? 0 : 1
     }).format(value);
+  }
+
+  function formatPercent(value: number) {
+    return `${value.toFixed(1)}%`;
   }
 </script>
 
@@ -469,10 +571,11 @@
           <span>자산 성장</span>
           <strong>{formatKrw(initialAmount)} 투자 기준</strong>
         </div>
-        <p>초기 투자금 {formatKrw(initialAmount)} 기준으로 선택한 전략의 자산 성장을 표시합니다.</p>
+        <p>초기 투자금 {formatKrw(initialAmount)} 기준으로 월별 평가금 흐름을 표시합니다.</p>
         <div class="growth-chart" aria-label="자산 성장">
           <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img">
             <title>자산 성장</title>
+            <text class="chart-title" x={chartWidth / 2} y="18" text-anchor="middle">포트폴리오 평가금액</text>
             {#each growthYAxisTicks as tick}
               <line class="chart-grid-line" x1={chartLeft} x2={chartWidth - chartRight} y1={tick.y} y2={tick.y}></line>
               <text class="chart-axis-label y-axis-label" x={chartLeft - 10} y={(tick.y ?? 0) + 4} text-anchor="end">
@@ -481,17 +584,35 @@
             {/each}
             {#each growthXAxisTicks as tick}
               <line class="chart-grid-line vertical" x1={tick.x} x2={tick.x} y1={chartTop} y2={chartBottom}></line>
-              <text class="chart-axis-label" x={tick.x} y={chartBottom + 24} text-anchor="middle">
+              <text
+                class="chart-axis-label x-axis-label"
+                transform={`translate(${tick.x}, ${chartBottom + 28}) rotate(-35)`}
+                text-anchor="end"
+              >
                 {tick.label}
               </text>
             {/each}
             <line class="chart-axis-line" x1={chartLeft} x2={chartWidth - chartRight} y1={chartBottom} y2={chartBottom}></line>
             <line class="chart-axis-line" x1={chartLeft} x2={chartLeft} y1={chartTop} y2={chartBottom}></line>
             <polyline class="portfolio-line" points={portfolioLine}></polyline>
+            {#each growthChartPoints as point}
+              <circle class="chart-point-hitbox" cx={point.x} cy={point.y} r="7">
+                <title>{point.label} · {formatKrw(point.portfolio)}</title>
+              </circle>
+            {/each}
+            {#if growthChartPoints.length}
+              <circle
+                class="chart-end-point"
+                cx={growthChartPoints[growthChartPoints.length - 1].x}
+                cy={growthChartPoints[growthChartPoints.length - 1].y}
+                r="4"
+              ></circle>
+            {/if}
+            <g class="chart-svg-legend">
+              <line x1={chartWidth - 150} x2={chartWidth - 118} y1="18" y2="18"></line>
+              <text x={chartWidth - 110} y="22">선택 전략</text>
+            </g>
           </svg>
-          <div class="chart-legend">
-            <span><b class="legend-dot portfolio"></b>선택 전략</span>
-          </div>
         </div>
       </section>
 

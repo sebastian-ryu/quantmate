@@ -55,6 +55,11 @@
     createdAt: string;
   };
 
+  type FilterChip = {
+    key: string;
+    label: string;
+  };
+
   const rows: ScreenerRow[] = [
     {
       symbol: '005930',
@@ -418,9 +423,11 @@
   let activePreset = '';
   let strategyName = '';
   let registeredStrategies: RegisteredStrategy[] = [];
+  let activeFilterChips: FilterChip[] = [];
 
   $: sectors = Array.from(new Set(rows.map((row) => row.sector)));
   $: showPopularGroup = activeCategory === '인기 항목';
+  $: showProfileGroup = activeCategory === '프로필';
   $: showLiquidityGroup = activeCategory === '가격/유동성';
   $: showValuationGroup = activeCategory === '밸류에이션';
   $: showProfitabilityGroup = activeCategory === '수익성';
@@ -539,6 +546,7 @@
   ].filter(Boolean).length;
   $: formulaPreview =
     [
+      query ? `keyword contains "${query}"` : '',
       exchange !== 'all' ? `exchange == "${exchange}"` : '',
       sector !== 'all' ? `sector == "${sector}"` : '',
       industry ? `industry contains "${industry}"` : '',
@@ -588,6 +596,116 @@
     ]
       .filter(Boolean)
       .join(' AND ') || '필터를 선택하면 조건식 초안이 표시됩니다.';
+  $: {
+    query;
+    exchange;
+    sector;
+    industry;
+    marketCapMin;
+    marketCapMax;
+    priceMin;
+    priceMax;
+    tradingValueMin;
+    avgVolume20dMin;
+    turnoverMin;
+    perMax;
+    pbrMax;
+    psrMax;
+    evEbitdaMax;
+    fcfYieldMin;
+    fairValueUpsideMin;
+    dividendMin;
+    payoutRatioMax;
+    roeMin;
+    roaMin;
+    operatingMarginMin;
+    netMarginMin;
+    debtRatioMax;
+    currentRatioMin;
+    revenueGrowthMin;
+    epsGrowthMin;
+    operatingIncomeGrowthMin;
+    betaMax;
+    volatility20dMax;
+    drawdown52wMax;
+    momentumMin;
+    changeMin;
+    rsiMin;
+    rsiMax;
+    closePosition;
+    volumeSurgeMin;
+    foreignNetBuy5dMin;
+    foreignNetBuy20dMin;
+    institutionNetBuy5dMin;
+    institutionNetBuy20dMin;
+    pensionNetBuy20dMin;
+    programNetBuy5dMin;
+    consecutiveForeignBuyDaysMin;
+    shortSaleRatioMax;
+    marginDebtChange5dMax;
+    supplyScoreMin;
+    activeFilterChips = buildFilterChips();
+  }
+
+  function buildFilterChips(): FilterChip[] {
+    return [
+      query ? { key: 'query', label: `종목 ${query}` } : null,
+      exchange !== 'all' ? { key: 'exchange', label: `거래소 ${exchange}` } : null,
+      sector !== 'all' ? { key: 'sector', label: `섹터 ${sector}` } : null,
+      industry ? { key: 'industry', label: `산업 ${industry}` } : null,
+      marketCapMin ? { key: 'marketCapMin', label: `시총 ${marketCapMin}조 이상` } : null,
+      marketCapMax ? { key: 'marketCapMax', label: `시총 ${marketCapMax}조 이하` } : null,
+      priceMin ? { key: 'priceMin', label: `가격 ${Number(priceMin).toLocaleString('ko-KR')}원 이상` } : null,
+      priceMax ? { key: 'priceMax', label: `가격 ${Number(priceMax).toLocaleString('ko-KR')}원 이하` } : null,
+      tradingValueMin ? { key: 'tradingValueMin', label: `거래대금 ${tradingValueMin}억 이상` } : null,
+      avgVolume20dMin ? { key: 'avgVolume20dMin', label: `20일 거래량 ${avgVolume20dMin}만주 이상` } : null,
+      turnoverMin ? { key: 'turnoverMin', label: `회전율 ${turnoverMin}% 이상` } : null,
+      perMax ? { key: 'perMax', label: `PER ${perMax} 이하` } : null,
+      pbrMax ? { key: 'pbrMax', label: `PBR ${pbrMax} 이하` } : null,
+      psrMax ? { key: 'psrMax', label: `PSR ${psrMax} 이하` } : null,
+      evEbitdaMax ? { key: 'evEbitdaMax', label: `EV/EBITDA ${evEbitdaMax} 이하` } : null,
+      fcfYieldMin ? { key: 'fcfYieldMin', label: `FCF ${fcfYieldMin}% 이상` } : null,
+      fairValueUpsideMin ? { key: 'fairValueUpsideMin', label: `상승여력 ${fairValueUpsideMin}% 이상` } : null,
+      dividendMin ? { key: 'dividendMin', label: `배당 ${dividendMin}% 이상` } : null,
+      payoutRatioMax ? { key: 'payoutRatioMax', label: `배당성향 ${payoutRatioMax}% 이하` } : null,
+      roeMin ? { key: 'roeMin', label: `ROE ${roeMin}% 이상` } : null,
+      roaMin ? { key: 'roaMin', label: `ROA ${roaMin}% 이상` } : null,
+      operatingMarginMin ? { key: 'operatingMarginMin', label: `영업이익률 ${operatingMarginMin}% 이상` } : null,
+      netMarginMin ? { key: 'netMarginMin', label: `순이익률 ${netMarginMin}% 이상` } : null,
+      debtRatioMax ? { key: 'debtRatioMax', label: `부채비율 ${debtRatioMax}% 이하` } : null,
+      currentRatioMin ? { key: 'currentRatioMin', label: `유동비율 ${currentRatioMin}% 이상` } : null,
+      revenueGrowthMin ? { key: 'revenueGrowthMin', label: `매출성장 ${revenueGrowthMin}% 이상` } : null,
+      epsGrowthMin ? { key: 'epsGrowthMin', label: `EPS성장 ${epsGrowthMin}% 이상` } : null,
+      operatingIncomeGrowthMin
+        ? { key: 'operatingIncomeGrowthMin', label: `영업익성장 ${operatingIncomeGrowthMin}% 이상` }
+        : null,
+      betaMax ? { key: 'betaMax', label: `베타 ${betaMax} 이하` } : null,
+      volatility20dMax ? { key: 'volatility20dMax', label: `변동성 ${volatility20dMax}% 이하` } : null,
+      drawdown52wMax ? { key: 'drawdown52wMax', label: `52주 낙폭 ${drawdown52wMax}% 이내` } : null,
+      momentumMin ? { key: 'momentumMin', label: `모멘텀 ${momentumMin} 이상` } : null,
+      changeMin ? { key: 'changeMin', label: `등락 ${changeMin}% 이상` } : null,
+      rsiMin ? { key: 'rsiMin', label: `RSI ${rsiMin} 이상` } : null,
+      rsiMax ? { key: 'rsiMax', label: `RSI ${rsiMax} 이하` } : null,
+      closePosition !== 'all' ? { key: 'closePosition', label: closePositionLabel(closePosition) } : null,
+      volumeSurgeMin ? { key: 'volumeSurgeMin', label: `거래량 ${volumeSurgeMin}배 이상` } : null,
+      foreignNetBuy5dMin ? { key: 'foreignNetBuy5dMin', label: `외국인 5일 ${foreignNetBuy5dMin}억 이상` } : null,
+      foreignNetBuy20dMin ? { key: 'foreignNetBuy20dMin', label: `외국인 20일 ${foreignNetBuy20dMin}억 이상` } : null,
+      institutionNetBuy5dMin
+        ? { key: 'institutionNetBuy5dMin', label: `기관 5일 ${institutionNetBuy5dMin}억 이상` }
+        : null,
+      institutionNetBuy20dMin
+        ? { key: 'institutionNetBuy20dMin', label: `기관 20일 ${institutionNetBuy20dMin}억 이상` }
+        : null,
+      pensionNetBuy20dMin ? { key: 'pensionNetBuy20dMin', label: `연기금 20일 ${pensionNetBuy20dMin}억 이상` } : null,
+      programNetBuy5dMin ? { key: 'programNetBuy5dMin', label: `프로그램 5일 ${programNetBuy5dMin}억 이상` } : null,
+      consecutiveForeignBuyDaysMin
+        ? { key: 'consecutiveForeignBuyDaysMin', label: `외국인 ${consecutiveForeignBuyDaysMin}일 연속` }
+        : null,
+      shortSaleRatioMax ? { key: 'shortSaleRatioMax', label: `공매도 ${shortSaleRatioMax}% 이하` } : null,
+      marginDebtChange5dMax ? { key: 'marginDebtChange5dMax', label: `신용증가 ${marginDebtChange5dMax}% 이하` } : null,
+      supplyScoreMin ? { key: 'supplyScoreMin', label: `수급점수 ${supplyScoreMin} 이상` } : null
+    ].filter((chip): chip is FilterChip => Boolean(chip));
+  }
 
   function passesMin(value: number, filterValue: string) {
     return !filterValue || value >= Number(filterValue);
@@ -614,6 +732,14 @@
     if (value === 'above-ma60') return 'close > ma60';
     if (value === 'above-ma20-ma60') return 'close > ma20 AND close > ma60';
     if (value === 'pullback-ma20') return 'abs(close_vs_ma20_pct) <= 3';
+    return '';
+  }
+
+  function closePositionLabel(value: string) {
+    if (value === 'above-ma20') return '20일선 위';
+    if (value === 'above-ma60') return '60일선 위';
+    if (value === 'above-ma20-ma60') return '20/60일선 위';
+    if (value === 'pullback-ma20') return '20일선 눌림';
     return '';
   }
 
@@ -669,22 +795,71 @@
   }
 
   function applyPreset(preset: (typeof presets)[number]) {
-    resetFilters();
     activePreset = preset.label;
-    marketCapMin = preset.marketCapMin?.toString() ?? '';
-    perMax = preset.perMax?.toString() ?? '';
-    pbrMax = preset.pbrMax?.toString() ?? '';
-    roeMin = preset.roeMin?.toString() ?? '';
-    debtRatioMax = preset.debtRatioMax?.toString() ?? '';
-    dividendMin = preset.dividendMin?.toString() ?? '';
-    payoutRatioMax = preset.payoutRatioMax?.toString() ?? '';
-    momentumMin = preset.momentumMin?.toString() ?? '';
-    changeMin = preset.changeMin?.toString() ?? '';
-    volumeSurgeMin = preset.volumeSurgeMin?.toString() ?? '';
-    fcfYieldMin = preset.fcfYieldMin?.toString() ?? '';
-    foreignNetBuy5dMin = preset.foreignNetBuy5dMin?.toString() ?? '';
-    institutionNetBuy5dMin = preset.institutionNetBuy5dMin?.toString() ?? '';
-    supplyScoreMin = preset.supplyScoreMin?.toString() ?? '';
+    marketCapMin = preset.marketCapMin?.toString() ?? marketCapMin;
+    perMax = preset.perMax?.toString() ?? perMax;
+    pbrMax = preset.pbrMax?.toString() ?? pbrMax;
+    roeMin = preset.roeMin?.toString() ?? roeMin;
+    debtRatioMax = preset.debtRatioMax?.toString() ?? debtRatioMax;
+    dividendMin = preset.dividendMin?.toString() ?? dividendMin;
+    payoutRatioMax = preset.payoutRatioMax?.toString() ?? payoutRatioMax;
+    momentumMin = preset.momentumMin?.toString() ?? momentumMin;
+    changeMin = preset.changeMin?.toString() ?? changeMin;
+    volumeSurgeMin = preset.volumeSurgeMin?.toString() ?? volumeSurgeMin;
+    fcfYieldMin = preset.fcfYieldMin?.toString() ?? fcfYieldMin;
+    foreignNetBuy5dMin = preset.foreignNetBuy5dMin?.toString() ?? foreignNetBuy5dMin;
+    institutionNetBuy5dMin = preset.institutionNetBuy5dMin?.toString() ?? institutionNetBuy5dMin;
+    supplyScoreMin = preset.supplyScoreMin?.toString() ?? supplyScoreMin;
+  }
+
+  function clearFilter(key: string) {
+    if (key === 'query') query = '';
+    if (key === 'exchange') exchange = 'all';
+    if (key === 'sector') sector = 'all';
+    if (key === 'industry') industry = '';
+    if (key === 'marketCapMin') marketCapMin = '';
+    if (key === 'marketCapMax') marketCapMax = '';
+    if (key === 'priceMin') priceMin = '';
+    if (key === 'priceMax') priceMax = '';
+    if (key === 'tradingValueMin') tradingValueMin = '';
+    if (key === 'avgVolume20dMin') avgVolume20dMin = '';
+    if (key === 'turnoverMin') turnoverMin = '';
+    if (key === 'perMax') perMax = '';
+    if (key === 'pbrMax') pbrMax = '';
+    if (key === 'psrMax') psrMax = '';
+    if (key === 'evEbitdaMax') evEbitdaMax = '';
+    if (key === 'fcfYieldMin') fcfYieldMin = '';
+    if (key === 'fairValueUpsideMin') fairValueUpsideMin = '';
+    if (key === 'dividendMin') dividendMin = '';
+    if (key === 'payoutRatioMax') payoutRatioMax = '';
+    if (key === 'roeMin') roeMin = '';
+    if (key === 'roaMin') roaMin = '';
+    if (key === 'operatingMarginMin') operatingMarginMin = '';
+    if (key === 'netMarginMin') netMarginMin = '';
+    if (key === 'debtRatioMax') debtRatioMax = '';
+    if (key === 'currentRatioMin') currentRatioMin = '';
+    if (key === 'revenueGrowthMin') revenueGrowthMin = '';
+    if (key === 'epsGrowthMin') epsGrowthMin = '';
+    if (key === 'operatingIncomeGrowthMin') operatingIncomeGrowthMin = '';
+    if (key === 'betaMax') betaMax = '';
+    if (key === 'volatility20dMax') volatility20dMax = '';
+    if (key === 'drawdown52wMax') drawdown52wMax = '';
+    if (key === 'momentumMin') momentumMin = '';
+    if (key === 'changeMin') changeMin = '';
+    if (key === 'rsiMin') rsiMin = '';
+    if (key === 'rsiMax') rsiMax = '';
+    if (key === 'closePosition') closePosition = 'all';
+    if (key === 'volumeSurgeMin') volumeSurgeMin = '';
+    if (key === 'foreignNetBuy5dMin') foreignNetBuy5dMin = '';
+    if (key === 'foreignNetBuy20dMin') foreignNetBuy20dMin = '';
+    if (key === 'institutionNetBuy5dMin') institutionNetBuy5dMin = '';
+    if (key === 'institutionNetBuy20dMin') institutionNetBuy20dMin = '';
+    if (key === 'pensionNetBuy20dMin') pensionNetBuy20dMin = '';
+    if (key === 'programNetBuy5dMin') programNetBuy5dMin = '';
+    if (key === 'consecutiveForeignBuyDaysMin') consecutiveForeignBuyDaysMin = '';
+    if (key === 'shortSaleRatioMax') shortSaleRatioMax = '';
+    if (key === 'marginDebtChange5dMax') marginDebtChange5dMax = '';
+    if (key === 'supplyScoreMin') supplyScoreMin = '';
   }
 
   function registerStrategy() {
@@ -726,44 +901,34 @@
 </header>
 
 <section class="screener-workbench">
+  <section class="panel popular-screeners" aria-label="인기 종목검색기">
+    <div class="panel-heading inline">
+      <div>
+        <span>인기 종목검색기</span>
+        <strong>{activePreset || '프리셋 선택'}</strong>
+      </div>
+      <span class="muted">선택한 조건은 현재 필터에 누적됩니다.</span>
+    </div>
+    <div class="preset-grid">
+      {#each presets as preset}
+        <button
+          type="button"
+          class:active={activePreset === preset.label}
+          onclick={() => applyPreset(preset)}
+        >
+          {preset.label}
+        </button>
+      {/each}
+    </div>
+  </section>
+
   <section class="panel screener-builder" aria-label="검색식 설정">
     <div class="panel-heading inline">
       <div>
-        <span>검색식</span>
+        <span>필터</span>
         <strong>적용 {appliedFilterCount}개 조건</strong>
       </div>
       <span class="muted">더미 데이터 기준</span>
-    </div>
-
-    <div class="screener-quickbar">
-      <label>
-        <span>종목</span>
-        <input bind:value={query} placeholder="종목명, 코드, 업종" type="search" />
-      </label>
-
-      <label>
-        <span>거래소</span>
-        <select bind:value={exchange}>
-          <option value="all">전체</option>
-          <option value="KOSPI">KOSPI</option>
-          <option value="KOSDAQ">KOSDAQ</option>
-        </select>
-      </label>
-
-      <label>
-        <span>섹터</span>
-        <select bind:value={sector}>
-          <option value="all">전체</option>
-          {#each sectors as sectorOption}
-            <option value={sectorOption}>{sectorOption}</option>
-          {/each}
-        </select>
-      </label>
-
-      <label>
-        <span>산업</span>
-        <input bind:value={industry} placeholder="예: 반도체, 자동차" type="search" />
-      </label>
     </div>
 
     <div class="category-tabs" aria-label="필터 분류">
@@ -778,126 +943,193 @@
       {/each}
     </div>
 
+    <div class="active-filter-bar" aria-label="선택된 필터">
+      <strong>선택된 필터</strong>
+      {#if activeFilterChips.length}
+        <div class="active-filter-list">
+          {#each activeFilterChips as chip}
+            <button type="button" class="active-filter-chip" onclick={() => clearFilter(chip.key)}>
+              {chip.label}
+              <span aria-hidden="true">×</span>
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <span class="muted">조건을 선택하면 이곳에 누적됩니다.</span>
+      {/if}
+    </div>
+
     <div class="filter-groups">
+      {#if showProfileGroup}
+        <div class="filter-group inline-filter">
+          <strong>프로필</strong>
+          <div class="filter-controls">
+            <label class="compact-control wide-control">
+              <span>종목</span>
+              <input bind:value={query} placeholder="종목명, 코드, 업종" type="search" />
+            </label>
+            <label class="compact-control">
+              <span>거래소</span>
+              <select bind:value={exchange}>
+                <option value="all">전체</option>
+                <option value="KOSPI">KOSPI</option>
+                <option value="KOSDAQ">KOSDAQ</option>
+              </select>
+            </label>
+            <label class="compact-control">
+              <span>섹터</span>
+              <select bind:value={sector}>
+                <option value="all">전체</option>
+                {#each sectors as sectorOption}
+                  <option value={sectorOption}>{sectorOption}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="compact-control">
+              <span>산업</span>
+              <input bind:value={industry} placeholder="예: 반도체" type="search" />
+            </label>
+            <button type="button" class="filter-chip" onclick={() => (exchange = 'KOSPI')}>KOSPI</button>
+            <button type="button" class="filter-chip" onclick={() => (exchange = 'KOSDAQ')}>KOSDAQ</button>
+            <button type="button" class="filter-chip" onclick={() => (sector = '기술')}>기술</button>
+            <button type="button" class="filter-chip" onclick={() => (industry = '반도체')}>반도체</button>
+            <button type="button" class="filter-chip" onclick={() => (industry = '자동차')}>자동차</button>
+          </div>
+        </div>
+      {/if}
+
       {#if showPopularGroup}
-        <div class="filter-group featured-filter">
+        <div class="filter-group featured-filter inline-filter">
           <strong>인기 조건</strong>
-          <div class="range-row">
-            <label>
+          <div class="filter-controls">
+            <button type="button" class="filter-chip" onclick={() => (marketCapMin = '100')}>대형주 100조+</button>
+            <button type="button" class="filter-chip" onclick={() => (perMax = '15')}>PER 15 이하</button>
+            <button type="button" class="filter-chip" onclick={() => (pbrMax = '1.2')}>PBR 1.2 이하</button>
+            <button type="button" class="filter-chip" onclick={() => (roeMin = '8')}>ROE 8%+</button>
+            <button type="button" class="filter-chip" onclick={() => (momentumMin = '70')}>모멘텀 70+</button>
+            <button
+              type="button"
+              class="filter-chip"
+              onclick={() => {
+                foreignNetBuy5dMin = '300';
+                institutionNetBuy5dMin = '300';
+                supplyScoreMin = '70';
+              }}
+            >
+              외국인+기관 수급
+            </button>
+            <label class="compact-control">
               <span>시가총액 최소(조)</span>
               <input bind:value={marketCapMin} min="0" step="1" type="number" />
             </label>
-            <label>
+            <label class="compact-control">
               <span>PER 최대</span>
               <input bind:value={perMax} min="0" step="0.1" type="number" />
             </label>
-          </div>
-          <div class="range-row">
-            <label>
+            <label class="compact-control">
               <span>PBR 최대</span>
               <input bind:value={pbrMax} min="0" step="0.1" type="number" />
             </label>
-            <label>
+            <label class="compact-control">
               <span>ROE 최소(%)</span>
               <input bind:value={roeMin} step="0.1" type="number" />
             </label>
-          </div>
-          <div class="range-row">
-            <label>
+            <label class="compact-control">
               <span>모멘텀 최소</span>
               <input bind:value={momentumMin} max="100" min="0" step="1" type="number" />
             </label>
-            <label>
+            <label class="compact-control">
               <span>거래량 급증 배수 최소</span>
               <input bind:value={volumeSurgeMin} min="0" step="0.1" type="number" />
             </label>
-          </div>
-          <div class="range-row">
-            <label>
+            <label class="compact-control">
               <span>외국인 5일 순매수 최소(억)</span>
               <input bind:value={foreignNetBuy5dMin} step="10" type="number" />
             </label>
-            <label>
+            <label class="compact-control">
               <span>기관 5일 순매수 최소(억)</span>
               <input bind:value={institutionNetBuy5dMin} step="10" type="number" />
             </label>
+            <label class="compact-control">
+              <span>수급 점수 최소</span>
+              <input bind:value={supplyScoreMin} max="100" min="0" step="1" type="number" />
+            </label>
           </div>
-          <label>
-            <span>수급 점수 최소</span>
-            <input bind:value={supplyScoreMin} max="100" min="0" step="1" type="number" />
-          </label>
         </div>
       {/if}
 
       {#if showLiquidityGroup}
-      <div class="filter-group">
+      <div class="filter-group inline-filter">
         <strong>가격/유동성</strong>
-        <div class="range-row">
-          <label>
+        <div class="filter-controls">
+          <button type="button" class="filter-chip" onclick={() => (marketCapMin = '10')}>시총 10조+</button>
+          <button type="button" class="filter-chip" onclick={() => (marketCapMin = '100')}>시총 100조+</button>
+          <button type="button" class="filter-chip" onclick={() => (tradingValueMin = '1000')}>거래대금 1000억+</button>
+          <button type="button" class="filter-chip" onclick={() => (avgVolume20dMin = '300')}>20일 거래량 300만주+</button>
+          <button type="button" class="filter-chip" onclick={() => (turnoverMin = '1')}>회전율 1%+</button>
+          <label class="compact-control">
             <span>시가총액 최소(조)</span>
             <input bind:value={marketCapMin} min="0" step="1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>시가총액 최대(조)</span>
             <input bind:value={marketCapMax} min="0" step="1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>가격 최소</span>
             <input bind:value={priceMin} min="0" step="100" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>가격 최대</span>
             <input bind:value={priceMax} min="0" step="100" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>거래대금 최소(억)</span>
             <input bind:value={tradingValueMin} min="0" step="100" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>20일 거래량 최소(만주)</span>
             <input bind:value={avgVolume20dMin} min="0" step="10" type="number" />
           </label>
+          <label class="compact-control">
+            <span>회전율 최소(%)</span>
+            <input bind:value={turnoverMin} min="0" step="0.1" type="number" />
+          </label>
         </div>
-        <label>
-          <span>회전율 최소(%)</span>
-          <input bind:value={turnoverMin} min="0" step="0.1" type="number" />
-        </label>
       </div>
       {/if}
 
       {#if showValuationGroup}
-      <div class="filter-group">
+      <div class="filter-group inline-filter">
         <strong>밸류에이션</strong>
-        <div class="range-row">
-          <label>
+        <div class="filter-controls">
+          <button type="button" class="filter-chip" onclick={() => (perMax = '15')}>PER 15 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (pbrMax = '1.2')}>PBR 1.2 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (psrMax = '2')}>PSR 2 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (evEbitdaMax = '8')}>EV/EBITDA 8 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (fcfYieldMin = '3')}>FCF 3%+</button>
+          <button type="button" class="filter-chip" onclick={() => (fairValueUpsideMin = '10')}>상승여력 10%+</button>
+          <label class="compact-control">
             <span>PER 최대</span>
             <input bind:value={perMax} min="0" step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>PBR 최대</span>
             <input bind:value={pbrMax} min="0" step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>PSR 최대</span>
             <input bind:value={psrMax} min="0" step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>EV/EBITDA 최대</span>
             <input bind:value={evEbitdaMax} min="0" step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>FCF 수익률 최소(%)</span>
             <input bind:value={fcfYieldMin} step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>적정가치 상승여력 최소(%)</span>
             <input bind:value={fairValueUpsideMin} step="0.1" type="number" />
           </label>
@@ -906,34 +1138,36 @@
       {/if}
 
       {#if showProfitabilityGroup}
-      <div class="filter-group">
+      <div class="filter-group inline-filter">
         <strong>수익성/재무</strong>
-        <div class="range-row">
-          <label>
+        <div class="filter-controls">
+          <button type="button" class="filter-chip" onclick={() => (roeMin = '10')}>ROE 10%+</button>
+          <button type="button" class="filter-chip" onclick={() => (roaMin = '5')}>ROA 5%+</button>
+          <button type="button" class="filter-chip" onclick={() => (operatingMarginMin = '10')}>영업이익률 10%+</button>
+          <button type="button" class="filter-chip" onclick={() => (netMarginMin = '8')}>순이익률 8%+</button>
+          <button type="button" class="filter-chip" onclick={() => (debtRatioMax = '150')}>부채 150% 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (currentRatioMin = '120')}>유동 120%+</button>
+          <label class="compact-control">
             <span>ROE 최소(%)</span>
             <input bind:value={roeMin} step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>ROA 최소(%)</span>
             <input bind:value={roaMin} step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>영업이익률 최소(%)</span>
             <input bind:value={operatingMarginMin} step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>순이익률 최소(%)</span>
             <input bind:value={netMarginMin} step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>부채비율 최대(%)</span>
             <input bind:value={debtRatioMax} min="0" step="1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>유동비율 최소(%)</span>
             <input bind:value={currentRatioMin} min="0" step="1" type="number" />
           </label>
@@ -942,44 +1176,46 @@
       {/if}
 
       {#if showGrowthRiskGroup}
-      <div class="filter-group">
+      <div class="filter-group inline-filter">
         <strong>성장/배당/리스크</strong>
-        <div class="range-row">
-          <label>
+        <div class="filter-controls">
+          <button type="button" class="filter-chip" onclick={() => (revenueGrowthMin = '10')}>매출성장 10%+</button>
+          <button type="button" class="filter-chip" onclick={() => (epsGrowthMin = '10')}>EPS성장 10%+</button>
+          <button type="button" class="filter-chip" onclick={() => (operatingIncomeGrowthMin = '10')}>영업익성장 10%+</button>
+          <button type="button" class="filter-chip" onclick={() => (dividendMin = '2')}>배당 2%+</button>
+          <button type="button" class="filter-chip" onclick={() => (payoutRatioMax = '60')}>배당성향 60% 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (betaMax = '1.2')}>베타 1.2 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (volatility20dMax = '35')}>변동성 35% 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (drawdown52wMax = '20')}>52주 낙폭 20% 이내</button>
+          <label class="compact-control">
             <span>매출 성장률 최소(%)</span>
             <input bind:value={revenueGrowthMin} step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>EPS 성장률 최소(%)</span>
             <input bind:value={epsGrowthMin} step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>영업이익 성장률 최소(%)</span>
             <input bind:value={operatingIncomeGrowthMin} step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>배당수익률 최소(%)</span>
             <input bind:value={dividendMin} min="0" step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>배당성향 최대(%)</span>
             <input bind:value={payoutRatioMax} min="0" step="1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>베타 최대</span>
             <input bind:value={betaMax} min="0" step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>20일 변동성 최대(%)</span>
             <input bind:value={volatility20dMax} min="0" step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>52주 낙폭 최대(%)</span>
             <input bind:value={drawdown52wMax} min="0" step="0.1" type="number" />
           </label>
@@ -988,94 +1224,108 @@
       {/if}
 
       {#if showTechnicalGroup}
-      <div class="filter-group">
+      <div class="filter-group inline-filter">
         <strong>기술적 분석</strong>
-        <div class="range-row">
-          <label>
+        <div class="filter-controls">
+          <button type="button" class="filter-chip" onclick={() => (momentumMin = '70')}>모멘텀 70+</button>
+          <button type="button" class="filter-chip" onclick={() => (changeMin = '0')}>상승 종목</button>
+          <button
+            type="button"
+            class="filter-chip"
+            onclick={() => {
+              rsiMin = '30';
+              rsiMax = '70';
+            }}
+          >
+            RSI 30-70
+          </button>
+          <button type="button" class="filter-chip" onclick={() => (closePosition = 'above-ma20-ma60')}>20/60일선 위</button>
+          <button type="button" class="filter-chip" onclick={() => (closePosition = 'pullback-ma20')}>20일선 눌림</button>
+          <button type="button" class="filter-chip" onclick={() => (volumeSurgeMin = '1.5')}>거래량 1.5배+</button>
+          <label class="compact-control">
             <span>모멘텀 최소</span>
             <input bind:value={momentumMin} max="100" min="0" step="1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>일일 변동률 최소(%)</span>
             <input bind:value={changeMin} step="0.1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>RSI 최소</span>
             <input bind:value={rsiMin} max="100" min="0" step="1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>RSI 최대</span>
             <input bind:value={rsiMax} max="100" min="0" step="1" type="number" />
           </label>
+          <label class="compact-control">
+            <span>이동평균 위치</span>
+            <select bind:value={closePosition}>
+              <option value="all">전체</option>
+              <option value="above-ma20">20일선 위</option>
+              <option value="above-ma60">60일선 위</option>
+              <option value="above-ma20-ma60">20/60일선 모두 위</option>
+              <option value="pullback-ma20">20일선 근처 눌림</option>
+            </select>
+          </label>
+          <label class="compact-control">
+            <span>거래량 급증 배수 최소</span>
+            <input bind:value={volumeSurgeMin} min="0" step="0.1" type="number" />
+          </label>
         </div>
-        <label>
-          <span>이동평균 위치</span>
-          <select bind:value={closePosition}>
-            <option value="all">전체</option>
-            <option value="above-ma20">20일선 위</option>
-            <option value="above-ma60">60일선 위</option>
-            <option value="above-ma20-ma60">20/60일선 모두 위</option>
-            <option value="pullback-ma20">20일선 근처 눌림</option>
-          </select>
-        </label>
-        <label>
-          <span>거래량 급증 배수 최소</span>
-          <input bind:value={volumeSurgeMin} min="0" step="0.1" type="number" />
-        </label>
       </div>
       {/if}
 
       {#if showSupplyGroup}
-      <div class="filter-group supply-filter">
+      <div class="filter-group supply-filter inline-filter">
         <strong>수급</strong>
-        <div class="range-row">
-          <label>
+        <div class="filter-controls">
+          <button type="button" class="filter-chip" onclick={() => (foreignNetBuy5dMin = '300')}>외국인 5일 300억+</button>
+          <button type="button" class="filter-chip" onclick={() => (foreignNetBuy20dMin = '1000')}>외국인 20일 1000억+</button>
+          <button type="button" class="filter-chip" onclick={() => (institutionNetBuy5dMin = '300')}>기관 5일 300억+</button>
+          <button type="button" class="filter-chip" onclick={() => (pensionNetBuy20dMin = '300')}>연기금 20일 300억+</button>
+          <button type="button" class="filter-chip" onclick={() => (programNetBuy5dMin = '300')}>프로그램 5일 300억+</button>
+          <button type="button" class="filter-chip" onclick={() => (consecutiveForeignBuyDaysMin = '3')}>외국인 3일 연속</button>
+          <button type="button" class="filter-chip" onclick={() => (supplyScoreMin = '70')}>수급점수 70+</button>
+          <button type="button" class="filter-chip" onclick={() => (shortSaleRatioMax = '5')}>공매도 5% 이하</button>
+          <button type="button" class="filter-chip" onclick={() => (marginDebtChange5dMax = '3')}>신용증가 3% 이하</button>
+          <label class="compact-control">
             <span>외국인 5일 순매수 최소(억)</span>
             <input bind:value={foreignNetBuy5dMin} step="10" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>외국인 20일 순매수 최소(억)</span>
             <input bind:value={foreignNetBuy20dMin} step="10" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>기관 5일 순매수 최소(억)</span>
             <input bind:value={institutionNetBuy5dMin} step="10" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>기관 20일 순매수 최소(억)</span>
             <input bind:value={institutionNetBuy20dMin} step="10" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>연기금 20일 순매수 최소(억)</span>
             <input bind:value={pensionNetBuy20dMin} step="10" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>프로그램 5일 순매수 최소(억)</span>
             <input bind:value={programNetBuy5dMin} step="10" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>외국인 연속 순매수일 최소</span>
             <input bind:value={consecutiveForeignBuyDaysMin} min="0" step="1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>수급 점수 최소</span>
             <input bind:value={supplyScoreMin} max="100" min="0" step="1" type="number" />
           </label>
-        </div>
-        <div class="range-row">
-          <label>
+          <label class="compact-control">
             <span>공매도 비중 최대(%)</span>
             <input bind:value={shortSaleRatioMax} min="0" step="0.1" type="number" />
           </label>
-          <label>
+          <label class="compact-control">
             <span>신용잔고 증가율 최대(%)</span>
             <input bind:value={marginDebtChange5dMax} step="0.1" type="number" />
           </label>
@@ -1088,21 +1338,10 @@
       <section class="formula-strip" aria-label="조건식 미리보기">
         <div class="panel-heading inline">
           <div>
-            <span>인기 종목검색기</span>
-            <strong>{activePreset || '프리셋 선택'}</strong>
+            <span>검색식 미리보기</span>
+            <strong>누적 조건식</strong>
           </div>
-          <span class="muted">검색식 초안</span>
-        </div>
-        <div class="preset-grid">
-          {#each presets as preset}
-            <button
-              type="button"
-              class:active={activePreset === preset.label}
-              onclick={() => applyPreset(preset)}
-            >
-              {preset.label}
-            </button>
-          {/each}
+          <span class="muted">{activeFilterChips.length}개 필터</span>
         </div>
         <code class="formula-box">{formulaPreview}</code>
       </section>

@@ -6,8 +6,7 @@
     { href: '/', label: '대시보드' },
     { href: '/screener', label: '검색기' },
     { href: '/strategy', label: '전략' },
-    { href: '/strategies', label: '백테스트' },
-    { href: '/settings', label: '환경설정' }
+    { href: '/strategies', label: '백테스트' }
   ];
 
   $: currentPath = $page.url.pathname;

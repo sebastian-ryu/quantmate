@@ -64,6 +64,12 @@ docker compose down -v
 
 `down -v`는 로컬 DB 데이터를 의도적으로 지울 때만 사용한다.
 
+마이그레이션 적용:
+
+```bash
+make db-migrate
+```
+
 ## 백엔드
 
 의존성 설치:

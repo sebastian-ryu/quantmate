@@ -42,6 +42,13 @@ make frontend-dev
 - API: http://127.0.0.1:8000
 - Web: http://127.0.0.1:5173
 
+MySQL 마이그레이션:
+
+```bash
+make db-up
+make db-migrate
+```
+
 ## 안전 기준
 
 이 프로젝트는 투자 연구와 자동화를 위한 소프트웨어입니다. 투자 조언이 아닙니다.

@@ -21,3 +21,8 @@ db-down:
 db-logs:
 	docker compose logs -f mysql
 
+db-migrate:
+	python3 -m alembic -c backend/alembic.ini upgrade head
+
+db-revision:
+	python3 -m alembic -c backend/alembic.ini revision --autogenerate

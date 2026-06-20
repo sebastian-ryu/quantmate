@@ -31,15 +31,15 @@
 </script>
 
 <svelte:head>
-  <title>설정 | QuantMate</title>
+  <title>환경설정 | QuantMate</title>
 </svelte:head>
 
 <header class="topbar">
   <div>
-    <p class="eyebrow">로컬 설정</p>
-    <h1>API, 데이터베이스, 매매 모드를 한 곳에서 점검합니다.</h1>
+    <p class="eyebrow">환경설정</p>
+    <h1>API 권한, 데이터베이스, 실행 모드를 한 곳에서 점검합니다.</h1>
   </div>
-  <a class="button secondary" href="/paper">모의 투자 설정</a>
+  <a class="button secondary" href="/paper">모의투자 설정</a>
 </header>
 
 {#if loading}
@@ -68,7 +68,7 @@
 
     <article class="panel">
       <div class="panel-heading">
-        <span>모의 투자</span>
+        <span>모의투자</span>
         <strong>{paperConfig.enabled ? '사용 가능' : '비활성'}</strong>
       </div>
       <ul class="checklist">

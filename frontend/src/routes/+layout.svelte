@@ -4,13 +4,12 @@
 
   const navItems = [
     { href: '/', label: '대시보드' },
-    { href: '/universe', label: '데이터' },
-    { href: '/recommendations', label: '추천' },
+    { href: '/universe', label: '데이터 관리' },
     { href: '/screener', label: '검색기' },
     { href: '/strategy', label: '전략' },
     { href: '/strategies', label: '백테스트' },
-    { href: '/paper', label: '모의 투자' },
-    { href: '/settings', label: '설정' }
+    { href: '/paper', label: '모의투자' },
+    { href: '/settings', label: '환경설정' }
   ];
 
   $: currentPath = $page.url.pathname;

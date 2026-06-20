@@ -18,13 +18,13 @@
 </script>
 
 <svelte:head>
-  <title>데이터 | QuantMate</title>
+  <title>데이터 관리 | QuantMate</title>
 </svelte:head>
 
 <header class="topbar">
   <div>
-    <p class="eyebrow">데이터 상태</p>
-    <h1>종목 선정에 필요한 데이터 소스를 단계별로 연결합니다.</h1>
+    <p class="eyebrow">데이터 관리</p>
+    <h1>검색기, 전략, 백테스트에 필요한 데이터 소스를 점검합니다.</h1>
   </div>
   <button type="button">수집 작업 추가</button>
 </header>

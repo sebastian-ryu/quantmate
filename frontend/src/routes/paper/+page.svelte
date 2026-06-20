@@ -18,7 +18,7 @@
     try {
       [dashboard, paperConfig] = await Promise.all([fetchDashboard(), fetchPaperConfig()]);
     } catch (err) {
-      error = err instanceof Error ? err.message : '모의 투자 상태를 불러오지 못했습니다.';
+      error = err instanceof Error ? err.message : '모의투자 상태를 불러오지 못했습니다.';
     } finally {
       loading = false;
     }
@@ -37,7 +37,7 @@
       paperConfig = await updatePaperConfig(enabled);
       dashboard = await fetchDashboard();
     } catch (err) {
-      error = err instanceof Error ? err.message : '모의 투자 설정을 저장하지 못했습니다.';
+      error = err instanceof Error ? err.message : '모의투자 설정을 저장하지 못했습니다.';
     } finally {
       saving = false;
     }
@@ -50,13 +50,13 @@
 </script>
 
 <svelte:head>
-  <title>모의 투자 | QuantMate</title>
+  <title>모의투자 | QuantMate</title>
 </svelte:head>
 
 <header class="topbar">
   <div>
-    <p class="eyebrow">모의 투자</p>
-    <h1>실거래 전에 신호와 주문 흐름을 안전하게 검증합니다.</h1>
+    <p class="eyebrow">모의투자</p>
+    <h1>백테스트를 통과한 전략 신호를 실거래 전에 검증합니다.</h1>
   </div>
   <span class:ready={paperEnabled} class:blocked={!paperEnabled} class="status-pill">
     {paperEnabled ? '사용 가능' : '비활성'}
@@ -64,7 +64,7 @@
 </header>
 
 {#if loading}
-  <section class="state-panel">모의 투자 상태를 불러오는 중입니다.</section>
+  <section class="state-panel">모의투자 상태를 불러오는 중입니다.</section>
 {:else if error}
   <section class="state-panel error">{error}</section>
 {:else if dashboard && paperConfig}
@@ -72,10 +72,10 @@
     <article class="panel">
       <div class="panel-heading">
         <span>실행 옵션</span>
-        <strong>{paperEnabled ? '모의 투자 사용' : '모의 투자 중지'}</strong>
+        <strong>{paperEnabled ? '모의투자 사용' : '모의투자 중지'}</strong>
       </div>
       <label class="switch-row">
-        <span>모의 투자</span>
+        <span>모의투자</span>
         <input
           type="checkbox"
           role="switch"
@@ -136,7 +136,7 @@
         <span>체결 모델</span>
         <strong>{paperConfig.fill_model}</strong>
       </div>
-      <p>추천 신호를 주문 후보로 바꾸는 기능은 백테스트 저장 이후 연결합니다.</p>
+      <p>전략 신호를 주문 후보로 바꾸는 기능은 백테스트 저장 이후 연결합니다.</p>
     </article>
   </section>
 {/if}

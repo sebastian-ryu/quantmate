@@ -43,14 +43,14 @@
   <title>QuantMate 리서치 대시보드</title>
   <meta
     name="description"
-    content="한국 주식 종목 추천, 전략 설명, 백테스트 요약을 확인하는 QuantMate 대시보드"
+    content="한국 주식 전략 후보, 전략 설명, 백테스트 요약을 확인하는 QuantMate 대시보드"
   />
 </svelte:head>
 
 <header class="topbar">
   <div>
     <p class="eyebrow">한국 주식 리서치</p>
-    <h1>종목 추천과 백테스트를 한 화면에서 확인합니다.</h1>
+    <h1>전략 후보와 백테스트를 한 화면에서 확인합니다.</h1>
   </div>
   <div class="mode-strip" aria-label="동작 모드">
     {#each dashboard?.modes ?? [] as mode}
@@ -128,10 +128,10 @@
     <article class="panel">
       <div class="panel-heading inline">
         <div>
-          <span>추천 후보</span>
+          <span>전략 후보</span>
           <strong>{recommendations.length}개 종목</strong>
         </div>
-        <a class="button secondary" href="/recommendations">전체 보기</a>
+        <a class="button secondary" href="/strategy">전략에서 보기</a>
       </div>
       <div class="table-wrap">
         <table>

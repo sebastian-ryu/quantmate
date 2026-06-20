@@ -1044,7 +1044,7 @@
             <input bind:value={strategySummary} placeholder="예: 외국인과 기관 수급이 함께 들어오는 종목" />
           </label>
           <button type="button" onclick={registerStrategy} disabled={strategySaving}>
-            {strategySaving ? '저장 중' : '전략으로 등록'}
+            {strategySaving ? '저장 중' : '등록'}
           </button>
         </div>
         {#if strategyPersistenceError}

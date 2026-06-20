@@ -11,7 +11,10 @@
 - OpenDART: https://opendart.fss.or.kr/
 - FinanceDataReader: https://github.com/FinanceData/FinanceDataReader
 - pykrx: https://github.com/sharebook-kr/pykrx
+- pykrx PyPI: https://pypi.org/project/pykrx/
 - yfinance: https://github.com/ranaroussi/yfinance
+
+`pykrx`는 2026-06-20 기준 최신 1.2.8이 Python 3.13을 지원하는 것으로 확인했다. KRX/Naver 데이터를 스크래핑하므로 무분별한 호출을 피하고, 인증이 필요한 KRX 데이터는 사용자 확인 후 환경변수로 접근 권한을 설정한다.
 
 ## 플랫폼
 

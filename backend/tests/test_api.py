@@ -74,3 +74,40 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["connected"] is True
     assert data["table_counts"]["markets"] == 1
     assert data["table_counts"]["instruments"] == 3
+
+
+def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
+    def fake_fetch_krx_instruments(market: str, limit: int) -> list[dict[str, str]]:
+        assert market == "KOSDAQ"
+        assert limit == 2
+        return [
+            {
+                "symbol": "091990",
+                "name": "셀트리온헬스케어",
+                "exchange": "KOSDAQ",
+                "asset_type": "stock",
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_krx_instruments", fake_fetch_krx_instruments)
+
+    response = client.get("/api/data/krx/instruments?market=KOSDAQ&limit=2")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "pykrx"
+    assert data["market"] == "KOSDAQ"
+    assert data["count"] == 1
+    assert data["instruments"][0]["symbol"] == "091990"
+
+
+def test_krx_instruments_preview_returns_503_when_provider_needs_permission(monkeypatch) -> None:
+    def fake_fetch_krx_instruments(market: str, limit: int) -> list[dict[str, str]]:
+        raise main_module.MarketDataProviderUnavailable("KRX 인증 정보 필요")
+
+    monkeypatch.setattr(main_module, "fetch_krx_instruments", fake_fetch_krx_instruments)
+
+    response = client.get("/api/data/krx/instruments?market=KOSPI&limit=1")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "KRX 인증 정보 필요"

@@ -11,6 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from quantmate_api.db import SessionLocal
+from quantmate_api.market_data import (
+    MarketDataProviderUnavailable,
+    fetch_krx_instruments,
+    is_pykrx_installed,
+    is_pykrx_ready,
+)
 from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market
 from quantmate_api.strategy_engine import build_strategy_candidates
 
@@ -121,6 +127,20 @@ class DataStatusResponse(BaseModel):
     provider_status: list[dict[str, str | bool]]
     table_counts: dict[str, int]
     message: str
+
+
+class KrxInstrumentPreview(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+    asset_type: str
+
+
+class KrxInstrumentPreviewResponse(BaseModel):
+    provider: str
+    market: str
+    count: int
+    instruments: list[KrxInstrumentPreview]
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -438,10 +458,21 @@ async def dashboard() -> DashboardResponse:
 
 @app.get("/api/data/status")
 async def data_status() -> DataStatusResponse:
+    pykrx_installed = is_pykrx_installed()
+    pykrx_ready = is_pykrx_ready()
     provider_status = [
         {"name": "KIS Open API", "scope": "현재가/실시간/계좌", "status": "권한 필요", "ready": False},
         {"name": "FinanceDataReader", "scope": "종목 목록/일봉", "status": "후보", "ready": True},
-        {"name": "pykrx", "scope": "KRX 일봉/시장 데이터", "status": "후보", "ready": True},
+        {
+            "name": "pykrx",
+            "scope": "KRX 종목/OHLCV/기초지표/수급",
+            "status": (
+                "준비 완료"
+                if pykrx_ready
+                else ("KRX 인증 정보 필요" if pykrx_installed else "설치 필요")
+            ),
+            "ready": pykrx_ready,
+        },
         {"name": "OpenDART", "scope": "재무제표/공시", "status": "API 키 필요", "ready": False},
     ]
 
@@ -466,4 +497,21 @@ async def data_status() -> DataStatusResponse:
         provider_status=provider_status,
         table_counts=table_counts,
         message="로컬 MySQL 연결 정상",
+    )
+
+
+@app.get("/api/data/krx/instruments")
+async def krx_instruments(market: str = "KOSPI", limit: int = 50) -> KrxInstrumentPreviewResponse:
+    try:
+        instruments = fetch_krx_instruments(market=market, limit=limit)
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KrxInstrumentPreviewResponse(
+        provider="pykrx",
+        market=market.strip().upper(),
+        count=len(instruments),
+        instruments=[KrxInstrumentPreview(**item) for item in instruments],
     )

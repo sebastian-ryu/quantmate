@@ -959,23 +959,56 @@
 
 <section class="screener-workbench">
   <section class="panel popular-screeners" aria-label="인기 종목검색기">
-    <div class="panel-heading inline">
-      <div>
-        <span>인기 종목검색기</span>
-        <strong>{activePreset || '프리셋 선택'}</strong>
+    <div class="popular-screeners-layout">
+      <div class="preset-strip">
+        <div class="panel-heading inline">
+          <div>
+            <span>인기 종목검색기</span>
+            <strong>{activePreset || '프리셋 선택'}</strong>
+          </div>
+          <span class="muted">선택한 조건은 현재 필터에 누적됩니다.</span>
+        </div>
+        <div class="preset-grid">
+          {#each presets as preset}
+            <button
+              type="button"
+              class:active={activePreset === preset.label}
+              onclick={() => applyPreset(preset)}
+            >
+              {preset.label}
+            </button>
+          {/each}
+        </div>
       </div>
-      <span class="muted">선택한 조건은 현재 필터에 누적됩니다.</span>
-    </div>
-    <div class="preset-grid">
-      {#each presets as preset}
-        <button
-          type="button"
-          class:active={activePreset === preset.label}
-          onclick={() => applyPreset(preset)}
-        >
-          {preset.label}
-        </button>
-      {/each}
+
+      <section class="strategy-strip" aria-label="검색식 전략 등록">
+        <div class="panel-heading inline">
+          <div>
+            <span>전략 등록</span>
+            <strong>현재 검색식 저장</strong>
+          </div>
+          <span class="status-pill ready">{filteredRows.length}개 후보</span>
+        </div>
+        <div class="strategy-register">
+          <label>
+            <span>전략명</span>
+            <input bind:value={strategyName} placeholder="예: 외국인+기관 수급 유입주" />
+          </label>
+          <button type="button" onclick={registerStrategy}>전략으로 등록</button>
+        </div>
+        {#if registeredStrategies.length}
+          <ul class="registered-strategies compact">
+            {#each registeredStrategies as strategy}
+              <li>
+                <div>
+                  <strong>{strategy.name}</strong>
+                  <span>{strategy.createdAt} · 후보 {strategy.resultCount}개</span>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
     </div>
   </section>
 
@@ -1324,48 +1357,6 @@
       {/if}
     </div>
 
-    <div class="builder-footer">
-      <section class="formula-strip" aria-label="조건식 미리보기">
-        <div class="panel-heading inline">
-          <div>
-            <span>검색식 미리보기</span>
-            <strong>누적 조건식</strong>
-          </div>
-          <span class="muted">{activeFilterChips.length}개 필터</span>
-        </div>
-        <code class="formula-box">{formulaPreview}</code>
-      </section>
-
-      <section class="strategy-strip" aria-label="검색식 전략 등록">
-        <div class="panel-heading inline">
-          <div>
-            <span>전략 등록</span>
-            <strong>현재 검색식 저장 초안</strong>
-          </div>
-          <span class="status-pill ready">{filteredRows.length}개 후보</span>
-        </div>
-        <div class="strategy-register">
-          <label>
-            <span>전략명</span>
-            <input bind:value={strategyName} placeholder="예: 외국인+기관 수급 유입주" />
-          </label>
-          <button type="button" onclick={registerStrategy}>전략으로 등록</button>
-        </div>
-        {#if registeredStrategies.length}
-          <ul class="registered-strategies">
-            {#each registeredStrategies as strategy}
-              <li>
-                <div>
-                  <strong>{strategy.name}</strong>
-                  <span>{strategy.createdAt} · 후보 {strategy.resultCount}개</span>
-                </div>
-                <code>{strategy.formula}</code>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </section>
-    </div>
   </section>
 
   <section class="panel screener-results">

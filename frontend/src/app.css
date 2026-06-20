@@ -38,6 +38,7 @@ a {
 .sidebar {
   background: #172026;
   color: #f8fbfb;
+  min-width: 0;
   padding: 24px 18px;
 }
 
@@ -166,6 +167,7 @@ select {
 input,
 textarea {
   padding: 8px 10px;
+  width: 100%;
 }
 
 textarea {
@@ -184,6 +186,19 @@ textarea {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.8fr);
   gap: 16px;
+}
+
+.screener-layout {
+  align-items: start;
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.screener-main {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
 }
 
 .three-grid {
@@ -446,6 +461,60 @@ button:disabled,
   font-size: 12px;
 }
 
+.filter-sidebar select {
+  min-width: 0;
+  width: 100%;
+}
+
+.category-tabs,
+.preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.category-tabs {
+  margin-bottom: 16px;
+}
+
+.preset-grid {
+  margin-bottom: 12px;
+}
+
+.category-tabs button,
+.preset-grid button {
+  background: #e6edf0;
+  color: #233139;
+}
+
+.category-tabs button.active,
+.preset-grid button.active {
+  background: #1f6b8f;
+  color: #ffffff;
+}
+
+.filter-group {
+  border-top: 1px solid #e5ecef;
+  display: grid;
+  gap: 10px;
+  padding: 14px 0 0;
+}
+
+.filter-group + .filter-group {
+  margin-top: 14px;
+}
+
+.filter-group label {
+  display: grid;
+  gap: 6px;
+}
+
+.range-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .formula-box {
   background: #172026;
   border-radius: 6px;
@@ -467,6 +536,10 @@ table {
   border-collapse: collapse;
   min-width: 920px;
   width: 100%;
+}
+
+table.wide-table {
+  min-width: 1180px;
 }
 
 th,
@@ -609,6 +682,7 @@ td b {
 
   .summary-grid,
   .content-grid,
+  .screener-layout,
   .three-grid {
     grid-template-columns: 1fr;
   }

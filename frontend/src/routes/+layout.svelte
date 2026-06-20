@@ -3,7 +3,6 @@
   import '../app.css';
 
   const navItems = [
-    { href: '/', label: '대시보드' },
     { href: '/screener', label: '검색기' },
     { href: '/strategy', label: '전략' },
     { href: '/strategies', label: '백테스트' }

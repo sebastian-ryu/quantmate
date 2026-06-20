@@ -334,10 +334,11 @@ textarea {
 }
 
 .popular-screeners-layout {
-  align-items: start;
+  align-items: stretch;
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  grid-auto-rows: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .preset-strip,
@@ -347,6 +348,7 @@ textarea {
   border-radius: 8px;
   display: grid;
   gap: 8px;
+  grid-auto-rows: max-content;
   min-width: 0;
   padding: 14px;
 }

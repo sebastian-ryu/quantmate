@@ -13,9 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from quantmate_api.db import SessionLocal
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
+    default_krx_base_date,
     fetch_krx_instruments,
-    is_pykrx_installed,
-    is_pykrx_ready,
+    is_krx_open_api_ready,
 )
 from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market
 from quantmate_api.strategy_engine import build_strategy_candidates
@@ -139,6 +139,7 @@ class KrxInstrumentPreview(BaseModel):
 class KrxInstrumentPreviewResponse(BaseModel):
     provider: str
     market: str
+    base_date: str
     count: int
     instruments: list[KrxInstrumentPreview]
 
@@ -458,20 +459,15 @@ async def dashboard() -> DashboardResponse:
 
 @app.get("/api/data/status")
 async def data_status() -> DataStatusResponse:
-    pykrx_installed = is_pykrx_installed()
-    pykrx_ready = is_pykrx_ready()
+    krx_ready = is_krx_open_api_ready()
     provider_status = [
         {"name": "KIS Open API", "scope": "현재가/실시간/계좌", "status": "권한 필요", "ready": False},
         {"name": "FinanceDataReader", "scope": "종목 목록/일봉", "status": "후보", "ready": True},
         {
-            "name": "pykrx",
-            "scope": "KRX 종목/OHLCV/기초지표/수급",
-            "status": (
-                "준비 완료"
-                if pykrx_ready
-                else ("KRX 인증 정보 필요" if pykrx_installed else "설치 필요")
-            ),
-            "ready": pykrx_ready,
+            "name": "KRX Open API",
+            "scope": "공식 인증키 기반 종목/OHLCV",
+            "status": "인증키 설정됨" if krx_ready else "API 인증키 필요",
+            "ready": krx_ready,
         },
         {"name": "OpenDART", "scope": "재무제표/공시", "status": "API 키 필요", "ready": False},
     ]
@@ -501,17 +497,28 @@ async def data_status() -> DataStatusResponse:
 
 
 @app.get("/api/data/krx/instruments")
-async def krx_instruments(market: str = "KOSPI", limit: int = 50) -> KrxInstrumentPreviewResponse:
+async def krx_instruments(
+    market: str = "KOSPI",
+    limit: int = 50,
+    base_date: str | None = None,
+) -> KrxInstrumentPreviewResponse:
+    effective_base_date = base_date or default_krx_base_date()
+
     try:
-        instruments = fetch_krx_instruments(market=market, limit=limit)
+        instruments = fetch_krx_instruments(
+            market=market,
+            limit=limit,
+            base_date=effective_base_date,
+        )
     except MarketDataProviderUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return KrxInstrumentPreviewResponse(
-        provider="pykrx",
+        provider="KRX Open API",
         market=market.strip().upper(),
+        base_date=effective_base_date,
         count=len(instruments),
         instruments=[KrxInstrumentPreview(**item) for item in instruments],
     )

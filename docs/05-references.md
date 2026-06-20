@@ -8,13 +8,15 @@
 - 한국투자증권 샘플 저장소: https://github.com/koreainvestment/open-trading-api
 - KIS API 가이드 페이지: https://apiportal.koreainvestment.com/apiservice-apiservice
 - KRX 정보데이터시스템: https://data.krx.co.kr/
+- KRX Open API: https://openapi.krx.co.kr/
+- KRX Open API 이용방법: https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO003.jsp
 - OpenDART: https://opendart.fss.or.kr/
 - FinanceDataReader: https://github.com/FinanceData/FinanceDataReader
 - pykrx: https://github.com/sharebook-kr/pykrx
 - pykrx PyPI: https://pypi.org/project/pykrx/
 - yfinance: https://github.com/ranaroussi/yfinance
 
-`pykrx`는 2026-06-20 기준 최신 1.2.8이 Python 3.13을 지원하는 것으로 확인했다. KRX/Naver 데이터를 스크래핑하므로 무분별한 호출을 피하고, 인증이 필요한 KRX 데이터는 사용자 확인 후 환경변수로 접근 권한을 설정한다.
+KRX Open API는 2026-06-20 기준 로그인 후 API 인증키를 신청하고, 사용할 API 서비스별로 이용신청 후 승인받는 방식이다. 실제 호출 시 인증키는 요청 헤더 `AUTH_KEY`에 넣어 전달한다. `pykrx`는 보조 후보로 남기되, 초기 실제 데이터 연결은 공식 KRX Open API를 우선한다.
 
 ## 플랫폼
 

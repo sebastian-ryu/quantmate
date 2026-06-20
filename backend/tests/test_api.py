@@ -77,9 +77,14 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
 
 
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
-    def fake_fetch_krx_instruments(market: str, limit: int) -> list[dict[str, str]]:
+    def fake_fetch_krx_instruments(
+        market: str,
+        limit: int,
+        base_date: str | None = None,
+    ) -> list[dict[str, str]]:
         assert market == "KOSDAQ"
         assert limit == 2
+        assert base_date == "20260619"
         return [
             {
                 "symbol": "091990",
@@ -91,18 +96,23 @@ def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
 
     monkeypatch.setattr(main_module, "fetch_krx_instruments", fake_fetch_krx_instruments)
 
-    response = client.get("/api/data/krx/instruments?market=KOSDAQ&limit=2")
+    response = client.get("/api/data/krx/instruments?market=KOSDAQ&limit=2&base_date=20260619")
     data = response.json()
 
     assert response.status_code == 200
-    assert data["provider"] == "pykrx"
+    assert data["provider"] == "KRX Open API"
     assert data["market"] == "KOSDAQ"
+    assert data["base_date"] == "20260619"
     assert data["count"] == 1
     assert data["instruments"][0]["symbol"] == "091990"
 
 
 def test_krx_instruments_preview_returns_503_when_provider_needs_permission(monkeypatch) -> None:
-    def fake_fetch_krx_instruments(market: str, limit: int) -> list[dict[str, str]]:
+    def fake_fetch_krx_instruments(
+        market: str,
+        limit: int,
+        base_date: str | None = None,
+    ) -> list[dict[str, str]]:
         raise main_module.MarketDataProviderUnavailable("KRX 인증 정보 필요")
 
     monkeypatch.setattr(main_module, "fetch_krx_instruments", fake_fetch_krx_instruments)

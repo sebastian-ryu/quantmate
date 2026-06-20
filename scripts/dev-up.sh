@@ -54,7 +54,7 @@ start_managed_process() {
   rm -f "$pid_file"
 
   if port_in_use "$port"; then
-    echo "$name 포트 $port가 이미 사용 중입니다. 기존 프로세스를 그대로 둡니다."
+    echo "$name 포트 ${port}가 이미 사용 중입니다. 기존 프로세스를 그대로 둡니다."
     echo "필요하면 make dev-stop 후 다시 실행하세요."
     return
   fi

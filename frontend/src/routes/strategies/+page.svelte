@@ -7,10 +7,20 @@
     code: string;
     name: string;
     style: string;
+    category: string;
+    holdingPeriod: string;
+    rebalanceRule: string;
     source: string;
     sourceKind: 'system' | 'custom';
     summary: string;
     dataRequirements: string[];
+    universeFilter: string[];
+    signalRules: string[];
+    rankingRules: string[];
+    riskControls: string[];
+    riskNotes: string[];
+    backtestAssumptions: string[];
+    references: string[];
     formula?: string;
     resultCount?: number;
   };
@@ -56,7 +66,7 @@
   };
 
   let dashboard: Dashboard | null = null;
-  let selectedStrategy = 'momentum-core';
+  let selectedStrategy = 'relative-momentum-swing';
   let registeredStrategies: StrategyDraft[] = [];
   let loading = true;
   let error = '';
@@ -138,10 +148,20 @@
       code: strategy.code,
       name: strategy.name,
       style: strategy.style,
+      category: strategy.category ?? strategy.style,
+      holdingPeriod: strategy.holding_period ?? strategy.style,
+      rebalanceRule: strategy.rebalance_rule ?? '전략 기본 규칙 사용',
       source: '기본 제공 전략',
-      sourceKind: 'system',
+      sourceKind: strategy.source_type === 'user' ? 'custom' : 'system',
       summary: strategy.summary,
-      dataRequirements: strategy.data_requirements
+      dataRequirements: strategy.data_requirements ?? [],
+      universeFilter: strategy.universe_filter ?? [],
+      signalRules: strategy.signal_rules ?? [],
+      rankingRules: strategy.ranking_rules ?? [],
+      riskControls: strategy.risk_controls ?? [],
+      riskNotes: strategy.risk_notes ?? [],
+      backtestAssumptions: strategy.backtest_assumptions ?? [],
+      references: strategy.references ?? []
     };
   }
 
@@ -150,10 +170,20 @@
       code: `draft:${strategy.id}`,
       name: strategy.name,
       style: '검색식 기반',
+      category: '사용자 조건식',
+      holdingPeriod: '백테스트 조건에서 지정',
+      rebalanceRule: '백테스트 단계에서 지정',
       source: '검색기 등록 전략',
       sourceKind: 'custom',
       summary: strategy.summary,
       dataRequirements: ['검색기 조건식', '검색 결과 후보군', '백테스트용 가격 데이터'],
+      universeFilter: ['검색기에서 선택한 누적 조건'],
+      signalRules: [strategy.formula],
+      rankingRules: ['검색 결과 순서와 점수는 실제 데이터 연결 후 계산'],
+      riskControls: ['리스크 조건은 전략 편집 기능에서 확장 예정'],
+      riskNotes: ['현재는 검색식 기반 전략 초안'],
+      backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
+      references: [],
       formula: strategy.formula,
       resultCount: strategy.resultCount
     };
@@ -472,6 +502,46 @@
             </span>
           </div>
           <span>{selectedOption.summary}</span>
+          <div class="strategy-meta-grid">
+            <div>
+              <span>분류</span>
+              <strong>{selectedOption.category}</strong>
+            </div>
+            <div>
+              <span>보유 기간</span>
+              <strong>{selectedOption.holdingPeriod}</strong>
+            </div>
+            <div>
+              <span>리밸런싱</span>
+              <strong>{selectedOption.rebalanceRule}</strong>
+            </div>
+          </div>
+          <div class="strategy-rule-grid">
+            <div>
+              <strong>후보 조건</strong>
+              <ul class="compact-list">
+                {#each selectedOption.signalRules.slice(0, 4) as rule}
+                  <li>{rule}</li>
+                {/each}
+              </ul>
+            </div>
+            <div>
+              <strong>우선순위</strong>
+              <ul class="compact-list">
+                {#each selectedOption.rankingRules.slice(0, 4) as rule}
+                  <li>{rule}</li>
+                {/each}
+              </ul>
+            </div>
+            <div>
+              <strong>위험 제어</strong>
+              <ul class="compact-list">
+                {#each selectedOption.riskControls.slice(0, 4) as rule}
+                  <li>{rule}</li>
+                {/each}
+              </ul>
+            </div>
+          </div>
           <div class="tag-row">
             <span>{selectedOption.source}</span>
             {#each selectedOption.dataRequirements as requirement}

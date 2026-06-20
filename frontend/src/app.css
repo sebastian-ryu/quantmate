@@ -242,6 +242,41 @@ textarea {
   gap: 8px;
 }
 
+.strategy-meta-grid,
+.strategy-rule-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.strategy-meta-grid div,
+.strategy-rule-grid div {
+  background: #ffffff;
+  border: 1px solid #e5ecef;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.strategy-meta-grid span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.strategy-meta-grid strong,
+.strategy-rule-grid strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.strategy-rule-grid .compact-list {
+  color: #4f6067;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .source-badge {
   background: #e6edf0;
   border: 1px solid #d2dcdf;

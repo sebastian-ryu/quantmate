@@ -5,10 +5,20 @@ const API_BASE_URL = env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
 export type Strategy = {
   code: string;
   name: string;
+  source_type: 'system' | 'user';
+  category: string;
   style: string;
+  holding_period: string;
   summary: string;
+  rebalance_rule: string;
   data_requirements: string[];
+  universe_filter: string[];
+  signal_rules: string[];
+  ranking_rules: string[];
+  risk_controls: string[];
   risk_notes: string[];
+  backtest_assumptions: string[];
+  references: string[];
   default_enabled: boolean;
 };
 

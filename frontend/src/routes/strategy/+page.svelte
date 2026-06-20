@@ -7,10 +7,20 @@
     code: string;
     name: string;
     style: string;
+    category: string;
+    holdingPeriod: string;
+    rebalanceRule: string;
     source: string;
     sourceKind: 'system' | 'custom';
     summary: string;
     dataRequirements: string[];
+    universeFilter: string[];
+    signalRules: string[];
+    rankingRules: string[];
+    riskControls: string[];
+    riskNotes: string[];
+    backtestAssumptions: string[];
+    references: string[];
     formula?: string;
     resultCount?: number;
   };
@@ -37,7 +47,7 @@
   };
 
   let dashboard: Dashboard | null = null;
-  let selectedStrategy = 'momentum-core';
+  let selectedStrategy = 'relative-momentum-swing';
   let registeredStrategies: StrategyDraft[] = [];
   let loading = true;
   let error = '';
@@ -305,10 +315,20 @@
       code: strategy.code,
       name: strategy.name,
       style: strategy.style,
+      category: strategy.category ?? strategy.style,
+      holdingPeriod: strategy.holding_period ?? strategy.style,
+      rebalanceRule: strategy.rebalance_rule ?? '전략 기본 규칙 사용',
       source: '기본 제공 전략',
-      sourceKind: 'system',
+      sourceKind: strategy.source_type === 'user' ? 'custom' : 'system',
       summary: strategy.summary,
-      dataRequirements: strategy.data_requirements
+      dataRequirements: strategy.data_requirements ?? [],
+      universeFilter: strategy.universe_filter ?? [],
+      signalRules: strategy.signal_rules ?? [],
+      rankingRules: strategy.ranking_rules ?? [],
+      riskControls: strategy.risk_controls ?? [],
+      riskNotes: strategy.risk_notes ?? [],
+      backtestAssumptions: strategy.backtest_assumptions ?? [],
+      references: strategy.references ?? []
     };
   }
 
@@ -317,10 +337,20 @@
       code: `draft:${strategy.id}`,
       name: strategy.name,
       style: '검색식 기반',
+      category: '사용자 조건식',
+      holdingPeriod: '백테스트 조건에서 지정',
+      rebalanceRule: '백테스트 단계에서 지정',
       source: '검색기 등록 전략',
       sourceKind: 'custom',
       summary: strategy.summary,
       dataRequirements: ['검색기 조건식', '검색 결과 후보군', '백테스트용 가격 데이터'],
+      universeFilter: ['검색기에서 선택한 누적 조건'],
+      signalRules: [strategy.formula],
+      rankingRules: ['검색 결과 순서와 점수는 실제 데이터 연결 후 계산'],
+      riskControls: ['리스크 조건은 전략 편집 기능에서 확장 예정'],
+      riskNotes: ['현재는 검색식 기반 전략 초안'],
+      backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
+      references: [],
       formula: strategy.formula,
       resultCount: strategy.resultCount
     };
@@ -347,12 +377,46 @@
   }
 
   function calculateStrategyScore(strategyCode: string, item: Omit<StrategyCandidate, 'strategyScore'>) {
-    if (strategyCode === 'momentum-core') {
-      return Math.round(item.momentum * 0.55 + Math.max(item.changePct, 0) * 4 + item.revenueGrowth * 0.8 + item.supplyScore * 0.2);
+    if (strategyCode === 'relative-momentum-swing') {
+      return clampScore(
+        item.momentum * 0.5 +
+          item.supplyScore * 0.18 +
+          Math.max(item.changePct, 0) * 4 +
+          item.revenueGrowth * 0.7 -
+          item.shortSaleRatio * 0.8
+      );
     }
 
-    if (strategyCode === 'supply-demand-watch') {
-      return Math.round(
+    if (strategyCode === 'value-quality-factor') {
+      return clampScore(
+        item.roe * 2.4 +
+          (30 - Math.min(item.per, 30)) * 1.35 +
+          (4 - Math.min(item.pbr, 4)) * 7 +
+          Math.max(item.revenueGrowth, 0) * 0.7
+      );
+    }
+
+    if (strategyCode === 'growth-breakout-leader') {
+      return clampScore(
+        item.revenueGrowth * 1.5 +
+          item.momentum * 0.35 +
+          Math.max(item.changePct, 0) * 5 +
+          item.supplyScore * 0.2 -
+          Math.max(item.per - 35, 0) * 0.5
+      );
+    }
+
+    if (strategyCode === 'trend-breakout') {
+      return clampScore(
+        item.momentum * 0.48 +
+          Math.max(item.changePct, 0) * 6 +
+          item.supplyScore * 0.25 -
+          Math.max(item.shortSaleRatio - 5, 0) * 1.2
+      );
+    }
+
+    if (strategyCode === 'supply-demand-accumulation') {
+      return clampScore(
         item.supplyScore * 0.55 +
           Math.max(item.foreignNetBuy5d, 0) / 70 +
           Math.max(item.institutionNetBuy5d, 0) / 80 +
@@ -360,11 +424,23 @@
       );
     }
 
-    if (strategyCode === 'quality-value') {
-      return Math.round(item.roe * 2.2 + (30 - Math.min(item.per, 30)) * 1.4 + (3 - Math.min(item.pbr, 3)) * 8 + item.revenueGrowth);
+    if (strategyCode === 'low-volatility-defensive') {
+      return clampScore(
+        38 -
+          Math.abs(item.changePct) * 4 -
+          item.shortSaleRatio * 2 +
+          item.roe * 2 +
+          (22 - Math.min(item.per, 22)) * 0.9 +
+          (3 - Math.min(item.pbr, 3)) * 6 +
+          item.supplyScore * 0.12
+      );
     }
 
-    return Math.round(item.momentum * 0.35 + item.supplyScore * 0.35 + item.roe * 1.2 + Math.max(item.revenueGrowth, 0) * 0.8);
+    return clampScore(item.momentum * 0.35 + item.supplyScore * 0.35 + item.roe * 1.2 + Math.max(item.revenueGrowth, 0) * 0.8);
+  }
+
+  function clampScore(score: number) {
+    return Math.max(0, Math.min(100, Math.round(score)));
   }
 
   function formatKrw(value: number) {
@@ -432,6 +508,46 @@
             </span>
           </div>
           <span>{selectedOption.summary}</span>
+          <div class="strategy-meta-grid">
+            <div>
+              <span>분류</span>
+              <strong>{selectedOption.category}</strong>
+            </div>
+            <div>
+              <span>보유 기간</span>
+              <strong>{selectedOption.holdingPeriod}</strong>
+            </div>
+            <div>
+              <span>리밸런싱</span>
+              <strong>{selectedOption.rebalanceRule}</strong>
+            </div>
+          </div>
+          <div class="strategy-rule-grid">
+            <div>
+              <strong>후보 조건</strong>
+              <ul class="compact-list">
+                {#each selectedOption.signalRules.slice(0, 4) as rule}
+                  <li>{rule}</li>
+                {/each}
+              </ul>
+            </div>
+            <div>
+              <strong>우선순위</strong>
+              <ul class="compact-list">
+                {#each selectedOption.rankingRules.slice(0, 4) as rule}
+                  <li>{rule}</li>
+                {/each}
+              </ul>
+            </div>
+            <div>
+              <strong>위험 제어</strong>
+              <ul class="compact-list">
+                {#each selectedOption.riskControls.slice(0, 4) as rule}
+                  <li>{rule}</li>
+                {/each}
+              </ul>
+            </div>
+          </div>
           <div class="tag-row">
             <span>{selectedOption.source}</span>
             {#each selectedOption.dataRequirements as requirement}

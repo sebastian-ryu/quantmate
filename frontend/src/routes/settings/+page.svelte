@@ -1,14 +1,27 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchDashboard, type Dashboard } from '$lib/api';
+  import {
+    fetchDashboard,
+    fetchDataStatus,
+    fetchPaperConfig,
+    type Dashboard,
+    type DataStatus,
+    type PaperConfig
+  } from '$lib/api';
 
   let dashboard: Dashboard | null = null;
+  let dataStatus: DataStatus | null = null;
+  let paperConfig: PaperConfig | null = null;
   let loading = true;
   let error = '';
 
   onMount(async () => {
     try {
-      dashboard = await fetchDashboard();
+      [dashboard, dataStatus, paperConfig] = await Promise.all([
+        fetchDashboard(),
+        fetchDataStatus(),
+        fetchPaperConfig()
+      ]);
     } catch (err) {
       error = err instanceof Error ? err.message : '설정 상태를 불러오지 못했습니다.';
     } finally {
@@ -26,14 +39,46 @@
     <p class="eyebrow">로컬 설정</p>
     <h1>API, 데이터베이스, 매매 모드를 한 곳에서 점검합니다.</h1>
   </div>
-  <a class="button secondary" href="/universe">데이터 상태 보기</a>
+  <a class="button secondary" href="/paper">모의 투자 설정</a>
 </header>
 
 {#if loading}
   <section class="state-panel">설정을 불러오는 중입니다.</section>
 {:else if error}
   <section class="state-panel error">{error}</section>
-{:else if dashboard}
+{:else if dashboard && dataStatus && paperConfig}
+  <section class="summary-grid">
+    <article class="panel">
+      <div class="panel-heading">
+        <span>로컬 DB</span>
+        <strong>{dataStatus.message}</strong>
+      </div>
+      <span class:ready={dataStatus.connected} class:blocked={!dataStatus.connected} class="status-pill">
+        {dataStatus.connected ? '연결됨' : '확인 필요'}
+      </span>
+      <div class="metrics">
+        {#each Object.entries(dataStatus.table_counts) as [name, count]}
+          <div>
+            <span>{name}</span>
+            <strong>{count}</strong>
+          </div>
+        {/each}
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-heading">
+        <span>모의 투자</span>
+        <strong>{paperConfig.enabled ? '사용 가능' : '비활성'}</strong>
+      </div>
+      <ul class="checklist">
+        <li><span>초기 자금</span><strong>{paperConfig.initial_cash.toLocaleString('ko-KR')}원</strong></li>
+        <li><span>종목당 주문 한도</span><strong>{paperConfig.max_order_amount.toLocaleString('ko-KR')}원</strong></li>
+        <li><span>일 주문 횟수</span><strong>{paperConfig.daily_order_limit}회</strong></li>
+      </ul>
+    </article>
+  </section>
+
   <section class="content-grid">
     <article class="panel">
       <div class="panel-heading">
@@ -64,5 +109,37 @@
       </ul>
     </article>
   </section>
-{/if}
 
+  <section class="panel">
+    <div class="panel-heading">
+      <span>데이터/API 권한</span>
+      <strong>연동 전 점검</strong>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>소스</th>
+            <th>범위</th>
+            <th>상태</th>
+            <th>다음 작업</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each dataStatus.provider_status as source}
+            <tr>
+              <td><strong>{source.name}</strong></td>
+              <td>{source.scope}</td>
+              <td>
+                <span class:ready={source.ready} class:blocked={!source.ready} class="status-pill">
+                  {source.status}
+                </span>
+              </td>
+              <td>{source.ready ? '수집 모듈 연결' : '사용자와 권한 정보 확인'}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{/if}

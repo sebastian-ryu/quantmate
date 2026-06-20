@@ -10,7 +10,6 @@
     source: string;
     summary: string;
     dataRequirements: string[];
-    riskNotes: string[];
     formula?: string;
     resultCount?: number;
   };
@@ -18,7 +17,6 @@
   type AnnualReturnTemplate = {
     year: string;
     portfolioReturn: number;
-    benchmarkReturn: number;
     yieldPct: number;
   };
 
@@ -30,63 +28,43 @@
     turnover: string;
   };
 
+  type PerformanceRow = {
+    metric: string;
+    value: string;
+  };
+
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'momentum-core';
   let registeredStrategies: StrategyDraft[] = [];
   let loading = true;
   let error = '';
 
-  let timePeriod = 'custom';
   let startYear = '2023';
-  let startMonth = '1';
   let endYear = '2025';
-  let endMonth = '12';
   let initialAmount = 10000000;
-  let cashflowType = 'none';
-  let cashflowAmount = 0;
-  let cashflowFrequency = 'monthly';
-  let rebalanceType = 'monthly';
-  let rebalanceDay = 'month-end';
-  let benchmark = 'KOSPI 200';
-  let reinvestDividends = 'true';
-  let showIncome = 'true';
-  let commissionRate = 0.015;
-  let slippageRate = 0.05;
-  let universe = 'kospi-kosdaq';
-  let maxPositions = 20;
-  let minScore = 70;
-  let weightingMethod = 'equal';
-  let maxPositionWeight = 10;
-  let minPositionWeight = 2;
-  let entryBuffer = 5;
-  let exitRule = 'rank-drop';
-  let turnoverLimit = 40;
-  let cashPolicy = 'idle-cash';
-  let stopLoss = 8;
-  let takeProfit = 20;
   let hasBacktestResult = false;
   let backtestRunAt = '';
   let backtestNotice = '';
 
   const annualReturnTemplate: AnnualReturnTemplate[] = [
-    { year: '2021', portfolioReturn: 11.8, benchmarkReturn: 7.4, yieldPct: 1.5 },
-    { year: '2022', portfolioReturn: -8.6, benchmarkReturn: -17.2, yieldPct: 1.8 },
-    { year: '2023', portfolioReturn: 18.4, benchmarkReturn: 14.1, yieldPct: 1.9 },
-    { year: '2024', portfolioReturn: 13.2, benchmarkReturn: 9.7, yieldPct: 2.1 },
-    { year: '2025', portfolioReturn: 9.6, benchmarkReturn: 6.3, yieldPct: 2.3 }
+    { year: '2021', portfolioReturn: 11.8, yieldPct: 1.5 },
+    { year: '2022', portfolioReturn: -8.6, yieldPct: 1.8 },
+    { year: '2023', portfolioReturn: 18.4, yieldPct: 1.9 },
+    { year: '2024', portfolioReturn: 13.2, yieldPct: 2.1 },
+    { year: '2025', portfolioReturn: 9.6, yieldPct: 2.3 }
   ];
 
   const metricDescriptions: Record<string, string> = {
-    'Start Balance': '백테스트 시작 시점의 투자금입니다.',
-    'End Balance': '백테스트 종료 시점의 평가금입니다.',
-    'Annualized Return (CAGR)': '전체 기간 수익률을 연평균 복리 수익률로 환산한 값입니다.',
-    'Standard Deviation': '월간 수익률 변동성을 연율화한 값입니다.',
-    'Best Year': '백테스트 기간 중 가장 높은 연간 수익률입니다.',
-    'Worst Year': '백테스트 기간 중 가장 낮은 연간 수익률입니다.',
-    'Maximum Drawdown': '최고점 대비 가장 크게 하락한 구간의 손실률입니다.',
-    'Sharpe Ratio': '변동성 대비 초과수익을 나타내는 위험조정 성과 지표입니다.',
-    'Sortino Ratio': '하락 변동성만 기준으로 본 위험조정 성과 지표입니다.',
-    'Turnover': '월평균 포트폴리오 교체 비율입니다.'
+    시작금액: '백테스트 시작 시점의 투자금입니다.',
+    종료금액: '백테스트 종료 시점의 평가금입니다.',
+    '연평균 수익률(CAGR)': '전체 기간 수익률을 연평균 복리 수익률로 환산한 값입니다.',
+    변동성: '수익률이 흔들리는 정도입니다. 높을수록 손익 변동이 큽니다.',
+    '최고 연도': '백테스트 기간 중 가장 높은 연간 수익률입니다.',
+    '최저 연도': '백테스트 기간 중 가장 낮은 연간 수익률입니다.',
+    '최대 낙폭(MDD)': '최고점 대비 가장 크게 하락한 구간의 손실률입니다.',
+    '샤프 비율': '변동성 대비 초과수익을 나타내는 위험조정 성과 지표입니다.',
+    '소르티노 비율': '하락 변동성만 기준으로 본 위험조정 성과 지표입니다.',
+    '월평균 회전율': '월평균 포트폴리오 교체 비율입니다.'
   };
 
   onMount(async () => {
@@ -109,9 +87,6 @@
   ];
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
-  $: isRegisteredStrategy = selectedOption?.source === '검색기 등록 전략';
-  $: configurationValid = Number(maxPositions) > 0 && Number(maxPositionWeight) > 0 && Number(minScore) >= 0;
-  $: estimatedEqualWeight = Number(maxPositions) > 0 ? Math.round((100 / Number(maxPositions)) * 10) / 10 : 0;
   $: annualRows = buildAnnualRows(initialAmount);
   $: growthRows = buildGrowthRows(initialAmount);
   $: rebalanceRows = buildRebalanceRows();
@@ -121,19 +96,10 @@
     yieldPct: row.yieldPct
   }));
   $: performanceRows = buildPerformanceRows(initialAmount);
-  $: growthValues = growthRows.flatMap((row) => [row.portfolio, row.benchmark]);
+  $: growthValues = growthRows.map((row) => row.portfolio);
   $: growthMin = Math.min(...growthValues, initialAmount);
   $: growthMax = Math.max(...growthValues, initialAmount);
-  $: portfolioLine = buildLinePoints(
-    growthRows.map((row) => row.portfolio),
-    growthMin,
-    growthMax
-  );
-  $: benchmarkLine = buildLinePoints(
-    growthRows.map((row) => row.benchmark),
-    growthMin,
-    growthMax
-  );
+  $: portfolioLine = buildLinePoints(growthValues, growthMin, growthMax);
   $: incomeMax = Math.max(...incomeRows.map((row) => row.income), 1);
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
@@ -143,8 +109,7 @@
       style: strategy.style,
       source: '기본 제공 전략',
       summary: strategy.summary,
-      dataRequirements: strategy.data_requirements,
-      riskNotes: strategy.risk_notes
+      dataRequirements: strategy.data_requirements
     };
   }
 
@@ -156,7 +121,6 @@
       source: '검색기 등록 전략',
       summary: strategy.summary,
       dataRequirements: ['검색기 조건식', '검색 결과 후보군', '백테스트용 가격 데이터'],
-      riskNotes: ['현재는 브라우저 로컬 저장소에만 저장됩니다.', '실제 백테스트 입력 연결은 다음 구현 단계입니다.'],
       formula: strategy.formula,
       resultCount: strategy.resultCount
     };
@@ -169,9 +133,7 @@
   function runBacktest() {
     hasBacktestResult = true;
     backtestRunAt = new Date().toLocaleString('ko-KR');
-    backtestNotice = isRegisteredStrategy
-      ? '검색기 등록 전략 기준의 샘플 백테스트를 생성했습니다. 실제 조건식 실행은 DB 저장과 백테스트 입력 연결 후 활성화합니다.'
-      : '선택한 조건 기준의 샘플 백테스트를 생성했습니다. 실제 일봉 데이터 연결 후 서버 실행으로 바꿉니다.';
+    backtestNotice = '선택한 전략과 백테스트 조건으로 샘플 결과를 생성했습니다. 실제 실행은 일봉 데이터와 백테스트 엔진 연결 후 서버에서 계산합니다.';
   }
 
   function clearBacktestResult() {
@@ -181,18 +143,15 @@
   }
 
   function buildAnnualRows(amount: number) {
-    let portfolioBalance = amount;
-    let benchmarkBalance = amount;
+    let balance = amount;
 
     return annualReturnTemplate.map((row) => {
-      portfolioBalance *= 1 + row.portfolioReturn / 100;
-      benchmarkBalance *= 1 + row.benchmarkReturn / 100;
+      balance *= 1 + row.portfolioReturn / 100;
 
       return {
         ...row,
-        balance: Math.round(portfolioBalance),
-        benchmarkBalance: Math.round(benchmarkBalance),
-        income: Math.round(portfolioBalance * (row.yieldPct / 100))
+        balance: Math.round(balance),
+        income: Math.round(balance * (row.yieldPct / 100))
       };
     });
   }
@@ -207,62 +166,55 @@
       { day: '6', value: 118 }
     ];
 
-    return baseCurve.map((point, index) => {
-      const benchmarkMultiplier = 1 + index * 0.025 + (index > 4 ? 0.02 : 0);
-      return {
-        label: point.day,
-        portfolio: Math.round(amount * (point.value / 100)),
-        benchmark: Math.round(amount * benchmarkMultiplier)
-      };
-    });
+    return baseCurve.map((point) => ({
+      label: point.day,
+      portfolio: Math.round(amount * (point.value / 100))
+    }));
   }
 
-  function buildPerformanceRows(amount: number) {
+  function buildPerformanceRows(amount: number): PerformanceRow[] {
     const finalPortfolio = annualRows.at(-1)?.balance ?? amount;
-    const finalBenchmark = annualRows.at(-1)?.benchmarkBalance ?? amount;
 
     return [
-      { metric: 'Start Balance', portfolio: formatKrw(amount), benchmark: formatKrw(amount) },
-      { metric: 'End Balance', portfolio: formatKrw(finalPortfolio), benchmark: formatKrw(finalBenchmark) },
-      { metric: 'Annualized Return (CAGR)', portfolio: '18.4%', benchmark: '12.8%' },
-      { metric: 'Standard Deviation', portfolio: '13.7%', benchmark: '16.9%' },
-      { metric: 'Best Year', portfolio: '18.4%', benchmark: '14.1%' },
-      { metric: 'Worst Year', portfolio: '-8.6%', benchmark: '-17.2%' },
-      { metric: 'Maximum Drawdown', portfolio: '-12.7%', benchmark: '-21.5%' },
-      { metric: 'Sharpe Ratio', portfolio: '0.92', benchmark: '0.61' },
-      { metric: 'Sortino Ratio', portfolio: '1.38', benchmark: '0.84' },
-      { metric: 'Turnover', portfolio: `월 ${turnoverLimit}% 한도`, benchmark: 'N/A' }
+      { metric: '시작금액', value: formatKrw(amount) },
+      { metric: '종료금액', value: formatKrw(finalPortfolio) },
+      { metric: '연평균 수익률(CAGR)', value: '18.4%' },
+      { metric: '변동성', value: '13.7%' },
+      { metric: '최고 연도', value: '18.4%' },
+      { metric: '최저 연도', value: '-8.6%' },
+      { metric: '최대 낙폭(MDD)', value: '-12.7%' },
+      { metric: '샤프 비율', value: '0.92' },
+      { metric: '소르티노 비율', value: '1.38' },
+      { metric: '월평균 회전율', value: '1.8회' }
     ];
   }
 
   function buildRebalanceRows(): RebalanceRow[] {
-    const holdingCount = `${maxPositions}종목`;
-
     return [
       {
         date: '2025-01',
-        holdings: holdingCount,
+        holdings: '10종목',
         entries: '삼성전자, SK하이닉스, 현대차',
         exits: '카카오',
         turnover: '24%'
       },
       {
         date: '2025-02',
-        holdings: holdingCount,
+        holdings: '10종목',
         entries: 'NAVER, 셀트리온',
         exits: 'LG화학, POSCO홀딩스',
         turnover: '31%'
       },
       {
         date: '2025-03',
-        holdings: holdingCount,
+        holdings: '10종목',
         entries: '기아, KB금융',
         exits: '삼성SDI',
         turnover: '18%'
       },
       {
         date: '2025-04',
-        holdings: holdingCount,
+        holdings: '10종목',
         entries: '한화에어로스페이스',
         exits: '없음',
         turnover: '12%'
@@ -301,7 +253,7 @@
 <header class="topbar">
   <div>
     <p class="eyebrow">전략/백테스트</p>
-    <h1>조건을 입력하고 백테스트 결과를 검토합니다.</h1>
+    <h1>전략을 선택하고 최소 조건으로 백테스트합니다.</h1>
   </div>
   <a class="button secondary" href="/screener">검색기에서 전략 등록</a>
 </header>
@@ -314,10 +266,10 @@
   <div class="backtest-stack">
     <section class="panel backtest-panel">
       <div class="panel-heading">
-        <span>Portfolio Model Configuration</span>
-        <strong>백테스트 조건</strong>
+        <span>전략 선택</span>
+        <strong>{selectedOption?.name ?? '전략 선택 필요'}</strong>
       </div>
-      <div class="backtest-form-grid">
+      <div class="backtest-form-grid strategy-select-grid">
         <label>
           <span>전략</span>
           <select bind:value={selectedStrategy} onchange={clearBacktestResult}>
@@ -326,240 +278,10 @@
             {/each}
           </select>
         </label>
-        <label>
-          <span>기간 방식</span>
-          <select bind:value={timePeriod} onchange={clearBacktestResult}>
-            <option value="custom">직접 지정</option>
-            <option value="max">가능한 전체 기간</option>
-            <option value="trailing-3y">최근 3년</option>
-            <option value="trailing-5y">최근 5년</option>
-          </select>
-        </label>
-        <label>
-          <span>시작 연도</span>
-          <select bind:value={startYear} onchange={clearBacktestResult}>
-            <option value="2020">2020</option>
-            <option value="2021">2021</option>
-            <option value="2022">2022</option>
-            <option value="2023">2023</option>
-            <option value="2024">2024</option>
-          </select>
-        </label>
-        <label>
-          <span>시작 월</span>
-          <select bind:value={startMonth} onchange={clearBacktestResult}>
-            {#each Array.from({ length: 12 }, (_, index) => `${index + 1}`) as month}
-              <option value={month}>{month}월</option>
-            {/each}
-          </select>
-        </label>
-        <label>
-          <span>종료 연도</span>
-          <select bind:value={endYear} onchange={clearBacktestResult}>
-            <option value="2024">2024</option>
-            <option value="2025">2025</option>
-            <option value="2026">2026</option>
-          </select>
-        </label>
-        <label>
-          <span>종료 월</span>
-          <select bind:value={endMonth} onchange={clearBacktestResult}>
-            {#each Array.from({ length: 12 }, (_, index) => `${index + 1}`) as month}
-              <option value={month}>{month}월</option>
-            {/each}
-          </select>
-        </label>
-        <label>
-          <span>초기 투자금</span>
-          <input bind:value={initialAmount} min="0" step="100000" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>현금흐름</span>
-          <select bind:value={cashflowType} onchange={clearBacktestResult}>
-            <option value="none">없음</option>
-            <option value="contribution">정기 납입</option>
-            <option value="withdrawal">정기 인출</option>
-          </select>
-        </label>
-        <label>
-          <span>현금흐름 금액</span>
-          <input bind:value={cashflowAmount} min="0" step="10000" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>현금흐름 주기</span>
-          <select bind:value={cashflowFrequency} onchange={clearBacktestResult}>
-            <option value="monthly">월별</option>
-            <option value="quarterly">분기별</option>
-            <option value="yearly">연별</option>
-          </select>
-        </label>
-        <label>
-          <span>리밸런싱</span>
-          <select bind:value={rebalanceType} onchange={clearBacktestResult}>
-            <option value="none">하지 않음</option>
-            <option value="monthly">월별</option>
-            <option value="quarterly">분기별</option>
-            <option value="yearly">연별</option>
-            <option value="threshold">비중 이탈 기준</option>
-          </select>
-        </label>
-        <label>
-          <span>리밸런싱 기준일</span>
-          <select bind:value={rebalanceDay} onchange={clearBacktestResult}>
-            <option value="month-end">월말</option>
-            <option value="month-start">월초</option>
-            <option value="weekly-friday">매주 금요일</option>
-            <option value="signal-day">신호 발생일</option>
-          </select>
-        </label>
-        <label>
-          <span>벤치마크</span>
-          <select bind:value={benchmark} onchange={clearBacktestResult}>
-            <option value="KOSPI 200">KOSPI 200</option>
-            <option value="KOSDAQ 150">KOSDAQ 150</option>
-            <option value="KRX 300">KRX 300</option>
-            <option value="S&P 500">S&P 500</option>
-          </select>
-        </label>
-        <label>
-          <span>배당 재투자</span>
-          <select bind:value={reinvestDividends} onchange={clearBacktestResult}>
-            <option value="true">예</option>
-            <option value="false">아니오</option>
-          </select>
-        </label>
-        <label>
-          <span>인컴 표시</span>
-          <select bind:value={showIncome} onchange={clearBacktestResult}>
-            <option value="true">예</option>
-            <option value="false">아니오</option>
-          </select>
-        </label>
-        <label>
-          <span>수수료(%)</span>
-          <input bind:value={commissionRate} min="0" step="0.001" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>슬리피지(%)</span>
-          <input bind:value={slippageRate} min="0" step="0.01" type="number" onchange={clearBacktestResult} />
-        </label>
-      </div>
-    </section>
-
-    <section class="panel backtest-panel">
-      <div class="panel-heading">
-        <span>Portfolio Construction</span>
-        <strong>동적 종목 선정과 비중 산정 규칙</strong>
-      </div>
-      <div class="backtest-form-grid">
-        <label>
-          <span>종목 유니버스</span>
-          <select bind:value={universe} onchange={clearBacktestResult}>
-            <option value="kospi-kosdaq">KOSPI + KOSDAQ</option>
-            <option value="kospi">KOSPI</option>
-            <option value="kosdaq">KOSDAQ</option>
-            <option value="large-liquid">대형/고유동성</option>
-            <option value="screener-result">검색기 결과</option>
-          </select>
-        </label>
-        <label>
-          <span>선정 종목 수</span>
-          <input bind:value={maxPositions} min="1" max="100" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>최소 전략 점수</span>
-          <input bind:value={minScore} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>비중 산정 방식</span>
-          <select bind:value={weightingMethod} onchange={clearBacktestResult}>
-            <option value="equal">동일 비중</option>
-            <option value="score">전략 점수 비례</option>
-            <option value="volatility">변동성 역가중</option>
-            <option value="market-cap">시가총액 비례</option>
-          </select>
-        </label>
-        <label>
-          <span>종목당 최대 비중(%)</span>
-          <input bind:value={maxPositionWeight} min="1" max="100" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>종목당 최소 비중(%)</span>
-          <input bind:value={minPositionWeight} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>편입 버퍼</span>
-          <input bind:value={entryBuffer} min="0" max="50" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>제외 규칙</span>
-          <select bind:value={exitRule} onchange={clearBacktestResult}>
-            <option value="rank-drop">순위 하락 시 제외</option>
-            <option value="score-drop">최소 점수 이탈 시 제외</option>
-            <option value="stop-loss">손절 조건 우선</option>
-            <option value="signal-off">전략 신호 해제 시 제외</option>
-          </select>
-        </label>
-        <label>
-          <span>월 회전율 한도(%)</span>
-          <input bind:value={turnoverLimit} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>현금 처리</span>
-          <select bind:value={cashPolicy} onchange={clearBacktestResult}>
-            <option value="idle-cash">미편입 금액은 현금 보유</option>
-            <option value="benchmark-etf">미편입 금액은 벤치마크 ETF</option>
-            <option value="redistribute">남은 비중 재분배</option>
-          </select>
-        </label>
-        <label>
-          <span>손절 기준(%)</span>
-          <input bind:value={stopLoss} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-        <label>
-          <span>익절 기준(%)</span>
-          <input bind:value={takeProfit} min="0" max="200" step="1" type="number" onchange={clearBacktestResult} />
-        </label>
-      </div>
-
-      <div class="table-wrap">
-        <table class="construction-table">
-          <thead>
-            <tr>
-              <th>구성 요소</th>
-              <th>현재 설정</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th scope="row">후보군</th>
-              <td>{universe}에서 전략 점수 {minScore}점 이상 후보를 선별</td>
-            </tr>
-            <tr>
-              <th scope="row">편입</th>
-              <td>리밸런싱 시점마다 상위 {maxPositions}종목 편입, 편입 버퍼 {entryBuffer}종목 적용</td>
-            </tr>
-            <tr>
-              <th scope="row">비중</th>
-              <td>
-                {weightingMethod === 'equal' ? `동일 비중, 예상 종목당 ${estimatedEqualWeight}%` : weightingMethod}
-                · 종목당 최대 {maxPositionWeight}%
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">교체</th>
-              <td>{rebalanceType} / {rebalanceDay} 기준, 월 회전율 {turnoverLimit}% 한도</td>
-            </tr>
-            <tr>
-              <th scope="row">위험관리</th>
-              <td>손절 {stopLoss}%, 익절 {takeProfit}%, 현금 처리: {cashPolicy}</td>
-            </tr>
-          </tbody>
-        </table>
       </div>
       {#if selectedOption}
         <div class="strategy-note">
-          <strong>{selectedOption.name}</strong>
+          <strong>{selectedOption.style}</strong>
           <span>{selectedOption.summary}</span>
           <div class="tag-row">
             <span>{selectedOption.source}</span>
@@ -577,42 +299,56 @@
     <section class="panel backtest-panel">
       <div class="panel-heading inline">
         <div>
-          <span>Analyze Portfolios</span>
-          <strong>백테스트 실행</strong>
+          <span>백테스트 조건</span>
+          <strong>기간과 초기 투자금</strong>
         </div>
-        <button type="button" disabled={!configurationValid} onclick={runBacktest}>백테스트 실행</button>
+        <button type="button" onclick={runBacktest}>백테스트 실행</button>
       </div>
-      {#if !configurationValid}
-        <div class="empty-state">선정 종목 수, 최소 점수, 종목당 비중 조건을 확인해야 실행할 수 있습니다.</div>
-      {:else if backtestNotice}
+      <div class="backtest-form-grid compact-backtest-grid">
+        <label>
+          <span>시작연도</span>
+          <select bind:value={startYear} onchange={clearBacktestResult}>
+            <option value="2020">2020</option>
+            <option value="2021">2021</option>
+            <option value="2022">2022</option>
+            <option value="2023">2023</option>
+            <option value="2024">2024</option>
+          </select>
+        </label>
+        <label>
+          <span>종료연도</span>
+          <select bind:value={endYear} onchange={clearBacktestResult}>
+            <option value="2024">2024</option>
+            <option value="2025">2025</option>
+            <option value="2026">2026</option>
+          </select>
+        </label>
+        <label>
+          <span>초기투자금</span>
+          <input bind:value={initialAmount} min="0" step="100000" type="number" onchange={clearBacktestResult} />
+        </label>
+      </div>
+      {#if backtestNotice}
         <div class="empty-state">
           <strong>{backtestRunAt}</strong>
           <span>{backtestNotice}</span>
         </div>
       {:else}
-        <p>조건을 입력한 뒤 실행하면 아래에 Performance Summary, Portfolio Growth, Annual Returns, Portfolio Income 결과가 표시됩니다.</p>
+        <p>전략은 위에서 선택하고, 백테스트 조건은 기간과 초기투자금만 입력합니다.</p>
       {/if}
-      <ul class="assumptions">
-        {#each dashboard.backtest.assumptions as assumption}
-          <li>{assumption}</li>
-        {/each}
-        {#each selectedOption?.riskNotes ?? [] as note}
-          <li>{note}</li>
-        {/each}
-      </ul>
     </section>
 
     {#if hasBacktestResult}
       <section class="panel backtest-panel">
         <div class="panel-heading">
-          <span>Portfolio 1</span>
-          <strong>Rebalance History</strong>
+          <span>리밸런싱 이력</span>
+          <strong>전략 실행 결과</strong>
         </div>
         <div class="table-wrap">
           <table class="compact-table rebalance-table">
             <thead>
               <tr>
-                <th>리밸런싱 시점</th>
+                <th>시점</th>
                 <th>보유 종목 수</th>
                 <th>신규 편입</th>
                 <th>제외</th>
@@ -636,25 +372,23 @@
 
       <section class="panel backtest-panel">
         <div class="panel-heading">
-          <span>Performance Summary</span>
-          <strong>{startYear}.{startMonth} ~ {endYear}.{endMonth}</strong>
+          <span>성과 요약</span>
+          <strong>{startYear} ~ {endYear}</strong>
         </div>
         <div class="table-wrap">
           <table class="compact-table">
-            <caption>Portfolio performance statistics</caption>
+            <caption>백테스트 성과 지표</caption>
             <thead>
               <tr>
-                <th>Metric</th>
-                <th>Portfolio 1</th>
-                <th>{benchmark}</th>
+                <th>지표</th>
+                <th>결과</th>
               </tr>
             </thead>
             <tbody>
               {#each performanceRows as row}
                 <tr>
                   <th scope="row" title={metricDescriptions[row.metric] ?? ''}>{row.metric}</th>
-                  <td>{row.portfolio}</td>
-                  <td>{row.benchmark}</td>
+                  <td>{row.value}</td>
                 </tr>
               {/each}
             </tbody>
@@ -664,21 +398,17 @@
 
       <section class="panel backtest-panel">
         <div class="panel-heading">
-          <span>Portfolio Growth</span>
-          <strong>{formatKrw(initialAmount)} invested</strong>
+          <span>자산 성장</span>
+          <strong>{formatKrw(initialAmount)} 투자 기준</strong>
         </div>
-        <p>
-          초기 투자금 {formatKrw(initialAmount)} 기준으로 포트폴리오와 {benchmark}의 자산 성장을 비교합니다.
-        </p>
-        <div class="growth-chart" aria-label="Portfolio Growth">
+        <p>초기 투자금 {formatKrw(initialAmount)} 기준으로 선택한 전략의 자산 성장을 표시합니다.</p>
+        <div class="growth-chart" aria-label="자산 성장">
           <svg viewBox="0 0 680 260" role="img">
-            <title>Portfolio Growth</title>
-            <polyline class="benchmark-line" points={benchmarkLine}></polyline>
+            <title>자산 성장</title>
             <polyline class="portfolio-line" points={portfolioLine}></polyline>
           </svg>
           <div class="chart-legend">
-            <span><b class="legend-dot portfolio"></b>Portfolio 1</span>
-            <span><b class="legend-dot benchmark"></b>{benchmark}</span>
+            <span><b class="legend-dot portfolio"></b>선택 전략</span>
           </div>
         </div>
         <div class="growth-axis">
@@ -690,21 +420,19 @@
 
       <section class="panel backtest-panel">
         <div class="panel-heading">
-          <span>Annual Returns</span>
-          <strong>연도별 수익률과 잔고</strong>
+          <span>연도별 수익률</span>
+          <strong>수익률과 평가금</strong>
         </div>
         <div class="table-wrap">
           <table class="compact-table wide-table">
-            <caption>Annual returns for the configured portfolios</caption>
+            <caption>연도별 백테스트 결과</caption>
             <thead>
               <tr>
-                <th>Year</th>
-                <th>Portfolio Return</th>
-                <th>Portfolio Balance</th>
-                <th>Yield</th>
-                <th>Income</th>
-                <th>{benchmark} Return</th>
-                <th>{benchmark} Balance</th>
+                <th>연도</th>
+                <th>수익률</th>
+                <th>평가금</th>
+                <th>인컴 수익률</th>
+                <th>인컴 금액</th>
               </tr>
             </thead>
             <tbody>
@@ -717,10 +445,6 @@
                   <td>{formatKrw(row.balance)}</td>
                   <td>{row.yieldPct}%</td>
                   <td>{formatKrw(row.income)}</td>
-                  <td class:tone-positive={row.benchmarkReturn >= 0} class:tone-caution={row.benchmarkReturn < 0}>
-                    <strong>{row.benchmarkReturn}%</strong>
-                  </td>
-                  <td>{formatKrw(row.benchmarkBalance)}</td>
                 </tr>
               {/each}
             </tbody>
@@ -728,46 +452,42 @@
         </div>
       </section>
 
-      {#if showIncome === 'true'}
-        <section class="panel backtest-panel">
-          <div class="panel-heading">
-            <span>Portfolio Income</span>
-            <strong>배당/분배금 흐름</strong>
-          </div>
-          <div class="income-chart" aria-label="Portfolio Income">
-            {#each incomeRows as row}
-              <div class="income-bar">
-                <span style={`height: ${(row.income / incomeMax) * 100}%`}></span>
-                <small>{row.year}</small>
-              </div>
-            {/each}
-          </div>
-          <div class="table-wrap">
-            <table class="compact-table">
-              <thead>
+      <section class="panel backtest-panel">
+        <div class="panel-heading">
+          <span>포트폴리오 인컴</span>
+          <strong>배당/분배금 흐름</strong>
+        </div>
+        <div class="income-chart" aria-label="포트폴리오 인컴">
+          {#each incomeRows as row}
+            <div class="income-bar">
+              <span style={`height: ${(row.income / incomeMax) * 100}%`}></span>
+              <small>{row.year}</small>
+            </div>
+          {/each}
+        </div>
+        <div class="table-wrap">
+          <table class="compact-table">
+            <thead>
+              <tr>
+                <th>연도</th>
+                <th>인컴 금액</th>
+                <th>인컴 수익률</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each incomeRows as row}
                 <tr>
-                  <th>Year</th>
-                  <th>Income</th>
-                  <th>Yield</th>
+                  <td>{row.year}</td>
+                  <td>{formatKrw(row.income)}</td>
+                  <td>{row.yieldPct}%</td>
                 </tr>
-              </thead>
-              <tbody>
-                {#each incomeRows as row}
-                  <tr>
-                    <td>{row.year}</td>
-                    <td>{formatKrw(row.income)}</td>
-                    <td>{row.yieldPct}%</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      {/if}
-    {:else}
-      <section class="state-panel">
-        조건 입력 후 `백테스트 실행`을 누르면 결과 블록이 아래에 표시됩니다.
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </section>
+    {:else}
+      <section class="state-panel">백테스트를 실행하면 결과 블록이 아래에 표시됩니다.</section>
     {/if}
   </div>
 {/if}

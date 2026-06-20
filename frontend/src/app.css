@@ -840,13 +840,11 @@ table.wide-table {
 }
 
 .compact-table,
-.construction-table,
 .rebalance-table {
   min-width: 760px;
 }
 
 .compact-table caption,
-.construction-table caption,
 .rebalance-table caption {
   color: #6f7f86;
   font-size: 12px;
@@ -854,8 +852,6 @@ table.wide-table {
   text-align: left;
 }
 
-.construction-table th,
-.construction-table td,
 .rebalance-table th,
 .rebalance-table td {
   background: #f7fafa;
@@ -982,10 +978,6 @@ td b {
   stroke: #1f6b8f;
 }
 
-.benchmark-line {
-  stroke: #91a2aa;
-}
-
 .chart-legend,
 .growth-axis {
   display: flex;
@@ -1011,10 +1003,6 @@ td b {
 
 .legend-dot.portfolio {
   background: #1f6b8f;
-}
-
-.legend-dot.benchmark {
-  background: #91a2aa;
 }
 
 .growth-axis {

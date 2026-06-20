@@ -206,7 +206,6 @@ textarea {
   display: grid;
 }
 
-.popular-screeners,
 .screener-builder {
   padding: 14px;
 }
@@ -217,8 +216,11 @@ textarea {
 }
 
 .popular-screeners {
+  background: transparent;
+  border: 0;
   display: grid;
   gap: 10px;
+  padding: 0;
 }
 
 .popular-screeners-layout {
@@ -230,14 +232,18 @@ textarea {
 
 .preset-strip,
 .strategy-strip {
+  background: #ffffff;
+  border: 1px solid #dde5e8;
+  border-radius: 8px;
   display: grid;
   gap: 8px;
   min-width: 0;
+  padding: 14px;
 }
 
 .popular-screeners .strategy-strip {
-  border-left: 1px solid #e1e8ea;
-  padding-left: 16px;
+  border-left: 1px solid #dde5e8;
+  padding-left: 14px;
 }
 
 .three-grid {
@@ -250,6 +256,12 @@ textarea {
 .state-panel {
   min-width: 0;
   padding: 16px;
+}
+
+.panel.popular-screeners {
+  background: transparent;
+  border: 0;
+  padding: 0;
 }
 
 .state-panel {
@@ -705,7 +717,7 @@ button:disabled,
 .strategy-register {
   align-items: end;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto;
+  grid-template-columns: minmax(150px, 0.75fr) minmax(190px, 1fr) auto;
   gap: 8px;
 }
 
@@ -722,11 +734,13 @@ button:disabled,
 }
 
 .registered-strategies li {
+  align-items: start;
   background: #f7fafa;
   border: 1px solid #e2e9eb;
   border-radius: 6px;
   display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin: 0;
   padding: 10px;
 }
@@ -738,6 +752,13 @@ button:disabled,
 .registered-strategies div {
   display: grid;
   gap: 3px;
+}
+
+.registered-strategies p {
+  color: #4f6067;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .registered-strategies code {
@@ -818,6 +839,8 @@ td:first-child span {
   border: 1px solid #e1e8ea;
   border-radius: 6px;
   color: #55666d;
+  display: grid;
+  gap: 4px;
   padding: 18px;
 }
 
@@ -924,9 +947,8 @@ td b {
   }
 
   .popular-screeners .strategy-strip {
-    border-left: 0;
-    border-top: 1px solid #e1e8ea;
-    padding-left: 0;
+    border-left: 1px solid #dde5e8;
+    padding-left: 14px;
     padding-top: 14px;
   }
 
@@ -944,6 +966,10 @@ td b {
   }
 
   .strategy-register {
+    grid-template-columns: 1fr;
+  }
+
+  .registered-strategies li {
     grid-template-columns: 1fr;
   }
 }

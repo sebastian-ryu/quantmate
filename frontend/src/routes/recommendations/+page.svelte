@@ -145,7 +145,7 @@
         <span>추천 목록</span>
         <strong>기준일 {dashboard.as_of}</strong>
       </div>
-      <a class="button secondary" href="/backtests">백테스트 보기</a>
+      <a class="button secondary" href="/strategies">전략/백테스트 보기</a>
     </div>
 
     {#if filteredRecommendations.length}

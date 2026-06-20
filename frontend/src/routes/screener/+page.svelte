@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { loadStrategyDrafts, saveStrategyDrafts, type StrategyDraft } from '$lib/strategy-drafts';
+
   type ScreenerRow = {
     symbol: string;
     name: string;
@@ -46,13 +49,6 @@
     shortSaleRatio: number;
     marginDebtChange5d: number;
     supplyScore: number;
-  };
-
-  type RegisteredStrategy = {
-    name: string;
-    resultCount: number;
-    formula: string;
-    createdAt: string;
   };
 
   type FilterChip = {
@@ -422,9 +418,14 @@
   let activeCategory = categories[0];
   let activePreset = '';
   let strategyName = '';
-  let registeredStrategies: RegisteredStrategy[] = [];
+  let strategySummary = '';
+  let registeredStrategies: StrategyDraft[] = [];
   let activeFilterChips: FilterChip[] = [];
   let categoryCounts: Record<string, number> = {};
+
+  onMount(() => {
+    registeredStrategies = loadStrategyDrafts();
+  });
 
   $: sectors = Array.from(new Set(rows.map((row) => row.sector)));
   $: showPopularGroup = activeCategory === '인기 항목';
@@ -921,16 +922,34 @@
 
   function registerStrategy() {
     const name = strategyName.trim() || `검색기 전략 ${registeredStrategies.length + 1}`;
+    const summary = strategySummary.trim() || '검색기에서 저장한 조건 기반 전략입니다.';
     registeredStrategies = [
       {
+        id: createDraftId(),
         name,
+        summary,
         resultCount: filteredRows.length,
         formula: formulaPreview,
         createdAt: new Date().toLocaleString('ko-KR')
       },
       ...registeredStrategies
     ];
+    saveStrategyDrafts(registeredStrategies);
     strategyName = '';
+    strategySummary = '';
+  }
+
+  function removeRegisteredStrategy(id: string) {
+    registeredStrategies = registeredStrategies.filter((strategy) => strategy.id !== id);
+    saveStrategyDrafts(registeredStrategies);
+  }
+
+  function createDraftId() {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID();
+    }
+
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
   function formatKrw(value: number) {
@@ -994,6 +1013,10 @@
             <span>전략명</span>
             <input bind:value={strategyName} placeholder="예: 외국인+기관 수급 유입주" />
           </label>
+          <label>
+            <span>소개</span>
+            <input bind:value={strategySummary} placeholder="예: 외국인과 기관 수급이 함께 들어오는 종목" />
+          </label>
           <button type="button" onclick={registerStrategy}>전략으로 등록</button>
         </div>
         {#if registeredStrategies.length}
@@ -1002,8 +1025,10 @@
               <li>
                 <div>
                   <strong>{strategy.name}</strong>
+                  <p>{strategy.summary}</p>
                   <span>{strategy.createdAt} · 후보 {strategy.resultCount}개</span>
                 </div>
+                <button type="button" class="secondary" onclick={() => removeRegisteredStrategy(strategy.id)}>삭제</button>
               </li>
             {/each}
           </ul>

@@ -998,7 +998,6 @@
     <h1>퀀트 조건과 수급 유입 조건으로 후보를 좁힙니다.</h1>
   </div>
   <div class="action-row">
-    <span class="status-pill ready">{filteredRows.length}개 후보</span>
     <button type="button" class="secondary" onclick={resetFilters}>초기화</button>
   </div>
 </header>
@@ -1033,7 +1032,7 @@
             <span>전략 등록</span>
             <strong>현재 검색식 저장</strong>
           </div>
-          <span class="status-pill ready">{filteredRows.length}개 후보</span>
+          <span class="muted">저장 시 현재 {filteredRows.length}개 후보 기준</span>
         </div>
         <div class="strategy-register">
           <label>

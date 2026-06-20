@@ -18,6 +18,7 @@ QuantMate는 주식 종목 선정, 전략 연구, 백테스트를 위한 로컬 
 - [참고 자료](docs/05-references.md)
 - [로컬 설정](docs/06-local-setup.md)
 - [스킬 운영 계획](docs/07-skills.md)
+- [전략 카탈로그](docs/08-strategy-catalog.md)
 
 에이전트 작업 지침은 [AGENTS.md](AGENTS.md)를 기준으로 합니다.
 

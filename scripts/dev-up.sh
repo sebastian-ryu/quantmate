@@ -84,7 +84,7 @@ start_managed_process \
   8000 \
   "$RUN_DIR/backend.pid" \
   "$LOG_DIR/backend.log" \
-  python3 -m uvicorn quantmate_api.main:app --app-dir "$ROOT_DIR/backend/src" --reload --host 127.0.0.1 --port 8000
+  python3 -m uvicorn quantmate_api.main:app --app-dir "$ROOT_DIR/backend/src" --host 127.0.0.1 --port 8000
 
 start_managed_process \
   "프론트엔드 웹" \

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, datetime
 from enum import StrEnum
@@ -19,7 +20,7 @@ from quantmate_api.market_data import (
     fetch_krx_instruments,
     is_krx_open_api_ready,
 )
-from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market, UserStrategy
+from quantmate_api.models import BacktestRun, DailyPrice, DataImportJob, Instrument, Market, UserStrategy
 from quantmate_api.strategy_engine import build_strategy_candidates
 
 
@@ -167,6 +168,7 @@ class BacktestRebalanceRow(BaseModel):
 
 
 class BacktestRunResponse(BaseModel):
+    run_id: int | None = None
     strategy_code: str
     strategy_name: str
     source: str
@@ -179,6 +181,17 @@ class BacktestRunResponse(BaseModel):
     annual_returns: list[BacktestAnnualReturn]
     equity_curve: list[BacktestEquityPoint]
     rebalance_history: list[BacktestRebalanceRow]
+
+
+class BacktestRunSummary(BaseModel):
+    id: int
+    strategy_code: str
+    strategy_name: str
+    period: str
+    source: str
+    initial_amount: int
+    final_amount: int
+    created_at: datetime
 
 
 class DashboardResponse(BaseModel):
@@ -520,6 +533,47 @@ def _load_active_user_strategy(strategy_code: str) -> UserStrategy | None:
         ) from exc
 
 
+def _save_backtest_run(
+    *,
+    result: dict[str, object],
+    request: BacktestRunRequest,
+) -> int | None:
+    first_year = min(request.start_year, request.end_year)
+    last_year = max(request.start_year, request.end_year)
+
+    try:
+        with SessionLocal() as session:
+            run = BacktestRun(
+                strategy_code=str(result["strategy_code"]),
+                strategy_name=str(result["strategy_name"]),
+                source=str(result["source"]),
+                start_year=first_year,
+                end_year=last_year,
+                initial_amount=int(result["initial_amount"]),
+                final_amount=int(result["final_amount"]),
+                result_json=json.dumps(result, ensure_ascii=False),
+            )
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+            return run.id
+    except SQLAlchemyError:
+        return None
+
+
+def _backtest_summary(run: BacktestRun) -> BacktestRunSummary:
+    return BacktestRunSummary(
+        id=run.id,
+        strategy_code=run.strategy_code,
+        strategy_name=run.strategy_name,
+        period=f"{run.start_year} ~ {run.end_year}",
+        source=run.source,
+        initial_amount=run.initial_amount,
+        final_amount=run.final_amount,
+        created_at=run.created_at,
+    )
+
+
 @app.get("/api/health")
 async def health() -> HealthResponse:
     return HealthResponse(
@@ -658,8 +712,29 @@ async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
         end_year=request.end_year,
         initial_amount=request.initial_amount,
     )
+    result["run_id"] = _save_backtest_run(result=result, request=request)
 
     return BacktestRunResponse(**result)
+
+
+@app.get("/api/backtests/runs")
+async def list_backtest_runs(limit: int = 10) -> list[BacktestRunSummary]:
+    safe_limit = max(1, min(limit, 50))
+
+    try:
+        with SessionLocal() as session:
+            runs = session.scalars(
+                select(BacktestRun)
+                .order_by(BacktestRun.created_at.desc(), BacktestRun.id.desc())
+                .limit(safe_limit)
+            ).all()
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"백테스트 결과 DB 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return [_backtest_summary(run) for run in runs]
 
 
 @app.get("/api/dashboard")
@@ -700,6 +775,7 @@ async def data_status() -> DataStatusResponse:
                 "daily_prices": session.scalar(select(func.count()).select_from(DailyPrice)) or 0,
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
                 "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
+                "backtest_runs": session.scalar(select(func.count()).select_from(BacktestRun)) or 0,
             }
     except SQLAlchemyError as exc:
         return DataStatusResponse(

@@ -133,6 +133,7 @@ export type BacktestRebalanceRow = {
 };
 
 export type BacktestRunResult = {
+  run_id: number | null;
   strategy_code: string;
   strategy_name: string;
   source: string;
@@ -145,6 +146,17 @@ export type BacktestRunResult = {
   annual_returns: BacktestAnnualReturn[];
   equity_curve: BacktestEquityPoint[];
   rebalance_history: BacktestRebalanceRow[];
+};
+
+export type BacktestRunSummary = {
+  id: number;
+  strategy_code: string;
+  strategy_name: string;
+  period: string;
+  source: string;
+  initial_amount: number;
+  final_amount: number;
+  created_at: string;
 };
 
 export type Dashboard = {
@@ -231,6 +243,17 @@ export async function deleteUserStrategy(strategyCode: string): Promise<void> {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `사용자 전략을 삭제하지 못했습니다. (${response.status})`);
   }
+}
+
+export async function fetchBacktestRuns(limit = 10): Promise<BacktestRunSummary[]> {
+  const response = await fetch(`${API_BASE_URL}/api/backtests/runs?limit=${limit}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `최근 백테스트 결과를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
 }
 
 export async function runBacktest(request: BacktestRunRequest): Promise<BacktestRunResult> {

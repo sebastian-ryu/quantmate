@@ -119,3 +119,22 @@ class UserStrategy(TimestampMixin, Base):
     formula: Mapped[str] = mapped_column(Text)
     result_count: Mapped[int] = mapped_column(default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class BacktestRun(TimestampMixin, Base):
+    __tablename__ = "backtest_runs"
+    __table_args__ = (
+        Index("ix_backtest_runs_strategy_code", "strategy_code"),
+        Index("ix_backtest_runs_created_at", "created_at"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy_code: Mapped[str] = mapped_column(String(80))
+    strategy_name: Mapped[str] = mapped_column(String(120))
+    source: Mapped[str] = mapped_column(String(60))
+    start_year: Mapped[int] = mapped_column()
+    end_year: Mapped[int] = mapped_column()
+    initial_amount: Mapped[int] = mapped_column(BigInteger)
+    final_amount: Mapped[int] = mapped_column(BigInteger)
+    result_json: Mapped[str] = mapped_column(Text)

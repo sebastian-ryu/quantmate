@@ -2,8 +2,10 @@
   import { onMount } from 'svelte';
   import {
     fetchDashboard,
+    fetchBacktestRuns,
     fetchUserStrategies,
     runBacktest as requestBacktest,
+    type BacktestRunSummary,
     type BacktestRunResult,
     type Dashboard,
     type Strategy,
@@ -76,6 +78,8 @@
   let backtestResult: BacktestRunResult | null = null;
   let backtestRunning = false;
   let backtestError = '';
+  let recentBacktests: BacktestRunSummary[] = [];
+  let recentBacktestsError = '';
 
   const chartWidth = 760;
   const chartHeight = 360;
@@ -108,6 +112,7 @@
       dashboard = dashboardData;
       registeredStrategies = userStrategies;
       selectedStrategy = chooseInitialStrategy(dashboardData, userStrategies);
+      await loadRecentBacktests();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략과 백테스트 데이터를 불러오지 못했습니다.';
     } finally {
@@ -238,6 +243,7 @@
       hasBacktestResult = true;
       backtestRunAt = new Date(result.run_at).toLocaleString('ko-KR');
       backtestNotice = result.notice;
+      await loadRecentBacktests();
     } catch (err) {
       backtestError = err instanceof Error ? err.message : '백테스트를 실행하지 못했습니다.';
     } finally {
@@ -251,6 +257,15 @@
     backtestRunAt = '';
     backtestNotice = '';
     backtestError = '';
+  }
+
+  async function loadRecentBacktests() {
+    try {
+      recentBacktests = await fetchBacktestRuns(8);
+      recentBacktestsError = '';
+    } catch (err) {
+      recentBacktestsError = err instanceof Error ? err.message : '최근 백테스트 결과를 불러오지 못했습니다.';
+    }
   }
 
   function buildAnnualRows(result: BacktestRunResult | null): AnnualReturnRow[] {
@@ -379,6 +394,10 @@
 
   function formatPercent(value: number) {
     return `${value.toFixed(1)}%`;
+  }
+
+  function formatDateTime(value: string) {
+    return new Date(value).toLocaleString('ko-KR');
   }
 </script>
 
@@ -533,6 +552,47 @@
         </div>
       {:else}
         <p>전략은 위에서 선택하고, 백테스트 조건은 기간과 초기투자금만 입력합니다.</p>
+      {/if}
+    </section>
+
+    <section class="panel backtest-panel">
+      <div class="panel-heading">
+        <span>최근 백테스트</span>
+        <strong>{recentBacktests.length ? `${recentBacktests.length}개 저장됨` : '저장 결과 없음'}</strong>
+      </div>
+      {#if recentBacktestsError}
+        <div class="empty-state error">{recentBacktestsError}</div>
+      {:else if recentBacktests.length}
+        <div class="table-wrap">
+          <table class="compact-table wide-table">
+            <caption>최근 백테스트 실행 결과</caption>
+            <thead>
+              <tr>
+                <th>실행일</th>
+                <th>전략</th>
+                <th>기간</th>
+                <th>초기투자금</th>
+                <th>종료금액</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each recentBacktests as row}
+                <tr>
+                  <td>{formatDateTime(row.created_at)}</td>
+                  <td>
+                    <strong>{row.strategy_name}</strong>
+                    <span>{row.strategy_code}</span>
+                  </td>
+                  <td>{row.period}</td>
+                  <td>{formatKrw(row.initial_amount)}</td>
+                  <td>{formatKrw(row.final_amount)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <p>백테스트를 실행하면 결과 요약이 여기에 저장됩니다.</p>
       {/if}
     </section>
 

@@ -163,10 +163,38 @@ def test_backtest_run_accepts_user_strategy(monkeypatch) -> None:
     assert len(data["equity_curve"]) == 24
 
 
+def test_backtest_run_persists_recent_summary(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "trend-breakout",
+            "start_year": 2024,
+            "end_year": 2025,
+            "initial_amount": 10000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert isinstance(data["run_id"], int)
+
+    recent_response = client.get("/api/backtests/runs?limit=5")
+    recent = recent_response.json()
+
+    assert recent_response.status_code == 200
+    assert recent[0]["id"] == data["run_id"]
+    assert recent[0]["strategy_code"] == "trend-breakout"
+    assert recent[0]["period"] == "2024 ~ 2025"
+    assert recent[0]["initial_amount"] == 10000000
+    assert recent[0]["final_amount"] == data["final_amount"]
+
+
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.counts = [1, 3, 0, 0, 2]
+            self.counts = [1, 3, 0, 0, 2, 4]
 
         def __enter__(self) -> "FakeSession":
             return self
@@ -192,6 +220,7 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["table_counts"]["markets"] == 1
     assert data["table_counts"]["instruments"] == 3
     assert data["table_counts"]["user_strategies"] == 2
+    assert data["table_counts"]["backtest_runs"] == 4
 
 
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:

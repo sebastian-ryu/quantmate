@@ -107,7 +107,7 @@
       ]);
       dashboard = dashboardData;
       registeredStrategies = userStrategies;
-      selectedStrategy = dashboard.backtest.strategy_code;
+      selectedStrategy = chooseInitialStrategy(dashboardData, userStrategies);
     } catch (err) {
       error = err instanceof Error ? err.message : '전략과 백테스트 데이터를 불러오지 못했습니다.';
     } finally {
@@ -190,6 +190,26 @@
 
   function sourceBadgeLabel(item: StrategyOption) {
     return item.sourceKind === 'system' ? '시스템 제공' : '사용자 등록';
+  }
+
+  function chooseInitialStrategy(dashboardData: Dashboard, userStrategies: UserStrategy[]) {
+    const requestedStrategy = getRequestedStrategyCode();
+    const availableCodes = new Set([
+      ...dashboardData.strategies.map((strategy) => strategy.code),
+      ...userStrategies.map((strategy) => strategy.code)
+    ]);
+
+    if (requestedStrategy && availableCodes.has(requestedStrategy)) {
+      return requestedStrategy;
+    }
+
+    return dashboardData.backtest.strategy_code;
+  }
+
+  function getRequestedStrategyCode() {
+    if (typeof window === 'undefined') return '';
+
+    return new URLSearchParams(window.location.search).get('strategy') ?? '';
   }
 
   function firstRules(rules: string[] | undefined) {

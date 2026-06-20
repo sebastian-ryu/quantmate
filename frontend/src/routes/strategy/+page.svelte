@@ -383,6 +383,14 @@
     return item.sourceKind === 'system' ? '시스템 제공' : '사용자 등록';
   }
 
+  function backtestHref(item: StrategyOption) {
+    return `/strategies?strategy=${encodeURIComponent(item.code)}`;
+  }
+
+  function firstRules(rules: string[] | undefined) {
+    return (rules ?? []).filter(Boolean).slice(0, 4);
+  }
+
   async function handleStrategyChange() {
     await loadCandidateRowsForSelectedStrategy();
   }
@@ -632,7 +640,7 @@
             <div>
               <strong>후보 조건</strong>
               <ul class="compact-list">
-                {#each selectedOption.signalRules.slice(0, 4) as rule}
+                {#each firstRules(selectedOption.signalRules) as rule}
                   <li>{rule}</li>
                 {/each}
               </ul>
@@ -640,7 +648,7 @@
             <div>
               <strong>우선순위</strong>
               <ul class="compact-list">
-                {#each selectedOption.rankingRules.slice(0, 4) as rule}
+                {#each firstRules(selectedOption.rankingRules) as rule}
                   <li>{rule}</li>
                 {/each}
               </ul>
@@ -648,7 +656,7 @@
             <div>
               <strong>위험 제어</strong>
               <ul class="compact-list">
-                {#each selectedOption.riskControls.slice(0, 4) as rule}
+                {#each firstRules(selectedOption.riskControls) as rule}
                   <li>{rule}</li>
                 {/each}
               </ul>
@@ -656,9 +664,12 @@
           </div>
           <div class="tag-row">
             <span>{selectedOption.source}</span>
-            {#each selectedOption.dataRequirements as requirement}
+            {#each selectedOption.dataRequirements ?? [] as requirement}
               <span>{requirement}</span>
             {/each}
+          </div>
+          <div class="action-row">
+            <a class="button secondary" href={backtestHref(selectedOption)}>이 전략 백테스트</a>
           </div>
           {#if selectedOption.formula}
             <code class="formula-box compact-formula">{selectedOption.formula}</code>

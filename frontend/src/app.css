@@ -840,23 +840,24 @@ table.wide-table {
 }
 
 .compact-table,
-.allocation-table {
+.construction-table,
+.rebalance-table {
   min-width: 760px;
 }
 
-.compact-table caption {
+.compact-table caption,
+.construction-table caption,
+.rebalance-table caption {
   color: #6f7f86;
   font-size: 12px;
   margin-bottom: 8px;
   text-align: left;
 }
 
-.allocation-table input {
-  min-width: 0;
-}
-
-.allocation-table tfoot th,
-.allocation-table tfoot td {
+.construction-table th,
+.construction-table td,
+.rebalance-table th,
+.rebalance-table td {
   background: #f7fafa;
 }
 

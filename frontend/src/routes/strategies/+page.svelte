@@ -15,18 +15,19 @@
     resultCount?: number;
   };
 
-  type AllocationRow = {
-    id: number;
-    symbol: string;
-    name: string;
-    allocation: number;
-  };
-
   type AnnualReturnTemplate = {
     year: string;
     portfolioReturn: number;
     benchmarkReturn: number;
     yieldPct: number;
+  };
+
+  type RebalanceRow = {
+    date: string;
+    holdings: string;
+    entries: string;
+    exits: string;
+    turnover: string;
   };
 
   let dashboard: Dashboard | null = null;
@@ -45,21 +46,27 @@
   let cashflowAmount = 0;
   let cashflowFrequency = 'monthly';
   let rebalanceType = 'monthly';
+  let rebalanceDay = 'month-end';
   let benchmark = 'KOSPI 200';
   let reinvestDividends = 'true';
   let showIncome = 'true';
   let commissionRate = 0.015;
   let slippageRate = 0.05;
+  let universe = 'kospi-kosdaq';
+  let maxPositions = 20;
+  let minScore = 70;
+  let weightingMethod = 'equal';
+  let maxPositionWeight = 10;
+  let minPositionWeight = 2;
+  let entryBuffer = 5;
+  let exitRule = 'rank-drop';
+  let turnoverLimit = 40;
+  let cashPolicy = 'idle-cash';
+  let stopLoss = 8;
+  let takeProfit = 20;
   let hasBacktestResult = false;
   let backtestRunAt = '';
   let backtestNotice = '';
-
-  let allocationRows: AllocationRow[] = [
-    { id: 1, symbol: '005930', name: '삼성전자', allocation: 40 },
-    { id: 2, symbol: '000660', name: 'SK하이닉스', allocation: 20 },
-    { id: 3, symbol: '005380', name: '현대차', allocation: 20 },
-    { id: 4, symbol: '069500', name: 'KODEX 200', allocation: 20 }
-  ];
 
   const annualReturnTemplate: AnnualReturnTemplate[] = [
     { year: '2021', portfolioReturn: 11.8, benchmarkReturn: 7.4, yieldPct: 1.5 },
@@ -103,9 +110,11 @@
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
   $: isRegisteredStrategy = selectedOption?.source === '검색기 등록 전략';
-  $: totalAllocation = allocationRows.reduce((sum, row) => sum + Number(row.allocation || 0), 0);
+  $: configurationValid = Number(maxPositions) > 0 && Number(maxPositionWeight) > 0 && Number(minScore) >= 0;
+  $: estimatedEqualWeight = Number(maxPositions) > 0 ? Math.round((100 / Number(maxPositions)) * 10) / 10 : 0;
   $: annualRows = buildAnnualRows(initialAmount);
   $: growthRows = buildGrowthRows(initialAmount);
+  $: rebalanceRows = buildRebalanceRows();
   $: incomeRows = annualRows.map((row) => ({
     year: row.year,
     income: row.income,
@@ -171,18 +180,6 @@
     backtestNotice = '';
   }
 
-  function addAllocationRow() {
-    const nextId = Math.max(...allocationRows.map((row) => row.id), 0) + 1;
-    allocationRows = [...allocationRows, { id: nextId, symbol: '', name: '', allocation: 0 }];
-    clearBacktestResult();
-  }
-
-  function removeAllocationRow(id: number) {
-    if (allocationRows.length <= 1) return;
-    allocationRows = allocationRows.filter((row) => row.id !== id);
-    clearBacktestResult();
-  }
-
   function buildAnnualRows(amount: number) {
     let portfolioBalance = amount;
     let benchmarkBalance = amount;
@@ -234,7 +231,42 @@
       { metric: 'Maximum Drawdown', portfolio: '-12.7%', benchmark: '-21.5%' },
       { metric: 'Sharpe Ratio', portfolio: '0.92', benchmark: '0.61' },
       { metric: 'Sortino Ratio', portfolio: '1.38', benchmark: '0.84' },
-      { metric: 'Turnover', portfolio: '월 1.8회', benchmark: 'N/A' }
+      { metric: 'Turnover', portfolio: `월 ${turnoverLimit}% 한도`, benchmark: 'N/A' }
+    ];
+  }
+
+  function buildRebalanceRows(): RebalanceRow[] {
+    const holdingCount = `${maxPositions}종목`;
+
+    return [
+      {
+        date: '2025-01',
+        holdings: holdingCount,
+        entries: '삼성전자, SK하이닉스, 현대차',
+        exits: '카카오',
+        turnover: '24%'
+      },
+      {
+        date: '2025-02',
+        holdings: holdingCount,
+        entries: 'NAVER, 셀트리온',
+        exits: 'LG화학, POSCO홀딩스',
+        turnover: '31%'
+      },
+      {
+        date: '2025-03',
+        holdings: holdingCount,
+        entries: '기아, KB금융',
+        exits: '삼성SDI',
+        turnover: '18%'
+      },
+      {
+        date: '2025-04',
+        holdings: holdingCount,
+        entries: '한화에어로스페이스',
+        exits: '없음',
+        turnover: '12%'
+      }
     ];
   }
 
@@ -372,6 +404,15 @@
           </select>
         </label>
         <label>
+          <span>리밸런싱 기준일</span>
+          <select bind:value={rebalanceDay} onchange={clearBacktestResult}>
+            <option value="month-end">월말</option>
+            <option value="month-start">월초</option>
+            <option value="weekly-friday">매주 금요일</option>
+            <option value="signal-day">신호 발생일</option>
+          </select>
+        </label>
+        <label>
           <span>벤치마크</span>
           <select bind:value={benchmark} onchange={clearBacktestResult}>
             <option value="KOSPI 200">KOSPI 200</option>
@@ -406,60 +447,114 @@
     </section>
 
     <section class="panel backtest-panel">
-      <div class="panel-heading inline">
-        <div>
-          <span>Asset Allocation</span>
-          <strong>자산과 비중</strong>
-        </div>
-        <button type="button" class="secondary" onclick={addAllocationRow}>자산 추가</button>
+      <div class="panel-heading">
+        <span>Portfolio Construction</span>
+        <strong>동적 종목 선정과 비중 산정 규칙</strong>
       </div>
+      <div class="backtest-form-grid">
+        <label>
+          <span>종목 유니버스</span>
+          <select bind:value={universe} onchange={clearBacktestResult}>
+            <option value="kospi-kosdaq">KOSPI + KOSDAQ</option>
+            <option value="kospi">KOSPI</option>
+            <option value="kosdaq">KOSDAQ</option>
+            <option value="large-liquid">대형/고유동성</option>
+            <option value="screener-result">검색기 결과</option>
+          </select>
+        </label>
+        <label>
+          <span>선정 종목 수</span>
+          <input bind:value={maxPositions} min="1" max="100" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>최소 전략 점수</span>
+          <input bind:value={minScore} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>비중 산정 방식</span>
+          <select bind:value={weightingMethod} onchange={clearBacktestResult}>
+            <option value="equal">동일 비중</option>
+            <option value="score">전략 점수 비례</option>
+            <option value="volatility">변동성 역가중</option>
+            <option value="market-cap">시가총액 비례</option>
+          </select>
+        </label>
+        <label>
+          <span>종목당 최대 비중(%)</span>
+          <input bind:value={maxPositionWeight} min="1" max="100" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>종목당 최소 비중(%)</span>
+          <input bind:value={minPositionWeight} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>편입 버퍼</span>
+          <input bind:value={entryBuffer} min="0" max="50" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>제외 규칙</span>
+          <select bind:value={exitRule} onchange={clearBacktestResult}>
+            <option value="rank-drop">순위 하락 시 제외</option>
+            <option value="score-drop">최소 점수 이탈 시 제외</option>
+            <option value="stop-loss">손절 조건 우선</option>
+            <option value="signal-off">전략 신호 해제 시 제외</option>
+          </select>
+        </label>
+        <label>
+          <span>월 회전율 한도(%)</span>
+          <input bind:value={turnoverLimit} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>현금 처리</span>
+          <select bind:value={cashPolicy} onchange={clearBacktestResult}>
+            <option value="idle-cash">미편입 금액은 현금 보유</option>
+            <option value="benchmark-etf">미편입 금액은 벤치마크 ETF</option>
+            <option value="redistribute">남은 비중 재분배</option>
+          </select>
+        </label>
+        <label>
+          <span>손절 기준(%)</span>
+          <input bind:value={stopLoss} min="0" max="100" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+        <label>
+          <span>익절 기준(%)</span>
+          <input bind:value={takeProfit} min="0" max="200" step="1" type="number" onchange={clearBacktestResult} />
+        </label>
+      </div>
+
       <div class="table-wrap">
-        <table class="allocation-table">
+        <table class="construction-table">
           <thead>
             <tr>
-              <th>종목 코드</th>
-              <th>이름</th>
-              <th>Portfolio 1 비중</th>
-              <th>관리</th>
+              <th>구성 요소</th>
+              <th>현재 설정</th>
             </tr>
           </thead>
           <tbody>
-            {#each allocationRows as row}
-              <tr>
-                <td>
-                  <input bind:value={row.symbol} aria-label={`자산 ${row.id} 종목 코드`} onchange={clearBacktestResult} />
-                </td>
-                <td>
-                  <input bind:value={row.name} aria-label={`자산 ${row.id} 이름`} onchange={clearBacktestResult} />
-                </td>
-                <td>
-                  <input
-                    bind:value={row.allocation}
-                    aria-label={`자산 ${row.id} 비중`}
-                    min="0"
-                    max="100"
-                    step="1"
-                    type="number"
-                    onchange={clearBacktestResult}
-                  />
-                </td>
-                <td>
-                  <button type="button" class="secondary" disabled={allocationRows.length <= 1} onclick={() => removeAllocationRow(row.id)}>
-                    삭제
-                  </button>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-          <tfoot>
             <tr>
-              <th colspan="2">Total allocation for portfolio 1</th>
-              <td class:tone-positive={totalAllocation === 100} class:tone-caution={totalAllocation !== 100}>
-                <strong>{totalAllocation}%</strong>
-              </td>
-              <td>{totalAllocation === 100 ? '정상' : '100%로 맞춰야 합니다.'}</td>
+              <th scope="row">후보군</th>
+              <td>{universe}에서 전략 점수 {minScore}점 이상 후보를 선별</td>
             </tr>
-          </tfoot>
+            <tr>
+              <th scope="row">편입</th>
+              <td>리밸런싱 시점마다 상위 {maxPositions}종목 편입, 편입 버퍼 {entryBuffer}종목 적용</td>
+            </tr>
+            <tr>
+              <th scope="row">비중</th>
+              <td>
+                {weightingMethod === 'equal' ? `동일 비중, 예상 종목당 ${estimatedEqualWeight}%` : weightingMethod}
+                · 종목당 최대 {maxPositionWeight}%
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">교체</th>
+              <td>{rebalanceType} / {rebalanceDay} 기준, 월 회전율 {turnoverLimit}% 한도</td>
+            </tr>
+            <tr>
+              <th scope="row">위험관리</th>
+              <td>손절 {stopLoss}%, 익절 {takeProfit}%, 현금 처리: {cashPolicy}</td>
+            </tr>
+          </tbody>
         </table>
       </div>
       {#if selectedOption}
@@ -485,10 +580,10 @@
           <span>Analyze Portfolios</span>
           <strong>백테스트 실행</strong>
         </div>
-        <button type="button" disabled={totalAllocation !== 100} onclick={runBacktest}>백테스트 실행</button>
+        <button type="button" disabled={!configurationValid} onclick={runBacktest}>백테스트 실행</button>
       </div>
-      {#if totalAllocation !== 100}
-        <div class="empty-state">자산 비중 합계가 100%가 되면 실행할 수 있습니다.</div>
+      {#if !configurationValid}
+        <div class="empty-state">선정 종목 수, 최소 점수, 종목당 비중 조건을 확인해야 실행할 수 있습니다.</div>
       {:else if backtestNotice}
         <div class="empty-state">
           <strong>{backtestRunAt}</strong>
@@ -511,23 +606,27 @@
       <section class="panel backtest-panel">
         <div class="panel-heading">
           <span>Portfolio 1</span>
-          <strong>Configured assets</strong>
+          <strong>Rebalance History</strong>
         </div>
         <div class="table-wrap">
-          <table class="compact-table">
+          <table class="compact-table rebalance-table">
             <thead>
               <tr>
-                <th>Ticker</th>
-                <th>Name</th>
-                <th>Allocation</th>
+                <th>리밸런싱 시점</th>
+                <th>보유 종목 수</th>
+                <th>신규 편입</th>
+                <th>제외</th>
+                <th>회전율</th>
               </tr>
             </thead>
             <tbody>
-              {#each allocationRows as row}
+              {#each rebalanceRows as row}
                 <tr>
-                  <td>{row.symbol || '-'}</td>
-                  <td>{row.name || '-'}</td>
-                  <td>{row.allocation}%</td>
+                  <td>{row.date}</td>
+                  <td>{row.holdings}</td>
+                  <td>{row.entries}</td>
+                  <td>{row.exits}</td>
+                  <td>{row.turnover}</td>
                 </tr>
               {/each}
             </tbody>

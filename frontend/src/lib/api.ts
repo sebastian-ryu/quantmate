@@ -82,6 +82,54 @@ export type BacktestPreview = {
   equity_curve: EquityPoint[];
 };
 
+export type BacktestRunRequest = {
+  strategy_code: string;
+  start_year: number;
+  end_year: number;
+  initial_amount: number;
+};
+
+export type BacktestPerformanceMetric = {
+  metric: string;
+  value: string;
+};
+
+export type BacktestAnnualReturn = {
+  year: string;
+  portfolio_return: number;
+  yield_pct: number;
+  balance: number;
+  income: number;
+};
+
+export type BacktestEquityPoint = {
+  label: string;
+  portfolio: number;
+};
+
+export type BacktestRebalanceRow = {
+  date: string;
+  holdings: string;
+  entries: string;
+  exits: string;
+  turnover: string;
+};
+
+export type BacktestRunResult = {
+  strategy_code: string;
+  strategy_name: string;
+  source: string;
+  period: string;
+  initial_amount: number;
+  final_amount: number;
+  run_at: string;
+  notice: string;
+  metrics: BacktestPerformanceMetric[];
+  annual_returns: BacktestAnnualReturn[];
+  equity_curve: BacktestEquityPoint[];
+  rebalance_history: BacktestRebalanceRow[];
+};
+
 export type Dashboard = {
   as_of: string;
   modes: Array<{ code: string; label: string; enabled: boolean }>;
@@ -127,4 +175,30 @@ export async function fetchStrategyCandidates(
   }
 
   return response.json();
+}
+
+export async function runBacktest(request: BacktestRunRequest): Promise<BacktestRunResult> {
+  const response = await fetch(`${API_BASE_URL}/api/backtests/run`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `백테스트를 실행하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+async function readErrorDetail(response: Response) {
+  try {
+    const data = (await response.json()) as { detail?: string };
+    return data.detail ?? '';
+  } catch {
+    return '';
+  }
 }

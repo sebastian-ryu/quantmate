@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from quantmate_api.backtest_engine import build_sample_backtest
 from quantmate_api.db import SessionLocal
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
@@ -112,6 +113,54 @@ class BacktestPreview(BaseModel):
     assumptions: list[str]
     metrics: list[BacktestMetric]
     equity_curve: list[EquityPoint]
+
+
+class BacktestRunRequest(BaseModel):
+    strategy_code: str
+    start_year: int = Field(ge=1990, le=2100)
+    end_year: int = Field(ge=1990, le=2100)
+    initial_amount: int = Field(gt=0)
+
+
+class BacktestPerformanceMetric(BaseModel):
+    metric: str
+    value: str
+
+
+class BacktestAnnualReturn(BaseModel):
+    year: str
+    portfolio_return: float
+    yield_pct: float
+    balance: int
+    income: int
+
+
+class BacktestEquityPoint(BaseModel):
+    label: str
+    portfolio: int
+
+
+class BacktestRebalanceRow(BaseModel):
+    date: str
+    holdings: str
+    entries: str
+    exits: str
+    turnover: str
+
+
+class BacktestRunResponse(BaseModel):
+    strategy_code: str
+    strategy_name: str
+    source: str
+    period: str
+    initial_amount: int
+    final_amount: int
+    run_at: str
+    notice: str
+    metrics: list[BacktestPerformanceMetric]
+    annual_returns: list[BacktestAnnualReturn]
+    equity_curve: list[BacktestEquityPoint]
+    rebalance_history: list[BacktestRebalanceRow]
 
 
 class DashboardResponse(BaseModel):
@@ -440,6 +489,23 @@ async def list_recommendations() -> list[Recommendation]:
 @app.get("/api/backtests/preview")
 async def backtest_preview() -> BacktestPreview:
     return BACKTEST
+
+
+@app.post("/api/backtests/run")
+async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
+    strategy = next((item for item in STRATEGIES if item.code == request.strategy_code), None)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
+
+    result = build_sample_backtest(
+        strategy_code=strategy.code,
+        strategy_name=strategy.name,
+        start_year=request.start_year,
+        end_year=request.end_year,
+        initial_amount=request.initial_amount,
+    )
+
+    return BacktestRunResponse(**result)
 
 
 @app.get("/api/dashboard")

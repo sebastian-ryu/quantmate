@@ -46,6 +46,44 @@ def test_strategy_candidates_unknown_strategy_returns_404() -> None:
     assert response.status_code == 404
 
 
+def test_backtest_run_returns_monthly_equity_curve() -> None:
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2024,
+            "end_year": 2025,
+            "initial_amount": 10000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["strategy_code"] == "relative-momentum-swing"
+    assert data["period"] == "2024 ~ 2025"
+    assert data["initial_amount"] == 10000000
+    assert data["final_amount"] != data["initial_amount"]
+    assert len(data["annual_returns"]) == 2
+    assert len(data["equity_curve"]) == 24
+    assert data["equity_curve"][0]["label"] == "2024.01"
+    assert data["rebalance_history"]
+    assert "연평균 수익률(CAGR)" in {item["metric"] for item in data["metrics"]}
+
+
+def test_backtest_run_unknown_strategy_returns_404() -> None:
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "unknown",
+            "start_year": 2024,
+            "end_year": 2025,
+            "initial_amount": 10000000,
+        },
+    )
+
+    assert response.status_code == 404
+
+
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:

@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchDashboard, type Dashboard, type Strategy } from '$lib/api';
+  import {
+    fetchDashboard,
+    runBacktest as requestBacktest,
+    type BacktestRunResult,
+    type Dashboard,
+    type Strategy
+  } from '$lib/api';
   import { loadStrategyDrafts, type StrategyDraft } from '$lib/strategy-drafts';
 
   type StrategyOption = {
@@ -25,23 +31,12 @@
     resultCount?: number;
   };
 
-  type AnnualReturnTemplate = {
+  type AnnualReturnRow = {
     year: string;
     portfolioReturn: number;
     yieldPct: number;
-  };
-
-  type RebalanceRow = {
-    date: string;
-    holdings: string;
-    entries: string;
-    exits: string;
-    turnover: string;
-  };
-
-  type PerformanceRow = {
-    metric: string;
-    value: string;
+    balance: number;
+    income: number;
   };
 
   type ChartTick = {
@@ -77,14 +72,9 @@
   let hasBacktestResult = false;
   let backtestRunAt = '';
   let backtestNotice = '';
-
-  const annualReturnTemplate: AnnualReturnTemplate[] = [
-    { year: '2021', portfolioReturn: 11.8, yieldPct: 1.5 },
-    { year: '2022', portfolioReturn: -8.6, yieldPct: 1.8 },
-    { year: '2023', portfolioReturn: 18.4, yieldPct: 1.9 },
-    { year: '2024', portfolioReturn: 13.2, yieldPct: 2.1 },
-    { year: '2025', portfolioReturn: 9.6, yieldPct: 2.3 }
-  ];
+  let backtestResult: BacktestRunResult | null = null;
+  let backtestRunning = false;
+  let backtestError = '';
 
   const chartWidth = 760;
   const chartHeight = 360;
@@ -130,13 +120,14 @@
   $: customStrategyOptions = strategyOptions.filter((item) => item.sourceKind === 'custom');
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
-  $: annualRows = buildAnnualRows(initialAmount, startYear, endYear);
-  $: growthRows = buildGrowthRows(initialAmount, startYear, endYear);
-  $: rebalanceRows = buildRebalanceRows();
-  $: performanceRows = buildPerformanceRows(initialAmount);
-  $: growthValues = growthRows.map((row) => row.portfolio);
-  $: growthMin = Math.min(...growthValues, initialAmount);
-  $: growthMax = Math.max(...growthValues, initialAmount);
+  $: annualRows = buildAnnualRows(backtestResult);
+  $: growthRows = buildGrowthRows(backtestResult);
+  $: rebalanceRows = backtestResult?.rebalance_history ?? [];
+  $: performanceRows = backtestResult?.metrics ?? [];
+  $: initialAmountValue = Number(initialAmount) || 0;
+  $: growthValues = growthRows.length ? growthRows.map((row) => row.portfolio) : [initialAmountValue];
+  $: growthMin = Math.min(...growthValues, initialAmountValue);
+  $: growthMax = Math.max(...growthValues, initialAmountValue);
   $: growthScale = buildValueScale(growthMin, growthMax);
   $: growthChartPoints = buildChartPoints(growthRows, growthScale.min, growthScale.max);
   $: portfolioLine = growthChartPoints.map((point) => `${point.x},${point.y}`).join(' ');
@@ -197,117 +188,67 @@
     return item.sourceKind === 'system' ? '시스템 제공' : '사용자 등록';
   }
 
-  function runBacktest() {
-    hasBacktestResult = true;
-    backtestRunAt = new Date().toLocaleString('ko-KR');
-    backtestNotice = '선택한 전략과 백테스트 조건으로 샘플 결과를 생성했습니다. 실제 실행은 일봉 데이터와 백테스트 엔진 연결 후 서버에서 계산합니다.';
+  function firstRules(rules: string[] | undefined) {
+    return (rules ?? []).filter(Boolean).slice(0, 4);
+  }
+
+  async function runBacktest() {
+    if (!selectedOption) {
+      backtestError = '백테스트할 전략을 먼저 선택하세요.';
+      return;
+    }
+
+    clearBacktestResult();
+
+    if (selectedOption.sourceKind === 'custom') {
+      backtestError =
+        '사용자 등록 전략은 현재 브라우저에만 저장되어 있습니다. DB 저장과 실제 데이터 연결 후 서버 백테스트에 연결합니다.';
+      return;
+    }
+
+    backtestRunning = true;
+
+    try {
+      const result = await requestBacktest({
+        strategy_code: selectedOption.code,
+        start_year: Number(startYear),
+        end_year: Number(endYear),
+        initial_amount: Number(initialAmount)
+      });
+
+      backtestResult = result;
+      hasBacktestResult = true;
+      backtestRunAt = new Date(result.run_at).toLocaleString('ko-KR');
+      backtestNotice = result.notice;
+    } catch (err) {
+      backtestError = err instanceof Error ? err.message : '백테스트를 실행하지 못했습니다.';
+    } finally {
+      backtestRunning = false;
+    }
   }
 
   function clearBacktestResult() {
     hasBacktestResult = false;
+    backtestResult = null;
     backtestRunAt = '';
     backtestNotice = '';
+    backtestError = '';
   }
 
-  function buildAnnualRows(amount: number, start: string, end: string) {
-    let balance = amount;
-
-    return getYearRange(start, end).map((year) => {
-      const portfolioReturn = getAnnualReturnForYear(year);
-      const yieldPct = getYieldForYear(year);
-      balance *= 1 + portfolioReturn / 100;
-
-      return {
-        year: String(year),
-        portfolioReturn,
-        yieldPct,
-        balance: Math.round(balance),
-        income: Math.round(balance * (yieldPct / 100))
-      };
-    });
+  function buildAnnualRows(result: BacktestRunResult | null): AnnualReturnRow[] {
+    return (
+      result?.annual_returns.map((row) => ({
+        year: row.year,
+        portfolioReturn: row.portfolio_return,
+        yieldPct: row.yield_pct,
+        balance: row.balance,
+        income: row.income
+      })) ?? []
+    );
   }
 
-  function buildGrowthRows(amount: number, start: string, end: string): GrowthRow[] {
-    const startValue = Number(start);
-    const endValue = Number(end);
-    const from = Number.isFinite(startValue) ? startValue : new Date().getFullYear();
-    const to = Number.isFinite(endValue) ? endValue : from;
-    const firstYear = Math.min(from, to);
-    const lastYear = Math.max(from, to);
-    const monthCount = Math.max((lastYear - firstYear + 1) * 12, 1);
-    let balance = amount;
-
-    return Array.from({ length: monthCount }, (_, index) => {
-      if (index > 0) {
-        const previousYear = firstYear + Math.floor((index - 1) / 12);
-        const annualReturn = getAnnualReturnForYear(previousYear);
-        const monthDivisor = previousYear === lastYear ? 11 : 12;
-        const monthlyReturn = Math.pow(1 + annualReturn / 100, 1 / monthDivisor) - 1;
-        balance *= 1 + monthlyReturn;
-      }
-
-      const year = firstYear + Math.floor(index / 12);
-      const month = index % 12;
-
-      return {
-        label: `${year}.${String(month + 1).padStart(2, '0')}`,
-        portfolio: Math.round(balance)
-      };
-    });
-  }
-
-  function buildPerformanceRows(amount: number): PerformanceRow[] {
-    const finalPortfolio = annualRows.at(-1)?.balance ?? amount;
-    const yearCount = Math.max(annualRows.length, 1);
-    const cagr = amount > 0 ? (finalPortfolio / amount) ** (1 / yearCount) - 1 : 0;
-    const bestReturn = annualRows.reduce((best, row) => (row.portfolioReturn > best.portfolioReturn ? row : best), annualRows[0]);
-    const worstReturn = annualRows.reduce((worst, row) => (row.portfolioReturn < worst.portfolioReturn ? row : worst), annualRows[0]);
-
-    return [
-      { metric: '시작금액', value: formatKrw(amount) },
-      { metric: '종료금액', value: formatKrw(finalPortfolio) },
-      { metric: '연평균 수익률(CAGR)', value: formatPercent(cagr * 100) },
-      { metric: '변동성', value: '13.7%' },
-      { metric: '최고 연도', value: `${bestReturn.year} · ${formatPercent(bestReturn.portfolioReturn)}` },
-      { metric: '최저 연도', value: `${worstReturn.year} · ${formatPercent(worstReturn.portfolioReturn)}` },
-      { metric: '최대 낙폭(MDD)', value: '-12.7%' },
-      { metric: '샤프 비율', value: '0.92' },
-      { metric: '소르티노 비율', value: '1.38' },
-      { metric: '월평균 회전율', value: '1.8회' }
-    ];
-  }
-
-  function buildRebalanceRows(): RebalanceRow[] {
-    return [
-      {
-        date: '2025-01',
-        holdings: '10종목',
-        entries: '삼성전자, SK하이닉스, 현대차',
-        exits: '카카오',
-        turnover: '24%'
-      },
-      {
-        date: '2025-02',
-        holdings: '10종목',
-        entries: 'NAVER, 셀트리온',
-        exits: 'LG화학, POSCO홀딩스',
-        turnover: '31%'
-      },
-      {
-        date: '2025-03',
-        holdings: '10종목',
-        entries: '기아, KB금융',
-        exits: '삼성SDI',
-        turnover: '18%'
-      },
-      {
-        date: '2025-04',
-        holdings: '10종목',
-        entries: '한화에어로스페이스',
-        exits: '없음',
-        turnover: '12%'
-      }
-    ];
+  function buildGrowthRows(result: BacktestRunResult | null): GrowthRow[] {
+    return result?.equity_curve ?? [];
   }
 
   function buildChartPoints(rows: GrowthRow[], min: number, max: number): ChartPoint[] {
@@ -373,33 +314,6 @@
       label: row.label,
       x: rows.length === 1 ? chartLeft + chartPlotWidth / 2 : chartLeft + (index / lastIndex) * chartPlotWidth
     }));
-  }
-
-  function getAnnualReturnForYear(year: number) {
-    const matched = annualReturnTemplate.find((row) => Number(row.year) === year);
-    if (matched) return matched.portfolioReturn;
-
-    const fallbackIndex = Math.abs(year) % annualReturnTemplate.length;
-    return annualReturnTemplate[fallbackIndex].portfolioReturn;
-  }
-
-  function getYieldForYear(year: number) {
-    const matched = annualReturnTemplate.find((row) => Number(row.year) === year);
-    if (matched) return matched.yieldPct;
-
-    const fallbackIndex = Math.abs(year) % annualReturnTemplate.length;
-    return annualReturnTemplate[fallbackIndex].yieldPct;
-  }
-
-  function getYearRange(start: string, end: string) {
-    const startValue = Number(start);
-    const endValue = Number(end);
-    const from = Number.isFinite(startValue) ? startValue : new Date().getFullYear();
-    const to = Number.isFinite(endValue) ? endValue : from;
-    const firstYear = Math.min(from, to);
-    const lastYear = Math.max(from, to);
-
-    return Array.from({ length: lastYear - firstYear + 1 }, (_, index) => firstYear + index);
   }
 
   function getMonthTickInterval(rowCount: number) {
@@ -520,7 +434,7 @@
             <div>
               <strong>후보 조건</strong>
               <ul class="compact-list">
-                {#each selectedOption.signalRules.slice(0, 4) as rule}
+                {#each firstRules(selectedOption.signalRules) as rule}
                   <li>{rule}</li>
                 {/each}
               </ul>
@@ -528,7 +442,7 @@
             <div>
               <strong>우선순위</strong>
               <ul class="compact-list">
-                {#each selectedOption.rankingRules.slice(0, 4) as rule}
+                {#each firstRules(selectedOption.rankingRules) as rule}
                   <li>{rule}</li>
                 {/each}
               </ul>
@@ -536,7 +450,7 @@
             <div>
               <strong>위험 제어</strong>
               <ul class="compact-list">
-                {#each selectedOption.riskControls.slice(0, 4) as rule}
+                {#each firstRules(selectedOption.riskControls) as rule}
                   <li>{rule}</li>
                 {/each}
               </ul>
@@ -544,7 +458,7 @@
           </div>
           <div class="tag-row">
             <span>{selectedOption.source}</span>
-            {#each selectedOption.dataRequirements as requirement}
+            {#each selectedOption.dataRequirements ?? [] as requirement}
               <span>{requirement}</span>
             {/each}
           </div>
@@ -561,7 +475,9 @@
           <span>백테스트 조건</span>
           <strong>기간과 초기 투자금</strong>
         </div>
-        <button type="button" onclick={runBacktest}>백테스트 실행</button>
+        <button type="button" onclick={runBacktest} disabled={backtestRunning}>
+          {backtestRunning ? '실행 중' : '백테스트 실행'}
+        </button>
       </div>
       <div class="backtest-form-grid compact-backtest-grid">
         <label>
@@ -587,7 +503,12 @@
           <input bind:value={initialAmount} min="0" step="100000" type="number" onchange={clearBacktestResult} />
         </label>
       </div>
-      {#if backtestNotice}
+      {#if backtestError}
+        <div class="empty-state error">
+          <strong>백테스트 실행 불가</strong>
+          <span>{backtestError}</span>
+        </div>
+      {:else if backtestNotice}
         <div class="empty-state">
           <strong>{backtestRunAt}</strong>
           <span>{backtestNotice}</span>
@@ -632,7 +553,7 @@
       <section class="panel backtest-panel">
         <div class="panel-heading">
           <span>성과 요약</span>
-          <strong>{startYear} ~ {endYear}</strong>
+          <strong>{backtestResult?.period ?? `${startYear} ~ ${endYear}`}</strong>
         </div>
         <div class="table-wrap">
           <table class="compact-table">
@@ -658,9 +579,9 @@
       <section class="panel backtest-panel">
         <div class="panel-heading">
           <span>자산 성장</span>
-          <strong>{formatKrw(initialAmount)} 투자 기준</strong>
+          <strong>{formatKrw(backtestResult?.initial_amount ?? initialAmountValue)} 투자 기준</strong>
         </div>
-        <p>초기 투자금 {formatKrw(initialAmount)} 기준으로 월별 평가금 흐름을 표시합니다.</p>
+        <p>초기 투자금 {formatKrw(backtestResult?.initial_amount ?? initialAmountValue)} 기준으로 월별 평가금 흐름을 표시합니다.</p>
         <div class="growth-chart" aria-label="자산 성장">
           <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img">
             <title>자산 성장</title>

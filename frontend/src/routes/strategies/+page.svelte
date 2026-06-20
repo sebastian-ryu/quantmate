@@ -255,7 +255,6 @@
     <p class="eyebrow">전략/백테스트</p>
     <h1>전략을 선택하고 최소 조건으로 백테스트합니다.</h1>
   </div>
-  <a class="button secondary" href="/screener">검색기에서 전략 등록</a>
 </header>
 
 {#if loading}

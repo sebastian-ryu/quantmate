@@ -958,10 +958,8 @@ td b {
 }
 
 .growth-chart svg {
-  background:
-    linear-gradient(#e6edf0 1px, transparent 1px),
-    linear-gradient(90deg, #e6edf0 1px, transparent 1px);
-  background-size: 100% 55px, 85px 100%;
+  background: #ffffff;
+  border-radius: 4px;
   height: 260px;
   overflow: visible;
   width: 100%;
@@ -972,6 +970,30 @@ td b {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 4;
+}
+
+.chart-grid-line {
+  stroke: #e1e8ea;
+  stroke-width: 1;
+}
+
+.chart-grid-line.vertical {
+  stroke-dasharray: 3 4;
+}
+
+.chart-axis-line {
+  stroke: #8ca0a8;
+  stroke-width: 1.2;
+}
+
+.chart-axis-label {
+  fill: #4f6067;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.y-axis-label {
+  font-size: 10px;
 }
 
 .portfolio-line {

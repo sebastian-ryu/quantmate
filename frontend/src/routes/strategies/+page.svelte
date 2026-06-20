@@ -33,6 +33,12 @@
     value: string;
   };
 
+  type ChartTick = {
+    label: string;
+    x?: number;
+    y?: number;
+  };
+
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'momentum-core';
   let registeredStrategies: StrategyDraft[] = [];
@@ -53,6 +59,15 @@
     { year: '2024', portfolioReturn: 13.2, yieldPct: 2.1 },
     { year: '2025', portfolioReturn: 9.6, yieldPct: 2.3 }
   ];
+
+  const chartWidth = 680;
+  const chartHeight = 260;
+  const chartLeft = 92;
+  const chartRight = 22;
+  const chartTop = 18;
+  const chartBottom = 224;
+  const chartPlotWidth = chartWidth - chartLeft - chartRight;
+  const chartPlotHeight = chartBottom - chartTop;
 
   const metricDescriptions: Record<string, string> = {
     시작금액: '백테스트 시작 시점의 투자금입니다.',
@@ -100,6 +115,8 @@
   $: growthMin = Math.min(...growthValues, initialAmount);
   $: growthMax = Math.max(...growthValues, initialAmount);
   $: portfolioLine = buildLinePoints(growthValues, growthMin, growthMax);
+  $: growthYAxisTicks = buildYAxisTicks(growthMin, growthMax);
+  $: growthXAxisTicks = buildXAxisTicks(startYear, endYear);
   $: incomeMax = Math.max(...incomeRows.map((row) => row.income), 1);
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
@@ -223,18 +240,50 @@
   }
 
   function buildLinePoints(values: number[], min: number, max: number) {
-    const width = 680;
-    const height = 220;
     const range = Math.max(max - min, 1);
-    const step = values.length > 1 ? width / (values.length - 1) : width;
+    const step = values.length > 1 ? chartPlotWidth / (values.length - 1) : chartPlotWidth;
 
     return values
       .map((value, index) => {
-        const x = Math.round(index * step);
-        const y = Math.round(height - ((value - min) / range) * height);
+        const x = Math.round(chartLeft + index * step);
+        const y = Math.round(chartBottom - ((value - min) / range) * chartPlotHeight);
         return `${x},${y}`;
       })
       .join(' ');
+  }
+
+  function buildYAxisTicks(min: number, max: number): ChartTick[] {
+    const range = Math.max(max - min, 1);
+    const tickCount = 5;
+
+    return Array.from({ length: tickCount }, (_, index) => {
+      const value = max - (range / (tickCount - 1)) * index;
+      const y = chartBottom - ((value - min) / range) * chartPlotHeight;
+
+      return {
+        label: formatCompactKrw(Math.round(value)),
+        y: Math.round(y)
+      };
+    });
+  }
+
+  function buildXAxisTicks(start: string, end: string): ChartTick[] {
+    const startValue = Number(start);
+    const endValue = Number(end);
+    const from = Number.isFinite(startValue) ? startValue : new Date().getFullYear();
+    const to = Number.isFinite(endValue) ? endValue : from;
+    const firstYear = Math.min(from, to);
+    const lastYear = Math.max(from, to);
+    const span = Math.max(lastYear - firstYear, 0);
+    const years =
+      span <= 6
+        ? Array.from({ length: span + 1 }, (_, index) => firstYear + index)
+        : [firstYear, Math.round((firstYear + lastYear) / 2), lastYear];
+
+    return years.map((year) => ({
+      label: String(year),
+      x: span === 0 ? chartLeft + chartPlotWidth / 2 : chartLeft + ((year - firstYear) / span) * chartPlotWidth
+    }));
   }
 
   function formatKrw(value: number) {
@@ -242,6 +291,26 @@
       style: 'currency',
       currency: 'KRW',
       maximumFractionDigits: 0
+    }).format(value);
+  }
+
+  function formatCompactKrw(value: number) {
+    const absValue = Math.abs(value);
+
+    if (absValue >= 100000000) {
+      return `${formatCompactNumber(value / 100000000)}억원`;
+    }
+
+    if (absValue >= 10000) {
+      return `${formatCompactNumber(value / 10000)}만원`;
+    }
+
+    return `${formatCompactNumber(value)}원`;
+  }
+
+  function formatCompactNumber(value: number) {
+    return new Intl.NumberFormat('ko-KR', {
+      maximumFractionDigits: value >= 10 ? 0 : 1
     }).format(value);
   }
 </script>
@@ -402,18 +471,27 @@
         </div>
         <p>초기 투자금 {formatKrw(initialAmount)} 기준으로 선택한 전략의 자산 성장을 표시합니다.</p>
         <div class="growth-chart" aria-label="자산 성장">
-          <svg viewBox="0 0 680 260" role="img">
+          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img">
             <title>자산 성장</title>
+            {#each growthYAxisTicks as tick}
+              <line class="chart-grid-line" x1={chartLeft} x2={chartWidth - chartRight} y1={tick.y} y2={tick.y}></line>
+              <text class="chart-axis-label y-axis-label" x={chartLeft - 10} y={(tick.y ?? 0) + 4} text-anchor="end">
+                {tick.label}
+              </text>
+            {/each}
+            {#each growthXAxisTicks as tick}
+              <line class="chart-grid-line vertical" x1={tick.x} x2={tick.x} y1={chartTop} y2={chartBottom}></line>
+              <text class="chart-axis-label" x={tick.x} y={chartBottom + 24} text-anchor="middle">
+                {tick.label}
+              </text>
+            {/each}
+            <line class="chart-axis-line" x1={chartLeft} x2={chartWidth - chartRight} y1={chartBottom} y2={chartBottom}></line>
+            <line class="chart-axis-line" x1={chartLeft} x2={chartLeft} y1={chartTop} y2={chartBottom}></line>
             <polyline class="portfolio-line" points={portfolioLine}></polyline>
           </svg>
           <div class="chart-legend">
             <span><b class="legend-dot portfolio"></b>선택 전략</span>
           </div>
-        </div>
-        <div class="growth-axis">
-          {#each growthRows as row}
-            <span>{row.label}</span>
-          {/each}
         </div>
       </section>
 

@@ -2,9 +2,9 @@
 
 ## Goal
 
-Build a local web application for stock investment research, stock screening, strategy backtesting, and optional automated trading.
+Build a local web application for stock investment research, stock screening, strategy backtesting, optional paper trading, and later optional automated trading.
 
-The first useful product should help select stocks using explainable algorithms. Automated trading is an optional later feature and must be guarded by strong safety controls.
+The first useful product should help select stocks using explainable algorithms, validate them with backtests, and optionally simulate trades through paper trading. Live automated trading is a later feature and must be guarded by strong safety controls.
 
 ## Product Priorities
 
@@ -14,9 +14,10 @@ The first useful product should help select stocks using explainable algorithms.
 4. Explain each algorithm enough for the user to understand what it looks for and when it can fail.
 5. Allow user-defined strategies.
 6. Backtest strategies before using them in live or paper trading.
-7. Integrate Korea Investment & Securities Open API for real-time data and, later, trading.
-8. Support Korean equities first.
-9. Keep US stock support possible, but do not build it first.
+7. Provide optional paper trading that the user can turn on or off.
+8. Integrate Korea Investment & Securities Open API for real-time data and, later, trading.
+9. Support Korean equities first.
+10. Keep US stock support possible, but do not build it first.
 
 ## Non-Goals For The First Version
 
@@ -24,6 +25,7 @@ The first useful product should help select stocks using explainable algorithms.
 - Cloud deployment.
 - Multi-user account management.
 - Fully automated live trading from day one.
+- Full web-based custom strategy builder in the first version.
 - Advanced portfolio optimization before basic screening and backtesting work.
 - Paid data vendor integration unless a free/public route is insufficient.
 
@@ -52,10 +54,9 @@ The system should initially support these modes:
 Use a modular monolith first:
 
 - Web client: SvelteKit.
-- Backend API and orchestration: Java with Spring Boot.
-- Quant/data/strategy runtime: Python module or worker.
+- Backend API and orchestration: Python with FastAPI.
+- Quant/data/strategy runtime: Python modules in the same codebase at first.
 - Database: local MySQL for app data and normalized market data.
 - Broker integration: Korea Investment & Securities Open API.
 
-This keeps the main server in Java, where the user is strongest, while using Python where the quant ecosystem is strongest.
-
+This keeps backend, data ingestion, strategy logic, and backtesting in one language for the MVP. Java/Spring Boot can be reconsidered later only if the project needs stronger enterprise-style server structure.

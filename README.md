@@ -16,6 +16,7 @@ Start with these documents:
 - [Open Questions](docs/03-open-questions.md)
 - [Working Rules](docs/04-working-rules.md)
 - [References](docs/05-references.md)
+- [Local Setup](docs/06-local-setup.md)
 
 ## Safety Position
 
@@ -29,4 +30,3 @@ Live trading must remain disabled until these are implemented and reviewed:
 - kill switch
 - audit log for all generated signals and orders
 - explicit user confirmation before enabling live orders
-

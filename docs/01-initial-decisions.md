@@ -8,19 +8,22 @@ Each item starts as `Proposed` until reviewed.
 
 Status: Proposed
 
-Use Java + Spring Boot for the main backend.
+Use Python + FastAPI for the main backend.
 
 Reasons:
 
-- The user is already comfortable with Java.
-- Spring Boot is well suited for a local API server, scheduled jobs, database access, and external REST/WebSocket integrations.
+- The project already needs Python for data collection, strategy logic, and backtesting.
+- A Python backend avoids early Java/Python integration complexity.
+- FastAPI is well suited for a local API server, async broker calls, scheduled jobs, and a typed API contract.
 - Broker API secrets and trading safety controls should live server-side, not in the browser.
+
+Java + Spring Boot remains a fallback option if the server grows into a larger enterprise-style application.
 
 ### Quant Runtime
 
 Status: Proposed
 
-Use Python for data analysis, strategy calculation, and backtesting modules.
+Use Python for data analysis, strategy calculation, and backtesting modules in the same backend codebase at first.
 
 Reasons:
 
@@ -28,10 +31,7 @@ Reasons:
 - User-defined strategies are easier to prototype in Python.
 - This keeps strategy logic easier to test separately from the web app.
 
-Initial integration options:
-
-1. Start simple: backend invokes Python jobs through a controlled command interface.
-2. Later: move Python into a small internal worker service if needed.
+Later, heavy jobs can move into a separate worker if backtests or data imports become too slow for the API process.
 
 ### Web Client
 
@@ -41,21 +41,23 @@ Use SvelteKit with TypeScript.
 
 Reasons:
 
-- The user has some prior exposure to Svelte.
-- SvelteKit is productive for local dashboards and forms.
+- SvelteKit is productive for local dashboards, strategy forms, and result views.
+- The user does not need to know Svelte deeply if implementation is handled in small reviewed steps.
 - The UI can remain thin: display data, configure strategies, run jobs, and show results.
 
 ### Database
 
-Status: Proposed
+Status: Decided
 
-Use MySQL 8.4 LTS locally, preferably through Docker Compose.
+Use MySQL 8.4 LTS locally through Docker Compose.
 
 Reasons:
 
 - MySQL matches the user's current preference.
 - MySQL 8.4 is an LTS line, better suited than innovation releases for a long-running local project.
 - Docker Compose makes setup repeatable and avoids machine-specific install drift.
+
+Native local install is no longer the default path.
 
 Possible future additions:
 
@@ -74,7 +76,7 @@ Initial usage order:
 2. Market data read APIs.
 3. WebSocket real-time quote ingestion.
 4. Account read-only APIs.
-5. Paper-trading executor.
+5. Optional paper-trading executor.
 6. Live order APIs.
 
 ### Historical Data Sources
@@ -103,6 +105,7 @@ Built-in algorithms should start with explainable strategies:
 - Low volatility: lower drawdown or volatility among liquid stocks.
 - Liquidity and volume: volume surge, turnover, trading value filters.
 - Supply/demand: foreign/institution net buying, program trading, investor flow data if available.
+- Intraday/trader style: minute-bar momentum, volume spike, volatility breakout, and VWAP-style filters when intraday data is ready.
 - Risk filters: trading halt, management issue, low liquidity, extreme gap, abnormal volatility.
 
 No strategy should be treated as universally good. Each strategy needs:
@@ -116,13 +119,12 @@ No strategy should be treated as universally good. Each strategy needs:
 
 ## Repository And Secrets
 
-Status: Proposed
+Status: Partially decided
 
-The GitHub repository should be private at first.
-
-Secrets must never be committed. Use local `.env` files and provide only `.env.example`.
-
-The provided URL should be corrected to:
+GitHub repository:
 
 https://github.com/sebastian-ryu/quantmate
 
+Secrets must never be committed. Use local `.env` files and provide only `.env.example`.
+
+Repository visibility is not recorded yet.

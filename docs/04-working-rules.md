@@ -49,3 +49,8 @@ These rules are part of the project process and should be updated when the proce
 - Review broker integration plan before creating real API credentials.
 - Review live trading safety controls before implementing order placement.
 
+## Communication Rules
+
+- Keep user-facing summaries concise.
+- Ask one main question at a time when possible.
+- If several questions remain, say that several remain and ask the next highest-priority question first.

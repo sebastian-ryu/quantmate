@@ -7,28 +7,27 @@ This file is the source-controlled project task list. Update it whenever scope, 
 - [x] Capture initial project idea in repository documents.
 - [x] Record initial architecture recommendation.
 - [x] Record initial safety rules.
-- [ ] Review open questions with the user.
-- [ ] Confirm first MVP scope.
-- [ ] Decide GitHub repository visibility.
-- [ ] Decide Docker-based local setup vs native installs.
+- [x] Review first batch of open questions with the user.
+- [x] Confirm first MVP scope.
+- [ ] Record GitHub repository visibility.
+- [x] Decide Docker-based local setup vs native installs.
 
 ## Phase 1: Repository Bootstrap
 
-- [ ] Initialize Git repository locally.
-- [ ] Add `.gitignore`.
-- [ ] Add `.env.example`.
-- [ ] Add root project structure.
-- [ ] Add basic developer setup guide.
+- [x] Initialize Git repository locally.
+- [x] Add `.gitignore`.
+- [x] Add `.env.example`.
+- [x] Add Docker Compose for local MySQL.
+- [x] Add basic developer setup guide.
+- [ ] Add root application project structure.
 - [ ] Add initial architecture decision record.
 - [ ] Add license decision if repository will be public.
 
 ## Phase 2: Local Development Environment
 
-- [ ] Choose exact Java version.
-- [ ] Choose exact Spring Boot version.
 - [ ] Choose exact Python version.
+- [ ] Choose exact FastAPI version.
 - [ ] Choose Node.js version for SvelteKit.
-- [ ] Add Docker Compose for MySQL.
 - [ ] Add local database migration tool.
 - [ ] Add formatting and linting rules.
 
@@ -54,6 +53,8 @@ This file is the source-controlled project task list. Update it whenever scope, 
 
 - [ ] Define strategy interface.
 - [ ] Implement built-in momentum screener.
+- [ ] Implement built-in swing trading screener.
+- [ ] Implement built-in long-term factor screener.
 - [ ] Implement liquidity filter.
 - [ ] Implement risk exclusion filter.
 - [ ] Store screening runs and results.
@@ -89,6 +90,7 @@ This file is the source-controlled project task list. Update it whenever scope, 
 
 ## Phase 9: Paper Trading
 
+- [ ] Add UI setting to enable or disable paper trading.
 - [ ] Implement simulated account.
 - [ ] Implement simulated order placement.
 - [ ] Implement fill model.
@@ -112,4 +114,3 @@ This file is the source-controlled project task list. Update it whenever scope, 
 - [ ] Add currency handling.
 - [ ] Add US market calendar.
 - [ ] Add US broker/trading plan only if needed.
-

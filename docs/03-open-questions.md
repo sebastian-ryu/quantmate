@@ -1,42 +1,47 @@
 # Open Questions
 
-Answering these will determine the first MVP.
+Answering these will determine the first MVP. Resolved answers are kept here so design decisions remain traceable.
+
+## Resolved Answers
+
+- First MVP includes stock recommendations, backtesting, and optional paper trading.
+- Paper trading means simulated trading and must be user-selectable, not mandatory.
+- The product should eventually support intraday, swing, medium-term, and long-term quant styles.
+- The first implementation should ship several built-in strategies before adding a custom web strategy builder.
+- A web UI condition builder is desirable later, even if it starts with limited freedom.
+- The repository exists at https://github.com/sebastian-ryu/quantmate.
+- User-facing summaries should be concise.
+- Ask one question at a time when possible.
+- Python backend is preferred for reconsideration because the project already uses Python for strategy/data/backtesting.
+- MySQL will run through Docker Compose.
 
 ## Trading Scope
 
-1. Should the first usable version stop at stock recommendations and backtesting, or should it include paper trading?
+1. Resolved: first usable version includes recommendations, backtesting, and optional paper trading.
 2. Is live trading a long-term goal only, or should the architecture prepare for it from day one?
 3. Should live trading support only cash stock orders, or also ETFs, margin, credit, or derivatives?
 
 ## Investment Style
 
-4. What holding period matters most at first?
-   - intraday
-   - 1-10 day swing
-   - several weeks/months
-   - long-term factor investing
+4. Resolved: support multiple styles over time: intraday, 1-10 day swing, several weeks/months, and long-term factor investing.
 5. Should the first algorithms favor quant/factor screening, trader-style supply/demand analysis, or a mix?
 6. Is the user more interested in finding candidates before market open, during market hours, or after market close?
 
 ## Data
 
-7. Is daily OHLCV enough for the first version?
+7. Partially resolved: choose initial data based on strategy needs. Practical order is daily OHLCV first, then fundamentals/supply-demand data, then minute/intraday data.
 8. Are minute bars required early?
 9. Should tick/order-book data be stored, or only used temporarily for signals?
 10. Which fundamentals matter first: PER/PBR/ROE, financial statements, dividends, earnings growth, analyst estimates, or disclosures?
 
 ## Strategy Authoring
 
-11. How should custom strategies be written first?
-    - Python code files
-    - form-based condition builder
-    - block/visual builder
-    - simple rule DSL
-12. Should strategies be editable from the web UI in the first version, or can they be source files initially?
+11. Resolved for MVP: provide several built-in strategies first.
+12. Resolved for later: add a limited web UI condition builder after built-in strategies and backtesting are stable.
 
 ## Local Environment
 
-13. Is Docker acceptable for MySQL and local services?
+13. Resolved: use Docker Compose for MySQL and local services.
 14. Should the app run through one command later, such as `./dev` or `make dev`?
 15. Which OS will be the main development and runtime machine?
 
@@ -48,7 +53,7 @@ Answering these will determine the first MVP.
 
 ## GitHub
 
-19. Should the GitHub repository be private at first?
+19. Repository exists. Visibility still needs to be recorded.
 20. Should authentication use GitHub CLI, HTTPS token, or SSH?
 
 ## UI Direction
@@ -60,4 +65,3 @@ Answering these will determine the first MVP.
     - strategy builder
     - backtest results
     - portfolio/account status
-

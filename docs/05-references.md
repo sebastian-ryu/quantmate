@@ -22,6 +22,8 @@ These references were checked during the initial planning pass on 2026-06-20.
 - Node.js release schedule: https://nodejs.org/en/about/previous-releases
 - Python version status: https://devguide.python.org/versions/
 - Oracle Java SE support roadmap: https://www.oracle.com/java/technologies/java-se-support-roadmap.html
+- Docker Desktop Mac install guide: https://docs.docker.com/desktop/setup/install/mac-install/
+- MySQL Docker Official Image: https://hub.docker.com/_/mysql
 
 ## UI Reference Candidates
 
@@ -33,4 +35,3 @@ These are candidates for later UI review, not decisions.
 - QuantConnect: https://www.quantconnect.com/
 - Portfolio Visualizer: https://www.portfoliovisualizer.com/
 - Naver Finance: https://finance.naver.com/
-

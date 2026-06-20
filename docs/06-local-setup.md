@@ -63,3 +63,41 @@ docker compose down -v
 ```
 
 `down -v`는 로컬 DB 데이터를 의도적으로 지울 때만 사용한다.
+
+## 백엔드
+
+의존성 설치:
+
+```bash
+make install-backend
+```
+
+개발 서버 실행:
+
+```bash
+make backend-dev
+```
+
+백엔드는 기본적으로 http://127.0.0.1:8000 에서 실행된다.
+
+상태 확인:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+## 프론트엔드
+
+의존성 설치:
+
+```bash
+make install-frontend
+```
+
+개발 서버 실행:
+
+```bash
+make frontend-dev
+```
+
+웹 UI는 기본적으로 http://127.0.0.1:5173 에서 실행된다.

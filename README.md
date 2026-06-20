@@ -21,6 +21,27 @@ QuantMate는 주식 종목 선정, 전략 연구, 백테스트, 선택형 모의
 
 에이전트 작업 지침은 [AGENTS.md](AGENTS.md)를 기준으로 합니다.
 
+## 로컬 실행
+
+백엔드:
+
+```bash
+make install-backend
+make backend-dev
+```
+
+프론트엔드:
+
+```bash
+make install-frontend
+make frontend-dev
+```
+
+기본 주소:
+
+- API: http://127.0.0.1:8000
+- Web: http://127.0.0.1:5173
+
 ## 안전 기준
 
 이 프로젝트는 투자 연구와 자동화를 위한 소프트웨어입니다. 투자 조언이 아닙니다.

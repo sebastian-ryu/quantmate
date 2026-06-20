@@ -111,6 +111,11 @@ h1 {
   gap: 8px;
 }
 
+.compact-tags {
+  gap: 5px;
+  margin-top: 6px;
+}
+
 .mode-strip span,
 .tag-row span,
 .status-pill {

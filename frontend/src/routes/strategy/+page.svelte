@@ -1,6 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { fetchDashboard, type Dashboard, type Strategy } from '$lib/api';
+  import { onMount, tick } from 'svelte';
+  import {
+    fetchDashboard,
+    fetchStrategyCandidates,
+    type Dashboard,
+    type Strategy,
+    type StrategyCandidateResult
+  } from '$lib/api';
   import { loadStrategyDrafts, type StrategyDraft } from '$lib/strategy-drafts';
 
   type StrategyOption = {
@@ -44,15 +50,23 @@
     shortSaleRatio: number;
     momentum: number;
     strategyScore: number;
+    rationale: string[];
+    riskFlags: string[];
   };
+
+  type CandidateUniverseRow = Omit<StrategyCandidate, 'strategyScore' | 'rationale' | 'riskFlags'>;
 
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'relative-momentum-swing';
   let registeredStrategies: StrategyDraft[] = [];
+  let candidateRows: StrategyCandidate[] = [];
+  let candidatesLoading = false;
+  let candidatesError = '';
+  let candidateRequestId = 0;
   let loading = true;
   let error = '';
 
-  const candidateUniverse: Omit<StrategyCandidate, 'strategyScore'>[] = [
+  const candidateUniverse: CandidateUniverseRow[] = [
     {
       symbol: '005930',
       name: '삼성전자',
@@ -289,6 +303,8 @@
     try {
       dashboard = await fetchDashboard();
       selectedStrategy = dashboard.backtest.strategy_code;
+      await tick();
+      await loadCandidateRowsForSelectedStrategy();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략 데이터를 불러오지 못했습니다.';
     } finally {
@@ -305,7 +321,6 @@
   $: customStrategyOptions = strategyOptions.filter((item) => item.sourceKind === 'custom');
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
-  $: candidateRows = buildCandidateRows(selectedOption);
   $: averageScore = candidateRows.length
     ? Math.round(candidateRows.reduce((total, item) => total + item.strategyScore, 0) / candidateRows.length)
     : 0;
@@ -364,19 +379,87 @@
     return item.sourceKind === 'system' ? '시스템 제공' : '사용자 등록';
   }
 
-  function buildCandidateRows(option: StrategyOption | null): StrategyCandidate[] {
+  async function handleStrategyChange() {
+    await loadCandidateRowsForSelectedStrategy();
+  }
+
+  async function loadCandidateRowsForSelectedStrategy() {
+    await tick();
+    await loadCandidateRows(selectedOption);
+  }
+
+  async function loadCandidateRows(option: StrategyOption | null) {
+    const requestId = candidateRequestId + 1;
+    candidateRequestId = requestId;
+    candidatesError = '';
+
+    if (!option) {
+      candidateRows = [];
+      return;
+    }
+
+    if (option.sourceKind === 'custom') {
+      candidateRows = buildLocalCandidateRows(option);
+      return;
+    }
+
+    candidatesLoading = true;
+
+    try {
+      const response = await fetchStrategyCandidates(option.code);
+      if (candidateRequestId !== requestId) return;
+      candidateRows = response.candidates.map(toStrategyCandidate);
+    } catch (err) {
+      if (candidateRequestId !== requestId) return;
+      candidatesError = err instanceof Error ? err.message : '전략 후보 종목을 불러오지 못했습니다.';
+      candidateRows = [];
+    } finally {
+      if (candidateRequestId === requestId) {
+        candidatesLoading = false;
+      }
+    }
+  }
+
+  function toStrategyCandidate(candidate: StrategyCandidateResult): StrategyCandidate {
+    return {
+      symbol: candidate.symbol,
+      name: candidate.name,
+      exchange: candidate.exchange,
+      sector: candidate.sector,
+      industry: candidate.industry,
+      marketCap: candidate.market_cap,
+      price: candidate.price,
+      changePct: candidate.change_pct,
+      per: candidate.per,
+      pbr: candidate.pbr,
+      roe: candidate.roe,
+      revenueGrowth: candidate.revenue_growth,
+      foreignNetBuy5d: candidate.foreign_net_buy_5d,
+      institutionNetBuy5d: candidate.institution_net_buy_5d,
+      supplyScore: candidate.supply_score,
+      shortSaleRatio: candidate.short_sale_ratio,
+      momentum: candidate.momentum,
+      strategyScore: candidate.strategy_score,
+      rationale: candidate.rationale,
+      riskFlags: candidate.risk_flags
+    };
+  }
+
+  function buildLocalCandidateRows(option: StrategyOption | null): StrategyCandidate[] {
     if (!option) return [];
 
     return candidateUniverse
       .map((item) => ({
         ...item,
-        strategyScore: calculateStrategyScore(option.code, item)
+        strategyScore: calculateStrategyScore(option.code, item),
+        rationale: buildLocalRationale(option.code, item),
+        riskFlags: buildLocalRiskFlags(item)
       }))
       .sort((left, right) => right.strategyScore - left.strategyScore)
       .slice(0, 12);
   }
 
-  function calculateStrategyScore(strategyCode: string, item: Omit<StrategyCandidate, 'strategyScore'>) {
+  function calculateStrategyScore(strategyCode: string, item: CandidateUniverseRow) {
     if (strategyCode === 'relative-momentum-swing') {
       return clampScore(
         item.momentum * 0.5 +
@@ -443,6 +526,25 @@
     return Math.max(0, Math.min(100, Math.round(score)));
   }
 
+  function buildLocalRationale(strategyCode: string, item: CandidateUniverseRow) {
+    if (strategyCode.startsWith('draft:')) {
+      return [`검색식 기반 후보`, `모멘텀 ${item.momentum}점`, `수급 점수 ${item.supplyScore}점`];
+    }
+
+    return [`모멘텀 ${item.momentum}점`, `수급 점수 ${item.supplyScore}점`, `ROE ${item.roe}%`];
+  }
+
+  function buildLocalRiskFlags(item: CandidateUniverseRow) {
+    const flags: string[] = [];
+
+    if (item.shortSaleRatio >= 6) flags.push('공매도 비율 높음');
+    if (item.per >= 35) flags.push('고PER 구간');
+    if (item.changePct >= 4) flags.push('단기 급등');
+    if (item.roe < 6) flags.push('수익성 낮음');
+
+    return flags;
+  }
+
   function formatKrw(value: number) {
     return new Intl.NumberFormat('ko-KR', {
       style: 'currency',
@@ -481,7 +583,7 @@
       <div class="backtest-form-grid strategy-select-grid">
         <label>
           <span>전략</span>
-          <select bind:value={selectedStrategy}>
+          <select bind:value={selectedStrategy} onchange={handleStrategyChange}>
             <optgroup label={`시스템 제공 전략 (${systemStrategyOptions.length})`}>
               {#each systemStrategyOptions as item}
                 <option value={item.code}>[시스템] {strategyLabel(item)}</option>
@@ -567,13 +669,22 @@
           <span>전략 검색 결과</span>
           <strong>{candidateRows.length}개 종목</strong>
         </div>
-        <span class="muted">전략 점수 평균 {averageScore || '-'}</span>
+        <span class="muted">
+          {candidatesLoading ? '후보 계산 중' : `전략 점수 평균 ${averageScore || '-'}`}
+        </span>
       </div>
-      <div class="table-wrap">
+      {#if candidatesError}
+        <div class="empty-state">{candidatesError}</div>
+      {:else if candidatesLoading}
+        <div class="empty-state">전략 후보 종목을 계산하는 중입니다.</div>
+      {:else}
+        <div class="table-wrap">
         <table class="wide-table strategy-result-table">
           <thead>
             <tr>
               <th>종목</th>
+              <th>전략 점수</th>
+              <th>선정 사유</th>
               <th>거래소</th>
               <th>섹터</th>
               <th>시가총액</th>
@@ -596,6 +707,21 @@
                 <td>
                   <strong>{row.name}</strong>
                   <span>{row.symbol} · {row.industry}</span>
+                </td>
+                <td class="rank-cell">{row.strategyScore}</td>
+                <td>
+                  <ul class="compact-list">
+                    {#each row.rationale as reason}
+                      <li>{reason}</li>
+                    {/each}
+                  </ul>
+                  {#if row.riskFlags.length}
+                    <div class="tag-row compact-tags">
+                      {#each row.riskFlags as flag}
+                        <span>{flag}</span>
+                      {/each}
+                    </div>
+                  {/if}
                 </td>
                 <td>{row.exchange}</td>
                 <td>{row.sector}</td>
@@ -623,14 +749,15 @@
               </tr>
             {:else}
               <tr>
-                <td colspan="15">
+                <td colspan="17">
                   <div class="empty-state">현재 선택한 전략에 맞는 종목이 없습니다.</div>
                 </td>
               </tr>
             {/each}
           </tbody>
         </table>
-      </div>
+        </div>
+      {/if}
     </section>
   </div>
 {/if}

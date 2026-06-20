@@ -4,7 +4,7 @@ import os
 from datetime import date
 from enum import StrEnum
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from quantmate_api.db import SessionLocal
 from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market
+from quantmate_api.strategy_engine import build_strategy_candidates
 
 
 class AppMode(StrEnum):
@@ -56,6 +57,36 @@ class Recommendation(BaseModel):
     signal: str
     rationale: list[str]
     risk_flags: list[str]
+
+
+class StrategyCandidate(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+    sector: str
+    industry: str
+    market_cap: float
+    price: int
+    change_pct: float
+    per: float
+    pbr: float
+    roe: float
+    revenue_growth: float
+    foreign_net_buy_5d: int
+    institution_net_buy_5d: int
+    supply_score: int
+    short_sale_ratio: float
+    momentum: int
+    strategy_score: int = Field(ge=0, le=100)
+    rationale: list[str]
+    risk_flags: list[str]
+
+
+class StrategyCandidateResponse(BaseModel):
+    strategy_code: str
+    strategy_name: str
+    source: str
+    candidates: list[StrategyCandidate]
 
 
 class BacktestMetric(BaseModel):
@@ -361,6 +392,23 @@ async def health() -> HealthResponse:
 @app.get("/api/strategies")
 async def list_strategies() -> list[Strategy]:
     return STRATEGIES
+
+
+@app.get("/api/strategies/{strategy_code}/candidates")
+async def strategy_candidates(strategy_code: str) -> StrategyCandidateResponse:
+    strategy = next((item for item in STRATEGIES if item.code == strategy_code), None)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
+
+    return StrategyCandidateResponse(
+        strategy_code=strategy.code,
+        strategy_name=strategy.name,
+        source="sample-engine",
+        candidates=[
+            StrategyCandidate(**candidate)
+            for candidate in build_strategy_candidates(strategy_code=strategy.code)
+        ],
+    )
 
 
 @app.get("/api/recommendations")

@@ -33,6 +33,36 @@ export type Recommendation = {
   risk_flags: string[];
 };
 
+export type StrategyCandidateResult = {
+  symbol: string;
+  name: string;
+  exchange: string;
+  sector: string;
+  industry: string;
+  market_cap: number;
+  price: number;
+  change_pct: number;
+  per: number;
+  pbr: number;
+  roe: number;
+  revenue_growth: number;
+  foreign_net_buy_5d: number;
+  institution_net_buy_5d: number;
+  supply_score: number;
+  short_sale_ratio: number;
+  momentum: number;
+  strategy_score: number;
+  rationale: string[];
+  risk_flags: string[];
+};
+
+export type StrategyCandidateResponse = {
+  strategy_code: string;
+  strategy_name: string;
+  source: string;
+  candidates: StrategyCandidateResult[];
+};
+
 export type BacktestMetric = {
   label: string;
   value: string;
@@ -82,6 +112,18 @@ export async function fetchDataStatus(): Promise<DataStatus> {
 
   if (!response.ok) {
     throw new Error(`데이터 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchStrategyCandidates(
+  strategyCode: string
+): Promise<StrategyCandidateResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/strategies/${strategyCode}/candidates`);
+
+  if (!response.ok) {
+    throw new Error(`전략 후보 종목을 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

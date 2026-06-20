@@ -2,12 +2,13 @@
   import { onMount } from 'svelte';
   import {
     fetchDashboard,
+    fetchUserStrategies,
     runBacktest as requestBacktest,
     type BacktestRunResult,
     type Dashboard,
-    type Strategy
+    type Strategy,
+    type UserStrategy
   } from '$lib/api';
-  import { loadStrategyDrafts, type StrategyDraft } from '$lib/strategy-drafts';
 
   type StrategyOption = {
     code: string;
@@ -62,7 +63,7 @@
 
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'relative-momentum-swing';
-  let registeredStrategies: StrategyDraft[] = [];
+  let registeredStrategies: UserStrategy[] = [];
   let loading = true;
   let error = '';
 
@@ -99,10 +100,13 @@
   };
 
   onMount(async () => {
-    registeredStrategies = loadStrategyDrafts();
-
     try {
-      dashboard = await fetchDashboard();
+      const [dashboardData, userStrategies] = await Promise.all([
+        fetchDashboard(),
+        fetchUserStrategies()
+      ]);
+      dashboard = dashboardData;
+      registeredStrategies = userStrategies;
       selectedStrategy = dashboard.backtest.strategy_code;
     } catch (err) {
       error = err instanceof Error ? err.message : '전략과 백테스트 데이터를 불러오지 못했습니다.';
@@ -156,9 +160,9 @@
     };
   }
 
-  function toDraftStrategyOption(strategy: StrategyDraft): StrategyOption {
+  function toDraftStrategyOption(strategy: UserStrategy): StrategyOption {
     return {
-      code: `draft:${strategy.id}`,
+      code: strategy.code,
       name: strategy.name,
       style: '검색식 기반',
       category: '사용자 조건식',
@@ -176,7 +180,7 @@
       backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
       references: [],
       formula: strategy.formula,
-      resultCount: strategy.resultCount
+      resultCount: strategy.result_count
     };
   }
 
@@ -199,12 +203,6 @@
     }
 
     clearBacktestResult();
-
-    if (selectedOption.sourceKind === 'custom') {
-      backtestError =
-        '사용자 등록 전략은 현재 브라우저에만 저장되어 있습니다. DB 저장과 실제 데이터 연결 후 서버 백테스트에 연결합니다.';
-      return;
-    }
 
     backtestRunning = true;
 

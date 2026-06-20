@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -101,3 +102,20 @@ class DataImportJob(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     message: Mapped[str | None] = mapped_column(String(500))
+
+
+class UserStrategy(TimestampMixin, Base):
+    __tablename__ = "user_strategies"
+    __table_args__ = (
+        Index("ix_user_strategies_code", "code"),
+        UniqueConstraint("code", name="uq_user_strategies_code"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(120))
+    summary: Mapped[str] = mapped_column(String(500))
+    formula: Mapped[str] = mapped_column(Text)
+    result_count: Mapped[int] = mapped_column(default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)

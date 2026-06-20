@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,7 @@ from quantmate_api.market_data import (
     fetch_krx_instruments,
     is_krx_open_api_ready,
 )
-from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market
+from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market, UserStrategy
 from quantmate_api.strategy_engine import build_strategy_candidates
 
 
@@ -94,6 +95,23 @@ class StrategyCandidateResponse(BaseModel):
     strategy_name: str
     source: str
     candidates: list[StrategyCandidate]
+
+
+class UserStrategyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=500)
+    formula: str = Field(min_length=1, max_length=5000)
+    result_count: int = Field(ge=0)
+
+
+class UserStrategyResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    summary: str
+    formula: str
+    result_count: int
+    created_at: datetime
 
 
 class BacktestMetric(BaseModel):
@@ -449,6 +467,59 @@ BACKTEST = BacktestPreview(
     ],
 )
 
+
+def _find_system_strategy(strategy_code: str) -> Strategy | None:
+    return next((item for item in STRATEGIES if item.code == strategy_code), None)
+
+
+def _user_strategy_response(strategy: UserStrategy) -> UserStrategyResponse:
+    return UserStrategyResponse(
+        id=strategy.id,
+        code=strategy.code,
+        name=strategy.name,
+        summary=strategy.summary,
+        formula=strategy.formula,
+        result_count=strategy.result_count,
+        created_at=strategy.created_at,
+    )
+
+
+def _normalize_user_strategy_create(request: UserStrategyCreate) -> UserStrategyCreate:
+    name = request.name.strip()
+    summary = request.summary.strip()
+    formula = request.formula.strip()
+
+    if not name:
+        raise HTTPException(status_code=422, detail="전략명을 입력하세요.")
+    if not summary:
+        raise HTTPException(status_code=422, detail="전략 소개를 입력하세요.")
+    if not formula:
+        raise HTTPException(status_code=422, detail="전략 조건식이 비어 있습니다.")
+
+    return UserStrategyCreate(
+        name=name,
+        summary=summary,
+        formula=formula,
+        result_count=request.result_count,
+    )
+
+
+def _load_active_user_strategy(strategy_code: str) -> UserStrategy | None:
+    try:
+        with SessionLocal() as session:
+            return session.scalar(
+                select(UserStrategy).where(
+                    UserStrategy.code == strategy_code,
+                    UserStrategy.is_active.is_(True),
+                )
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"사용자 전략 DB 연결 확인 필요: {exc.__class__.__name__}",
+        ) from exc
+
+
 @app.get("/api/health")
 async def health() -> HealthResponse:
     return HealthResponse(
@@ -466,19 +537,96 @@ async def list_strategies() -> list[Strategy]:
 
 @app.get("/api/strategies/{strategy_code}/candidates")
 async def strategy_candidates(strategy_code: str) -> StrategyCandidateResponse:
-    strategy = next((item for item in STRATEGIES if item.code == strategy_code), None)
-    if strategy is None:
+    strategy = _find_system_strategy(strategy_code)
+    strategy_name = strategy.name if strategy else ""
+    source = "sample-engine"
+
+    if strategy is None and strategy_code.startswith("user-"):
+        user_strategy = _load_active_user_strategy(strategy_code)
+        if user_strategy is not None:
+            strategy_name = user_strategy.name
+            source = "sample-engine:user-strategy"
+
+    if strategy is None and not strategy_name:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
     return StrategyCandidateResponse(
-        strategy_code=strategy.code,
-        strategy_name=strategy.name,
-        source="sample-engine",
+        strategy_code=strategy_code,
+        strategy_name=strategy_name,
+        source=source,
         candidates=[
             StrategyCandidate(**candidate)
-            for candidate in build_strategy_candidates(strategy_code=strategy.code)
+            for candidate in build_strategy_candidates(strategy_code=strategy_code)
         ],
     )
+
+
+@app.get("/api/user-strategies")
+async def list_user_strategies() -> list[UserStrategyResponse]:
+    try:
+        with SessionLocal() as session:
+            rows = session.scalars(
+                select(UserStrategy)
+                .where(UserStrategy.is_active.is_(True))
+                .order_by(UserStrategy.created_at.desc(), UserStrategy.id.desc())
+            ).all()
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"사용자 전략 DB 연결 확인 필요: {exc.__class__.__name__}",
+        ) from exc
+
+    return [_user_strategy_response(row) for row in rows]
+
+
+@app.post("/api/user-strategies", status_code=201)
+async def create_user_strategy(request: UserStrategyCreate) -> UserStrategyResponse:
+    normalized = _normalize_user_strategy_create(request)
+
+    try:
+        with SessionLocal() as session:
+            strategy = UserStrategy(
+                code=f"user-{uuid4().hex[:12]}",
+                name=normalized.name,
+                summary=normalized.summary,
+                formula=normalized.formula,
+                result_count=normalized.result_count,
+            )
+            session.add(strategy)
+            session.commit()
+            session.refresh(strategy)
+            return _user_strategy_response(strategy)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"사용자 전략 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
+
+
+@app.delete("/api/user-strategies/{strategy_code}")
+async def delete_user_strategy(strategy_code: str) -> dict[str, bool]:
+    try:
+        with SessionLocal() as session:
+            strategy = session.scalar(
+                select(UserStrategy).where(
+                    UserStrategy.code == strategy_code,
+                    UserStrategy.is_active.is_(True),
+                )
+            )
+            if strategy is None:
+                raise HTTPException(status_code=404, detail="사용자 전략을 찾지 못했습니다.")
+
+            strategy.is_active = False
+            session.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"사용자 전략 DB 삭제 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return {"deleted": True}
 
 
 @app.get("/api/recommendations")
@@ -493,13 +641,19 @@ async def backtest_preview() -> BacktestPreview:
 
 @app.post("/api/backtests/run")
 async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
-    strategy = next((item for item in STRATEGIES if item.code == request.strategy_code), None)
-    if strategy is None:
+    strategy = _find_system_strategy(request.strategy_code)
+    strategy_name = strategy.name if strategy else ""
+
+    if strategy is None and request.strategy_code.startswith("user-"):
+        user_strategy = _load_active_user_strategy(request.strategy_code)
+        strategy_name = user_strategy.name if user_strategy else ""
+
+    if not strategy_name:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
     result = build_sample_backtest(
-        strategy_code=strategy.code,
-        strategy_name=strategy.name,
+        strategy_code=request.strategy_code,
+        strategy_name=strategy_name,
         start_year=request.start_year,
         end_year=request.end_year,
         initial_amount=request.initial_amount,
@@ -545,6 +699,7 @@ async def data_status() -> DataStatusResponse:
                 "instruments": session.scalar(select(func.count()).select_from(Instrument)) or 0,
                 "daily_prices": session.scalar(select(func.count()).select_from(DailyPrice)) or 0,
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
+                "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
             }
     except SQLAlchemyError as exc:
         return DataStatusResponse(

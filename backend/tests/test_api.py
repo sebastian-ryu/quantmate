@@ -1,11 +1,27 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 import quantmate_api.main as main_module
 
 from quantmate_api.main import app
+from quantmate_api.models import Base
 
 
 client = TestClient(app)
+
+
+def use_sqlite_session(monkeypatch) -> sessionmaker:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    monkeypatch.setattr(main_module, "SessionLocal", session_factory)
+    return session_factory
 
 
 def test_health_endpoint() -> None:
@@ -84,10 +100,73 @@ def test_backtest_run_unknown_strategy_returns_404() -> None:
     assert response.status_code == 404
 
 
+def test_user_strategy_lifecycle_uses_database(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    create_response = client.post(
+        "/api/user-strategies",
+        json={
+            "name": "외국인 기관 수급 유입",
+            "summary": "외국인과 기관이 함께 사는 후보",
+            "formula": "외국인 5일 순매수 >= 500억 AND 기관 5일 순매수 >= 300억",
+            "result_count": 7,
+        },
+    )
+    created = create_response.json()
+
+    assert create_response.status_code == 201
+    assert created["code"].startswith("user-")
+    assert created["name"] == "외국인 기관 수급 유입"
+    assert created["result_count"] == 7
+
+    list_response = client.get("/api/user-strategies")
+    assert list_response.status_code == 200
+    assert [item["code"] for item in list_response.json()] == [created["code"]]
+
+    delete_response = client.delete(f"/api/user-strategies/{created['code']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted"] is True
+
+    empty_response = client.get("/api/user-strategies")
+    assert empty_response.status_code == 200
+    assert empty_response.json() == []
+
+
+def test_backtest_run_accepts_user_strategy(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    create_response = client.post(
+        "/api/user-strategies",
+        json={
+            "name": "검색식 저장 전략",
+            "summary": "검색기에서 저장한 전략",
+            "formula": "모멘텀 >= 70 AND 수급 점수 >= 80",
+            "result_count": 5,
+        },
+    )
+    strategy_code = create_response.json()["code"]
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": strategy_code,
+            "start_year": 2024,
+            "end_year": 2025,
+            "initial_amount": 10000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["strategy_code"] == strategy_code
+    assert data["strategy_name"] == "검색식 저장 전략"
+    assert len(data["equity_curve"]) == 24
+
+
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.counts = [1, 3, 0, 0]
+            self.counts = [1, 3, 0, 0, 2]
 
         def __enter__(self) -> "FakeSession":
             return self
@@ -112,6 +191,7 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["connected"] is True
     assert data["table_counts"]["markets"] == 1
     assert data["table_counts"]["instruments"] == 3
+    assert data["table_counts"]["user_strategies"] == 2
 
 
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:

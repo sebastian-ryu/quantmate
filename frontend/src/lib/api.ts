@@ -63,6 +63,23 @@ export type StrategyCandidateResponse = {
   candidates: StrategyCandidateResult[];
 };
 
+export type UserStrategy = {
+  id: number;
+  code: string;
+  name: string;
+  summary: string;
+  formula: string;
+  result_count: number;
+  created_at: string;
+};
+
+export type UserStrategyCreate = {
+  name: string;
+  summary: string;
+  formula: string;
+  result_count: number;
+};
+
 export type BacktestMetric = {
   label: string;
   value: string;
@@ -175,6 +192,45 @@ export async function fetchStrategyCandidates(
   }
 
   return response.json();
+}
+
+export async function fetchUserStrategies(): Promise<UserStrategy[]> {
+  const response = await fetch(`${API_BASE_URL}/api/user-strategies`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `사용자 전략을 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function createUserStrategy(request: UserStrategyCreate): Promise<UserStrategy> {
+  const response = await fetch(`${API_BASE_URL}/api/user-strategies`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `사용자 전략을 저장하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function deleteUserStrategy(strategyCode: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/user-strategies/${strategyCode}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `사용자 전략을 삭제하지 못했습니다. (${response.status})`);
+  }
 }
 
 export async function runBacktest(request: BacktestRunRequest): Promise<BacktestRunResult> {

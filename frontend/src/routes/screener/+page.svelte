@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { loadStrategyDrafts, saveStrategyDrafts, type StrategyDraft } from '$lib/strategy-drafts';
+  import {
+    createUserStrategy,
+    deleteUserStrategy,
+    fetchUserStrategies,
+    type UserStrategy
+  } from '$lib/api';
 
   type ScreenerRow = {
     symbol: string;
@@ -419,12 +424,15 @@
   let activePreset = '';
   let strategyName = '';
   let strategySummary = '';
-  let registeredStrategies: StrategyDraft[] = [];
+  let registeredStrategies: UserStrategy[] = [];
+  let strategyPersistenceError = '';
+  let strategySaving = false;
+  let deletingStrategyCode = '';
   let activeFilterChips: FilterChip[] = [];
   let categoryCounts: Record<string, number> = {};
 
-  onMount(() => {
-    registeredStrategies = loadStrategyDrafts();
+  onMount(async () => {
+    await loadRegisteredStrategies();
   });
 
   $: sectors = Array.from(new Set(rows.map((row) => row.sector)));
@@ -920,36 +928,51 @@
     if (key === 'supplyScoreMin') supplyScoreMin = '';
   }
 
-  function registerStrategy() {
+  async function loadRegisteredStrategies() {
+    try {
+      registeredStrategies = await fetchUserStrategies();
+      strategyPersistenceError = '';
+    } catch (err) {
+      strategyPersistenceError = err instanceof Error ? err.message : '사용자 전략을 불러오지 못했습니다.';
+    }
+  }
+
+  async function registerStrategy() {
     const name = strategyName.trim() || `검색기 전략 ${registeredStrategies.length + 1}`;
     const summary = strategySummary.trim() || '검색기에서 저장한 조건 기반 전략입니다.';
-    registeredStrategies = [
-      {
-        id: createDraftId(),
+    strategySaving = true;
+    strategyPersistenceError = '';
+
+    try {
+      const created = await createUserStrategy({
         name,
         summary,
-        resultCount: filteredRows.length,
         formula: formulaPreview,
-        createdAt: new Date().toLocaleString('ko-KR')
-      },
-      ...registeredStrategies
-    ];
-    saveStrategyDrafts(registeredStrategies);
-    strategyName = '';
-    strategySummary = '';
-  }
+        result_count: filteredRows.length
+      });
 
-  function removeRegisteredStrategy(id: string) {
-    registeredStrategies = registeredStrategies.filter((strategy) => strategy.id !== id);
-    saveStrategyDrafts(registeredStrategies);
-  }
-
-  function createDraftId() {
-    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-      return crypto.randomUUID();
+      registeredStrategies = [created, ...registeredStrategies];
+      strategyName = '';
+      strategySummary = '';
+    } catch (err) {
+      strategyPersistenceError = err instanceof Error ? err.message : '사용자 전략을 저장하지 못했습니다.';
+    } finally {
+      strategySaving = false;
     }
+  }
 
-    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  async function removeRegisteredStrategy(strategyCode: string) {
+    deletingStrategyCode = strategyCode;
+    strategyPersistenceError = '';
+
+    try {
+      await deleteUserStrategy(strategyCode);
+      registeredStrategies = registeredStrategies.filter((strategy) => strategy.code !== strategyCode);
+    } catch (err) {
+      strategyPersistenceError = err instanceof Error ? err.message : '사용자 전략을 삭제하지 못했습니다.';
+    } finally {
+      deletingStrategyCode = '';
+    }
   }
 
   function formatKrw(value: number) {
@@ -958,6 +981,10 @@
 
   function formatSigned(value: number) {
     return value > 0 ? `+${value}` : `${value}`;
+  }
+
+  function formatStrategyDate(value: string) {
+    return new Date(value).toLocaleString('ko-KR');
   }
 </script>
 
@@ -1017,8 +1044,13 @@
             <span>소개</span>
             <input bind:value={strategySummary} placeholder="예: 외국인과 기관 수급이 함께 들어오는 종목" />
           </label>
-          <button type="button" onclick={registerStrategy}>전략으로 등록</button>
+          <button type="button" onclick={registerStrategy} disabled={strategySaving}>
+            {strategySaving ? '저장 중' : '전략으로 등록'}
+          </button>
         </div>
+        {#if strategyPersistenceError}
+          <div class="empty-state error">{strategyPersistenceError}</div>
+        {/if}
         {#if registeredStrategies.length}
           <ul class="registered-strategies compact">
             {#each registeredStrategies as strategy}
@@ -1026,9 +1058,16 @@
                 <div>
                   <strong>{strategy.name}</strong>
                   <p>{strategy.summary}</p>
-                  <span>{strategy.createdAt} · 후보 {strategy.resultCount}개</span>
+                  <span>{formatStrategyDate(strategy.created_at)} · 후보 {strategy.result_count}개</span>
                 </div>
-                <button type="button" class="secondary" onclick={() => removeRegisteredStrategy(strategy.id)}>삭제</button>
+                <button
+                  type="button"
+                  class="secondary"
+                  disabled={deletingStrategyCode === strategy.code}
+                  onclick={() => removeRegisteredStrategy(strategy.code)}
+                >
+                  {deletingStrategyCode === strategy.code ? '삭제 중' : '삭제'}
+                </button>
               </li>
             {/each}
           </ul>

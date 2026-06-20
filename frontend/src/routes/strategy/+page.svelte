@@ -5,9 +5,10 @@
     fetchStrategyCandidates,
     type Dashboard,
     type Strategy,
-    type StrategyCandidateResult
+    type StrategyCandidateResult,
+    fetchUserStrategies,
+    type UserStrategy
   } from '$lib/api';
-  import { loadStrategyDrafts, type StrategyDraft } from '$lib/strategy-drafts';
 
   type StrategyOption = {
     code: string;
@@ -58,7 +59,7 @@
 
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'relative-momentum-swing';
-  let registeredStrategies: StrategyDraft[] = [];
+  let registeredStrategies: UserStrategy[] = [];
   let candidateRows: StrategyCandidate[] = [];
   let candidatesLoading = false;
   let candidatesError = '';
@@ -298,10 +299,13 @@
   ];
 
   onMount(async () => {
-    registeredStrategies = loadStrategyDrafts();
-
     try {
-      dashboard = await fetchDashboard();
+      const [dashboardData, userStrategies] = await Promise.all([
+        fetchDashboard(),
+        fetchUserStrategies()
+      ]);
+      dashboard = dashboardData;
+      registeredStrategies = userStrategies;
       selectedStrategy = dashboard.backtest.strategy_code;
       await tick();
       await loadCandidateRowsForSelectedStrategy();
@@ -347,9 +351,9 @@
     };
   }
 
-  function toDraftStrategyOption(strategy: StrategyDraft): StrategyOption {
+  function toDraftStrategyOption(strategy: UserStrategy): StrategyOption {
     return {
-      code: `draft:${strategy.id}`,
+      code: strategy.code,
       name: strategy.name,
       style: '검색식 기반',
       category: '사용자 조건식',
@@ -367,7 +371,7 @@
       backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
       references: [],
       formula: strategy.formula,
-      resultCount: strategy.resultCount
+      resultCount: strategy.result_count
     };
   }
 
@@ -527,7 +531,7 @@
   }
 
   function buildLocalRationale(strategyCode: string, item: CandidateUniverseRow) {
-    if (strategyCode.startsWith('draft:')) {
+    if (strategyCode.startsWith('user-')) {
       return [`검색식 기반 후보`, `모멘텀 ${item.momentum}점`, `수급 점수 ${item.supplyScore}점`];
     }
 

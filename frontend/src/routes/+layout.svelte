@@ -7,7 +7,8 @@
     { href: '/universe', label: '데이터' },
     { href: '/recommendations', label: '추천' },
     { href: '/screener', label: '검색기' },
-    { href: '/strategies', label: '전략/백테스트' },
+    { href: '/strategy', label: '전략' },
+    { href: '/strategies', label: '백테스트' },
     { href: '/paper', label: '모의 투자' },
     { href: '/settings', label: '설정' }
   ];

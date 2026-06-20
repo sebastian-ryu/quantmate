@@ -412,18 +412,18 @@
 </script>
 
 <svelte:head>
-  <title>전략/백테스트 | QuantMate</title>
+  <title>백테스트 | QuantMate</title>
 </svelte:head>
 
 <header class="topbar">
   <div>
-    <p class="eyebrow">전략/백테스트</p>
-    <h1>전략을 선택하고 최소 조건으로 백테스트합니다.</h1>
+    <p class="eyebrow">백테스트</p>
+    <h1>선택한 전략을 최소 조건으로 백테스트합니다.</h1>
   </div>
 </header>
 
 {#if loading}
-  <section class="state-panel">전략과 백테스트를 불러오는 중입니다.</section>
+  <section class="state-panel">백테스트 데이터를 불러오는 중입니다.</section>
 {:else if error}
   <section class="state-panel error">{error}</section>
 {:else if dashboard}

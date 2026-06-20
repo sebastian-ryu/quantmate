@@ -8,6 +8,7 @@
     name: string;
     style: string;
     source: string;
+    sourceKind: 'system' | 'custom';
     summary: string;
     dataRequirements: string[];
     formula?: string;
@@ -290,6 +291,8 @@
     ...baseStrategies.map(toBaseStrategyOption),
     ...registeredStrategies.map(toDraftStrategyOption)
   ];
+  $: systemStrategyOptions = strategyOptions.filter((item) => item.sourceKind === 'system');
+  $: customStrategyOptions = strategyOptions.filter((item) => item.sourceKind === 'custom');
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
   $: candidateRows = buildCandidateRows(selectedOption);
@@ -303,6 +306,7 @@
       name: strategy.name,
       style: strategy.style,
       source: '기본 제공 전략',
+      sourceKind: 'system',
       summary: strategy.summary,
       dataRequirements: strategy.data_requirements
     };
@@ -314,6 +318,7 @@
       name: strategy.name,
       style: '검색식 기반',
       source: '검색기 등록 전략',
+      sourceKind: 'custom',
       summary: strategy.summary,
       dataRequirements: ['검색기 조건식', '검색 결과 후보군', '백테스트용 가격 데이터'],
       formula: strategy.formula,
@@ -323,6 +328,10 @@
 
   function strategyLabel(item: StrategyOption) {
     return `${item.name} · ${item.style}`;
+  }
+
+  function sourceBadgeLabel(item: StrategyOption) {
+    return item.sourceKind === 'system' ? '시스템 제공' : '사용자 등록';
   }
 
   function buildCandidateRows(option: StrategyOption | null): StrategyCandidate[] {
@@ -397,15 +406,31 @@
         <label>
           <span>전략</span>
           <select bind:value={selectedStrategy}>
-            {#each strategyOptions as item}
-              <option value={item.code}>{strategyLabel(item)}</option>
-            {/each}
+            <optgroup label={`시스템 제공 전략 (${systemStrategyOptions.length})`}>
+              {#each systemStrategyOptions as item}
+                <option value={item.code}>[시스템] {strategyLabel(item)}</option>
+              {/each}
+            </optgroup>
+            <optgroup label={`사용자 등록 전략 (${customStrategyOptions.length})`}>
+              {#if customStrategyOptions.length}
+                {#each customStrategyOptions as item}
+                  <option value={item.code}>[사용자] {strategyLabel(item)}</option>
+                {/each}
+              {:else}
+                <option disabled value="">검색기에서 전략을 등록하면 여기에 표시됩니다</option>
+              {/if}
+            </optgroup>
           </select>
         </label>
       </div>
       {#if selectedOption}
         <div class="strategy-note">
-          <strong>{selectedOption.style}</strong>
+          <div class="strategy-note-title">
+            <strong>{selectedOption.style}</strong>
+            <span class:custom={selectedOption.sourceKind === 'custom'} class="source-badge">
+              {sourceBadgeLabel(selectedOption)}
+            </span>
+          </div>
           <span>{selectedOption.summary}</span>
           <div class="tag-row">
             <span>{selectedOption.source}</span>

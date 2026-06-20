@@ -235,6 +235,31 @@ textarea {
   padding: 12px;
 }
 
+.strategy-note-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-badge {
+  background: #e6edf0;
+  border: 1px solid #d2dcdf;
+  border-radius: 999px;
+  color: #233139;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.source-badge.custom {
+  background: #e1f5ec;
+  border-color: #acd9c5;
+  color: #166243;
+}
+
 .screener-workbench {
   display: grid;
   font-size: 13px;

@@ -7,6 +7,14 @@
   let loading = true;
   let error = '';
 
+  const metricDescriptions: Record<string, string> = {
+    CAGR: '연평균 복리 수익률입니다. 기간 전체 수익을 1년 단위 성장률로 환산합니다.',
+    MDD: '최고점 대비 최대 하락률입니다. 전략이 겪은 가장 큰 낙폭을 봅니다.',
+    변동성: '수익률이 흔들리는 정도입니다. 높을수록 손익 변동이 큽니다.',
+    승률: '전체 매매 중 이익으로 끝난 비율입니다. 손익비와 함께 봐야 합니다.',
+    회전율: '포트폴리오가 얼마나 자주 교체되는지 보여줍니다. 높을수록 비용 영향이 커집니다.'
+  };
+
   onMount(async () => {
     try {
       dashboard = await fetchDashboard();
@@ -57,10 +65,19 @@
       </div>
       <div class="metrics">
         {#each dashboard.backtest.metrics as metric}
-          <div class:tone-positive={metric.tone === 'positive'} class:tone-caution={metric.tone === 'caution'}>
+          <button
+            type="button"
+            class:tone-positive={metric.tone === 'positive'}
+            class:tone-caution={metric.tone === 'caution'}
+            class="metric-card tooltip-anchor"
+            aria-label={`${metric.label}: ${metricDescriptions[metric.label] ?? '백테스트 성과 지표입니다.'}`}
+          >
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
-          </div>
+            <span class="tooltip" role="tooltip">
+              {metricDescriptions[metric.label] ?? '백테스트 성과 지표입니다.'}
+            </span>
+          </button>
         {/each}
       </div>
     </article>

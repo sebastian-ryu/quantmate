@@ -19,7 +19,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -148,12 +149,28 @@ h1 {
   padding: 12px 14px;
 }
 
-select {
+input,
+select,
+textarea {
   background: #f7fafa;
   border: 1px solid #cbd6da;
   border-radius: 6px;
+  color: #172026;
+}
+
+select {
   min-width: 280px;
   padding: 8px 10px;
+}
+
+input,
+textarea {
+  padding: 8px 10px;
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
 }
 
 .summary-grid {
@@ -228,6 +245,7 @@ li {
 }
 
 .metrics div,
+.metric-card,
 .mini-stat {
   background: #f5f7f8;
   border: 1px solid #e1e8ea;
@@ -235,6 +253,19 @@ li {
   display: grid;
   gap: 8px;
   padding: 12px;
+}
+
+.metrics .metric-card {
+  color: #172026;
+  cursor: help;
+  position: relative;
+  text-align: left;
+}
+
+.metrics .metric-card:hover,
+.metrics .metric-card:focus-visible {
+  border-color: #8ab5c8;
+  outline: none;
 }
 
 .metrics strong,
@@ -281,6 +312,10 @@ button:disabled,
 .filter-toolbar {
   align-items: end;
   flex-wrap: wrap;
+}
+
+.filter-toolbar input[type="search"] {
+  min-width: 220px;
 }
 
 .toolbar label {
@@ -352,6 +387,75 @@ button:disabled,
 .switch-row input:disabled {
   cursor: progress;
   opacity: 0.6;
+}
+
+.tooltip-anchor .tooltip {
+  background: #172026;
+  border-radius: 6px;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 10px 28px rgb(23 32 38 / 18%);
+  color: #ffffff;
+  font-size: 12px;
+  left: 12px;
+  line-height: 1.5;
+  max-width: 260px;
+  opacity: 0;
+  padding: 10px 12px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateY(4px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+  width: max-content;
+  z-index: 5;
+}
+
+.tooltip-anchor:hover .tooltip,
+.tooltip-anchor:focus-visible .tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.condition-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.condition-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.condition-list li {
+  align-items: center;
+  background: #edf4f6;
+  border: 1px solid #d5e3e8;
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 10px;
+}
+
+.condition-list strong {
+  color: #1f6b8f;
+  font-size: 12px;
+}
+
+.formula-box {
+  background: #172026;
+  border-radius: 6px;
+  color: #eaf3f6;
+  display: block;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-x: auto;
+  padding: 12px;
+  white-space: pre-wrap;
 }
 
 .table-wrap {

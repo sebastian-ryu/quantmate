@@ -4,10 +4,41 @@
 
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'all';
+  let searchTerm = '';
   let minScore = 70;
   let hideRisky = false;
+  let conditionText = '';
+  let generatedRules: Array<{ label: string; expression: string; status: string }> = [];
   let loading = true;
   let error = '';
+
+  const conditionTemplates = [
+    {
+      keywords: ['거래대금', '거래량', '유동성'],
+      label: '거래대금 증가',
+      expression: 'trading_value_20d > trading_value_60d * 1.5'
+    },
+    {
+      keywords: ['모멘텀', '상승', '추세', '이동평균'],
+      label: '상승 추세',
+      expression: 'close > ma_20 AND ma_20 > ma_60'
+    },
+    {
+      keywords: ['수급', '외국인', '기관'],
+      label: '기관/외국인 순매수',
+      expression: 'foreign_net_buy_5d + institution_net_buy_5d > 0'
+    },
+    {
+      keywords: ['저평가', '가치', 'pbr', 'per'],
+      label: '가치 밸류에이션',
+      expression: 'pbr < sector_pbr_median AND per > 0'
+    },
+    {
+      keywords: ['재무', 'roe', '부채'],
+      label: '재무 안정성',
+      expression: 'roe_ttm > 10 AND debt_ratio < 150'
+    }
+  ];
 
   onMount(async () => {
     try {
@@ -24,7 +55,15 @@
   $: recommendations = dashboard?.recommendations ?? [];
   $: selectedStrategyInfo =
     strategies.find((strategy) => strategy.code === selectedStrategy) ?? null;
+  $: normalizedSearch = searchTerm.trim().toLowerCase();
   $: filteredRecommendations = recommendations
+    .filter((item) => {
+      if (!normalizedSearch) return true;
+      return [item.name, item.symbol, item.market, strategyName(item.strategy_code)]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedSearch);
+    })
     .filter((item) => selectedStrategy === 'all' || item.strategy_code === selectedStrategy)
     .filter((item) => item.score >= scoreFloor)
     .filter((item) => !hideRisky || item.risk_flags.length === 0)
@@ -36,6 +75,9 @@
       )
     : 0;
   $: topCandidate = filteredRecommendations[0] ?? null;
+  $: quantExpression = generatedRules.length
+    ? generatedRules.map((rule) => `(${rule.expression})`).join(' AND ')
+    : '조건 초안을 생성하면 표시됩니다.';
 
   function strategyName(code: string) {
     return strategies.find((strategy) => strategy.code === code)?.name ?? code;
@@ -49,6 +91,28 @@
 
   function optionLabel(strategy: Strategy) {
     return `${strategy.name} · ${strategy.style}`;
+  }
+
+  function buildConditionDraft() {
+    const normalized = conditionText.trim().toLowerCase();
+    if (!normalized) {
+      generatedRules = [];
+      return;
+    }
+
+    const matchedRules = conditionTemplates
+      .filter((template) => template.keywords.some((keyword) => normalized.includes(keyword)))
+      .map((template) => ({ ...template, status: '초안' }));
+
+    generatedRules = matchedRules.length
+      ? matchedRules
+      : [
+          {
+            label: '사용자 조건',
+            expression: `custom_condition("${conditionText.trim()}")`,
+            status: '수동 정의 필요'
+          }
+        ];
   }
 </script>
 
@@ -71,6 +135,11 @@
 {:else if dashboard}
   <section class="toolbar filter-toolbar" aria-label="추천 필터">
     <label>
+      <span>종목</span>
+      <input bind:value={searchTerm} placeholder="종목명 또는 코드" type="search" />
+    </label>
+
+    <label>
       <span>전략</span>
       <select bind:value={selectedStrategy}>
         <option value="all">전체 전략</option>
@@ -89,6 +158,41 @@
       <input type="checkbox" bind:checked={hideRisky} />
       <span>리스크 없는 후보만</span>
     </label>
+  </section>
+
+  <section class="content-grid">
+    <article class="panel">
+      <div class="panel-heading">
+        <span>조건 입력</span>
+        <strong>검색 조건 초안</strong>
+      </div>
+      <div class="condition-editor">
+        <textarea
+          bind:value={conditionText}
+          rows="4"
+          placeholder="예: 거래대금이 늘고 20일선 위에 있는 저평가 종목"
+        ></textarea>
+        <button type="button" onclick={buildConditionDraft}>조건 초안 만들기</button>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-heading">
+        <span>퀀트식</span>
+        <strong>빌더 초안</strong>
+      </div>
+      {#if generatedRules.length}
+        <ul class="condition-list">
+          {#each generatedRules as rule}
+            <li>
+              <span>{rule.label}</span>
+              <strong>{rule.status}</strong>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <code class="formula-box">{quantExpression}</code>
+    </article>
   </section>
 
   <section class="summary-grid">

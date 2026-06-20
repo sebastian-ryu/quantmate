@@ -1,62 +1,62 @@
-# Project Brief
+# 프로젝트 개요
 
-## Goal
+## 목표
 
-Build a local web application for stock investment research, stock screening, strategy backtesting, optional paper trading, and later optional automated trading.
+주식 투자 연구, 종목 선정, 전략 백테스트, 선택형 모의 투자, 향후 선택형 자동 매매를 지원하는 로컬 웹 애플리케이션을 만든다.
 
-The first useful product should help select stocks using explainable algorithms, validate them with backtests, and optionally simulate trades through paper trading. Live automated trading is a later feature and must be guarded by strong safety controls.
+첫 번째로 쓸 수 있는 제품은 설명 가능한 알고리즘으로 종목을 추천하고, 백테스트로 검증하며, 사용자가 원할 때 모의 투자까지 해볼 수 있어야 한다. 실거래 자동 매매는 이후 단계이며 강한 안전장치가 필요하다.
 
-## Product Priorities
+## 제품 우선순위
 
-1. Collect and normalize stock-related data.
-2. Store reusable data locally where practical.
-3. Provide built-in stock selection algorithms commonly used in quant investing and trading.
-4. Explain each algorithm enough for the user to understand what it looks for and when it can fail.
-5. Allow user-defined strategies.
-6. Backtest strategies before using them in live or paper trading.
-7. Provide optional paper trading that the user can turn on or off.
-8. Integrate Korea Investment & Securities Open API for real-time data and, later, trading.
-9. Support Korean equities first.
-10. Keep US stock support possible, but do not build it first.
+1. 주식 관련 데이터를 수집하고 정규화한다.
+2. 재사용할 데이터는 가능한 한 로컬에 저장한다.
+3. 퀀트 투자와 트레이딩에서 자주 쓰이는 종목 선정 알고리즘을 기본 제공한다.
+4. 각 알고리즘이 무엇을 찾는지, 언제 실패할 수 있는지 이해할 수 있게 설명한다.
+5. 사용자가 직접 전략을 만들 수 있는 방향을 열어둔다.
+6. 실거래나 모의 투자 전에 전략을 백테스트한다.
+7. 사용자가 켜고 끌 수 있는 모의 투자 기능을 제공한다.
+8. 한국투자증권 Open API로 실시간 데이터와 향후 매매 기능을 연동한다.
+9. 한국 주식을 먼저 지원한다.
+10. 미국 주식 확장은 염두에 두되 초기에는 만들지 않는다.
 
-## Non-Goals For The First Version
+## 첫 버전에서 하지 않을 일
 
-- Mobile app support.
-- Cloud deployment.
-- Multi-user account management.
-- Fully automated live trading from day one.
-- Full web-based custom strategy builder in the first version.
-- Advanced portfolio optimization before basic screening and backtesting work.
-- Paid data vendor integration unless a free/public route is insufficient.
+- 모바일 앱 지원
+- 클라우드 배포
+- 다중 사용자 계정 관리
+- 처음부터 완전 자동 실거래
+- 첫 버전의 완전한 웹 기반 전략 빌더
+- 기본 종목 선정과 백테스트 이전의 고급 포트폴리오 최적화
+- 무료/공개 데이터로 부족하다는 판단 전의 유료 데이터 벤더 연동
 
-## Key Risks
+## 주요 위험
 
-- Financial risk from live order automation.
-- Data quality differences between providers.
-- Survivorship bias in backtests if delisted stocks and corporate actions are ignored.
-- API rate limits and broker-side policy changes.
-- Secrets leakage if API keys are committed.
-- Overfitting strategies to historical data.
+- 실거래 자동화로 인한 금전 손실
+- 데이터 제공처별 데이터 품질 차이
+- 상장폐지 종목과 액면분할 등 기업 이벤트를 무시한 백테스트 왜곡
+- API 호출 제한과 증권사 정책 변경
+- API 키 등 비밀 정보 유출
+- 과거 데이터에만 과도하게 맞춘 전략
 
-## Safety Baseline
+## 안전 기준
 
-Live trading must be the final stage, not the initial stage.
+실거래는 마지막 단계로 둔다.
 
-The system should initially support these modes:
+초기 시스템은 다음 모드를 지원하는 구조로 설계한다.
 
-1. `research`: data collection, screening, and backtesting only.
-2. `paper`: simulated order execution against market data.
-3. `live-readonly`: broker account and market data integration without orders.
-4. `live-trading`: real orders, disabled by default and protected by hard limits.
+1. `research`: 데이터 수집, 종목 선정, 백테스트만 수행
+2. `paper`: 시장 데이터를 기반으로 주문을 시뮬레이션
+3. `live-readonly`: 증권사 계좌와 시장 데이터를 읽기만 함
+4. `live-trading`: 실제 주문, 기본 비활성화, 강한 제한 필요
 
-## Initial Architecture Direction
+## 초기 아키텍처 방향
 
-Use a modular monolith first:
+처음에는 모듈형 단일 애플리케이션으로 시작한다.
 
-- Web client: SvelteKit.
-- Backend API and orchestration: Python with FastAPI.
-- Quant/data/strategy runtime: Python modules in the same codebase at first.
-- Database: local MySQL for app data and normalized market data.
-- Broker integration: Korea Investment & Securities Open API.
+- 웹 클라이언트: SvelteKit
+- 백엔드 API와 작업 조율: Python + FastAPI
+- 데이터/전략/백테스트 실행: 같은 코드베이스 안의 Python 모듈
+- 데이터베이스: 앱 데이터와 정규화된 시장 데이터를 저장하는 로컬 MySQL
+- 증권사 연동: 한국투자증권 Open API
 
-This keeps backend, data ingestion, strategy logic, and backtesting in one language for the MVP. Java/Spring Boot can be reconsidered later only if the project needs stronger enterprise-style server structure.
+MVP에서는 백엔드, 데이터 수집, 전략 로직, 백테스트를 Python 하나로 묶어 복잡도를 줄인다. Java/Spring Boot는 서버 규모가 커져 더 강한 엔터프라이즈 구조가 필요할 때 다시 검토한다.

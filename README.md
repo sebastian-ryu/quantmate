@@ -1,32 +1,35 @@
 # QuantMate
 
-QuantMate is a local-first web application for stock screening, strategy research, backtesting, and optional automated trading.
+QuantMate는 주식 종목 선정, 전략 연구, 백테스트, 선택형 모의 투자를 위한 로컬 우선 웹 애플리케이션입니다.
 
-The first target market is Korean equities. The architecture should keep future US market support in mind, but the initial implementation must stay focused on Korean stock data, algorithmic screening, and safe broker integration.
+첫 대상 시장은 한국 주식입니다. 나중에 미국 주식까지 확장할 수 있게 구조는 열어두되, 초기 구현은 한국 주식 데이터, 알고리즘 기반 종목 선정, 안전한 증권사 연동에 집중합니다.
 
-## Current Status
+## 현재 상태
 
-This repository is in the planning phase.
+현재 저장소는 기획 및 초기 설정 단계입니다.
 
-Start with these documents:
+먼저 볼 문서:
 
-- [Project Brief](docs/00-project-brief.md)
-- [Initial Decisions](docs/01-initial-decisions.md)
-- [TODO](docs/02-todo.md)
-- [Open Questions](docs/03-open-questions.md)
-- [Working Rules](docs/04-working-rules.md)
-- [References](docs/05-references.md)
-- [Local Setup](docs/06-local-setup.md)
+- [프로젝트 개요](docs/00-project-brief.md)
+- [초기 결정 사항](docs/01-initial-decisions.md)
+- [작업 목록](docs/02-todo.md)
+- [남은 질문](docs/03-open-questions.md)
+- [작업 규칙](docs/04-working-rules.md)
+- [참고 자료](docs/05-references.md)
+- [로컬 설정](docs/06-local-setup.md)
+- [스킬 운영 계획](docs/07-skills.md)
 
-## Safety Position
+에이전트 작업 지침은 [AGENTS.md](AGENTS.md)를 기준으로 합니다.
 
-This project is software for research and automation. It is not investment advice.
+## 안전 기준
 
-Live trading must remain disabled until these are implemented and reviewed:
+이 프로젝트는 투자 연구와 자동화를 위한 소프트웨어입니다. 투자 조언이 아닙니다.
 
-- paper-trading mode
-- order size limits
-- per-day loss and order-count limits
-- kill switch
-- audit log for all generated signals and orders
-- explicit user confirmation before enabling live orders
+실거래 기능은 아래 항목이 구현되고 검토되기 전까지 비활성화 상태를 유지합니다.
+
+- 모의 투자 모드
+- 주문 금액 제한
+- 일별 손실 및 주문 횟수 제한
+- 긴급 중지 기능
+- 모든 신호와 주문의 감사 로그
+- 실거래 활성화 전 사용자 명시 확인

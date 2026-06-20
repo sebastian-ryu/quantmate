@@ -1,67 +1,69 @@
-# Open Questions
+# 남은 질문
 
-Answering these will determine the first MVP. Resolved answers are kept here so design decisions remain traceable.
+이 문서는 MVP 범위를 정하기 위한 질문과 이미 확정된 답변을 함께 기록한다.
 
-## Resolved Answers
+## 확정된 답변
 
-- First MVP includes stock recommendations, backtesting, and optional paper trading.
-- Paper trading means simulated trading and must be user-selectable, not mandatory.
-- The product should eventually support intraday, swing, medium-term, and long-term quant styles.
-- The first implementation should ship several built-in strategies before adding a custom web strategy builder.
-- A web UI condition builder is desirable later, even if it starts with limited freedom.
-- The repository exists at https://github.com/sebastian-ryu/quantmate.
-- User-facing summaries should be concise.
-- Ask one question at a time when possible.
-- Python backend is preferred for reconsideration because the project already uses Python for strategy/data/backtesting.
-- MySQL will run through Docker Compose.
+- 첫 MVP는 종목 추천, 백테스트, 선택형 모의 투자를 포함한다.
+- 모의 투자는 가상 매매이며, 필수가 아니라 사용자가 선택할 수 있어야 한다.
+- 제품은 장기적으로 단타, 스윙, 중기, 장기 퀀트 스타일을 모두 지원한다.
+- 첫 구현은 웹 전략 빌더보다 여러 기본 전략 제공을 먼저 한다.
+- 웹 UI 조건 빌더는 자유도가 낮게 시작하더라도 나중에 제공하는 방향이 좋다.
+- 저장소는 https://github.com/sebastian-ryu/quantmate 에 있다.
+- 사용자에게 전달하는 요약은 간결하게 한다.
+- 가능하면 질문은 한 번에 하나씩 한다.
+- 전략/데이터/백테스트가 Python을 쓰므로 백엔드도 Python이 우선 후보가 되었다.
+- MySQL은 Docker Compose로 실행한다.
+- 증권 관련 API에서 접근 권한, 계좌 신청, 토큰, 인증 정보가 필요하면 사용자와 문답하며 권한을 확보한 뒤 진행한다.
 
-## Trading Scope
+## 매매 범위
 
-1. Resolved: first usable version includes recommendations, backtesting, and optional paper trading.
-2. Is live trading a long-term goal only, or should the architecture prepare for it from day one?
-3. Should live trading support only cash stock orders, or also ETFs, margin, credit, or derivatives?
+1. 확정: 첫 사용 가능 버전은 종목 추천, 백테스트, 선택형 모의 투자를 포함한다.
+2. 실거래는 장기 목표로만 둘지, 처음부터 구조만 준비할지 결정 필요.
+3. 실거래를 하게 된다면 현금 주식 주문만 지원할지, ETF/신용/파생까지 볼지 결정 필요.
 
-## Investment Style
+## 투자 스타일
 
-4. Resolved: support multiple styles over time: intraday, 1-10 day swing, several weeks/months, and long-term factor investing.
-5. Should the first algorithms favor quant/factor screening, trader-style supply/demand analysis, or a mix?
-6. Is the user more interested in finding candidates before market open, during market hours, or after market close?
+4. 확정: 장기적으로 단타, 1-10일 스윙, 수주-수개월, 장기 팩터 투자를 모두 지원한다.
+5. 첫 알고리즘은 퀀트/팩터 중심, 트레이더형 수급 분석 중심, 혼합형 중 무엇을 우선할지 결정 필요.
+6. 종목 추천 시점은 장 전, 장 중, 장 후 중 무엇이 더 중요한지 결정 필요.
 
-## Data
+## 데이터
 
-7. Partially resolved: choose initial data based on strategy needs. Practical order is daily OHLCV first, then fundamentals/supply-demand data, then minute/intraday data.
-8. Are minute bars required early?
-9. Should tick/order-book data be stored, or only used temporarily for signals?
-10. Which fundamentals matter first: PER/PBR/ROE, financial statements, dividends, earnings growth, analyst estimates, or disclosures?
+7. 일부 확정: 전략에 필요한 데이터부터 시작한다. 현실적인 순서는 일봉 OHLCV, 재무/수급, 분봉/장중 데이터다.
+8. 분봉 데이터가 초기부터 필요한지 결정 필요.
+9. 틱/호가 데이터를 저장할지, 신호 계산에만 임시 사용 할지 결정 필요.
+10. PER/PBR/ROE, 재무제표, 배당, 이익 성장, 애널리스트 추정치, 공시 중 어떤 재무 데이터가 먼저 필요한지 결정 필요.
 
-## Strategy Authoring
+## 전략 작성
 
-11. Resolved for MVP: provide several built-in strategies first.
-12. Resolved for later: add a limited web UI condition builder after built-in strategies and backtesting are stable.
+11. MVP 확정: 우선 여러 기본 전략을 제공한다.
+12. 이후 확정: 기본 전략과 백테스트가 안정화된 뒤 제한적인 웹 UI 조건 빌더를 추가한다.
 
-## Local Environment
+## 로컬 환경
 
-13. Resolved: use Docker Compose for MySQL and local services.
-14. Should the app run through one command later, such as `./dev` or `make dev`?
-15. Which OS will be the main development and runtime machine?
+13. 확정: MySQL과 로컬 서비스는 Docker Compose를 사용한다.
+14. 나중에 `./dev` 또는 `make dev` 같은 단일 실행 명령을 만들지 결정 필요.
+15. 주 개발 및 실행 OS를 기록할 필요가 있다.
 
-## Broker And Account
+## 증권사와 계좌
 
-16. Is a Korea Investment & Securities account already available for API application?
-17. Should the first broker integration use mock credentials and sandbox/paper mode only?
-18. What default trading limits should be hardcoded before any live order feature exists?
+16. 한국투자증권 API 신청 가능한 계좌가 있는지 확인 필요.
+17. 첫 증권사 연동은 모의/샌드박스와 가짜 인증 정보만 사용할지 결정 필요.
+18. 실거래 기능 전에 기본 주문 제한값을 어떻게 둘지 결정 필요.
+19. API 권한 신청이나 인증 정보 발급이 필요한 시점에는 사용자에게 필요한 작업을 한 가지씩 질문하며 진행한다.
 
 ## GitHub
 
-19. Repository exists. Visibility still needs to be recorded.
-20. Should authentication use GitHub CLI, HTTPS token, or SSH?
+20. 저장소는 존재한다. 공개 여부 기록 필요.
+21. GitHub 인증 방식을 GitHub CLI, HTTPS 토큰, SSH 중 무엇으로 할지 결정 필요.
 
-## UI Direction
+## UI 방향
 
-21. Should the UI feel closer to a research dashboard, trading terminal, or simple step-by-step wizard?
-22. Which screen is most important on first launch?
-    - market/data status
-    - recommended stocks
-    - strategy builder
-    - backtest results
-    - portfolio/account status
+22. UI가 리서치 대시보드, 트레이딩 터미널, 단계별 마법사 중 어디에 가까워야 하는지 결정 필요.
+23. 첫 화면에서 가장 중요한 정보 결정 필요:
+    - 시장/데이터 상태
+    - 추천 종목
+    - 전략 빌더
+    - 백테스트 결과
+    - 포트폴리오/계좌 상태

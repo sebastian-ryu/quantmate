@@ -1,56 +1,59 @@
-# Working Rules
+# 작업 규칙
 
-These rules are part of the project process and should be updated when the process changes.
+이 문서는 프로젝트 진행 방식에 대한 규칙이다. 진행 방식이 바뀌면 함께 업데이트한다.
 
-## Documentation Rules
+## 문서 규칙
 
-- Keep project decisions in repository documents.
-- Update TODO before or during each implementation step.
-- When design changes, check whether these files need updates:
+- 프로젝트 결정 사항은 저장소 문서에 남긴다.
+- 각 구현 단계 전이나 진행 중에 작업 목록을 업데이트한다.
+- 설계가 바뀌면 아래 문서를 업데이트해야 하는지 확인한다.
   - `docs/00-project-brief.md`
   - `docs/01-initial-decisions.md`
   - `docs/02-todo.md`
   - `docs/03-open-questions.md`
   - `docs/04-working-rules.md`
-- Add architecture decision records when a decision has meaningful long-term impact.
-- Keep explanations clear enough for the user to revisit later.
+  - `docs/07-skills.md`
+- 장기 영향이 있는 결정은 아키텍처 결정 기록으로 남긴다.
+- 나중에 사용자가 다시 읽어도 이해할 수 있게 설명한다.
 
-## Development Rules
+## 개발 규칙
 
-- Prefer small, reviewable phases.
-- Do not implement live trading before data, screening, backtesting, and paper trading are reviewed.
-- Keep broker credentials out of source control.
-- Use `.env.example` for required environment variable names.
-- Add tests around strategy calculations, data imports, and trading safety logic.
-- Record assumptions in strategy documentation and backtest results.
+- 작고 검토 가능한 단계로 나눠 진행한다.
+- 데이터 수집, 종목 선정, 백테스트, 모의 투자가 검토되기 전에는 실거래를 구현하지 않는다.
+- 증권사 인증 정보는 소스 관리에 넣지 않는다.
+- 증권 관련 API에서 접근 권한, 계좌 신청, 토큰, 인증 정보가 필요하면 사용자와 문답하며 권한을 확보한 뒤 진행한다.
+- 필요한 환경 변수 이름은 `.env.example`에만 기록한다.
+- 전략 계산, 데이터 수집, 매매 안전 로직에는 테스트를 추가한다.
+- 전략 문서와 백테스트 결과에는 가정을 기록한다.
 
-## Trading Safety Rules
+## 매매 안전 규칙
 
-- Default mode is research-only.
-- Live trading must be disabled by default.
-- Every generated signal must be auditable.
-- Every order request must be logged before and after broker submission.
-- A kill switch must be available before live trading.
-- Hard risk limits must be enforced server-side.
-- The UI must clearly distinguish research, paper, read-only live, and live-trading modes.
+- 기본 모드는 리서치 전용이다.
+- 실거래는 기본 비활성화 상태여야 한다.
+- 생성된 모든 신호는 추적 가능해야 한다.
+- 모든 주문 요청은 증권사 제출 전후로 로그를 남긴다.
+- 실거래 전에는 긴급 중지 기능이 있어야 한다.
+- 서버 쪽에서 하드 리스크 제한을 강제한다.
+- UI는 리서치, 모의 투자, 실계좌 읽기 전용, 실거래 모드를 명확히 구분해야 한다.
 
-## Data Rules
+## 데이터 규칙
 
-- Store source/provider information with imported data.
-- Do not mix adjusted and unadjusted prices without explicit metadata.
-- Track import time and data period.
-- Treat free/public data as potentially inconsistent until validated.
-- Backtests must document transaction cost, slippage, and rebalancing assumptions.
+- 수집 데이터에는 출처와 제공처 정보를 함께 저장한다.
+- 수정주가와 비수정주가를 명시적 메타데이터 없이 섞지 않는다.
+- 데이터 수집 시간과 데이터 기간을 추적한다.
+- 무료/공개 데이터는 검증 전까지 불일치 가능성이 있다고 본다.
+- 백테스트는 거래 비용, 슬리피지, 리밸런싱 가정을 기록해야 한다.
 
-## Review Rules
+## 검토 규칙
 
-- Review documents before scaffolding the actual app.
-- Review UI alternatives before building the main screens.
-- Review broker integration plan before creating real API credentials.
-- Review live trading safety controls before implementing order placement.
+- 실제 앱 구조를 만들기 전에 문서를 먼저 검토한다.
+- 주요 화면을 만들기 전에 UI 대안을 검토한다.
+- 실제 API 인증 정보를 만들기 전에 증권사 연동 계획을 검토한다.
+- API 권한 신청이나 인증 정보 발급이 필요한 단계에서는 필요한 사용자 작업을 한 번에 하나씩 확인한다.
+- 주문 기능을 구현하기 전에 실거래 안전장치를 검토한다.
 
-## Communication Rules
+## 커뮤니케이션 규칙
 
-- Keep user-facing summaries concise.
-- Ask one main question at a time when possible.
-- If several questions remain, say that several remain and ask the next highest-priority question first.
+- 사용자에게 전달하는 요약은 간결하게 한다.
+- 가능하면 한 번에 하나의 핵심 질문만 한다.
+- 질문이 여러 개 남아 있으면 여러 개가 남아 있다고 알리고, 가장 중요한 질문부터 하나씩 묻는다.

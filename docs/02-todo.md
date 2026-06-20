@@ -1,116 +1,121 @@
-# TODO
+# 작업 목록
 
-This file is the source-controlled project task list. Update it whenever scope, order, or design changes.
+이 파일은 소스에 함께 관리하는 프로젝트 작업 목록이다. 범위, 순서, 설계가 바뀌면 함께 업데이트한다.
 
-## Phase 0: Project Definition
+## 0단계: 프로젝트 정의
 
-- [x] Capture initial project idea in repository documents.
-- [x] Record initial architecture recommendation.
-- [x] Record initial safety rules.
-- [x] Review first batch of open questions with the user.
-- [x] Confirm first MVP scope.
-- [ ] Record GitHub repository visibility.
-- [x] Decide Docker-based local setup vs native installs.
+- [x] 초기 프로젝트 아이디어를 문서로 정리
+- [x] 초기 아키텍처 추천 기록
+- [x] 초기 안전 규칙 기록
+- [x] 사용자와 첫 질문 묶음 검토
+- [x] 첫 MVP 범위 확정
+- [ ] GitHub 저장소 공개 여부 기록
+- [x] Docker 기반 로컬 설정과 직접 설치 중 선택
 
-## Phase 1: Repository Bootstrap
+## 1단계: 저장소 기본 설정
 
-- [x] Initialize Git repository locally.
-- [x] Add `.gitignore`.
-- [x] Add `.env.example`.
-- [x] Add Docker Compose for local MySQL.
-- [x] Add basic developer setup guide.
-- [ ] Add root application project structure.
-- [ ] Add initial architecture decision record.
-- [ ] Add license decision if repository will be public.
+- [x] 로컬 Git 저장소 초기화
+- [x] `.gitignore` 추가
+- [x] `.env.example` 추가
+- [x] 로컬 MySQL용 Docker Compose 추가
+- [x] 기본 개발 환경 가이드 추가
+- [x] 에이전트 지침 문서 추가
+- [x] 스킬 운영 계획 문서 추가
+- [ ] Codex 프로젝트 설정 필요 여부 검토
+- [ ] Codex 훅 필요 여부 검토
+- [ ] 반복 작업 발생 시 `.agents/skills`에 실제 스킬 추가
+- [ ] 루트 애플리케이션 프로젝트 구조 추가
+- [ ] 초기 아키텍처 결정 기록 추가
+- [ ] 저장소를 공개할 경우 라이선스 결정
 
-## Phase 2: Local Development Environment
+## 2단계: 로컬 개발 환경
 
-- [ ] Choose exact Python version.
-- [ ] Choose exact FastAPI version.
-- [ ] Choose Node.js version for SvelteKit.
-- [ ] Add local database migration tool.
-- [ ] Add formatting and linting rules.
+- [ ] 정확한 Python 버전 선택
+- [ ] 정확한 FastAPI 버전 선택
+- [ ] SvelteKit용 Node.js 버전 선택
+- [ ] 로컬 DB 마이그레이션 도구 선택
+- [ ] 포맷팅과 린팅 규칙 추가
 
-## Phase 3: Data Model And Storage
+## 3단계: 데이터 모델과 저장소
 
-- [ ] Define market, exchange, symbol, instrument tables.
-- [ ] Define daily OHLCV table.
-- [ ] Define intraday/real-time data storage policy.
-- [ ] Define fundamentals/disclosures storage policy.
-- [ ] Define provider metadata and import audit tables.
-- [ ] Define corporate action handling policy.
+- [ ] 시장, 거래소, 종목, 상품 테이블 정의
+- [ ] 일봉 OHLCV 테이블 정의
+- [ ] 분봉/실시간 데이터 저장 정책 정의
+- [ ] 재무/공시 데이터 저장 정책 정의
+- [ ] 데이터 제공처 메타데이터와 수집 이력 테이블 정의
+- [ ] 액면분할, 배당 등 기업 이벤트 처리 정책 정의
 
-## Phase 4: Data Ingestion MVP
+## 4단계: 데이터 수집 MVP
 
-- [ ] Import Korean stock symbol list.
-- [ ] Import daily OHLCV for selected stocks.
-- [ ] Save imported data to MySQL.
-- [ ] Add import job history.
-- [ ] Add retry and rate-limit handling.
-- [ ] Add basic data quality checks.
+- [ ] 한국 주식 종목 목록 가져오기
+- [ ] 선택 종목의 일봉 OHLCV 가져오기
+- [ ] 수집 데이터를 MySQL에 저장
+- [ ] 데이터 수집 작업 이력 추가
+- [ ] 재시도와 호출 제한 처리 추가
+- [ ] 기본 데이터 품질 검사 추가
 
-## Phase 5: Screening Engine MVP
+## 5단계: 종목 선정 엔진 MVP
 
-- [ ] Define strategy interface.
-- [ ] Implement built-in momentum screener.
-- [ ] Implement built-in swing trading screener.
-- [ ] Implement built-in long-term factor screener.
-- [ ] Implement liquidity filter.
-- [ ] Implement risk exclusion filter.
-- [ ] Store screening runs and results.
-- [ ] Return explanations for selected stocks.
+- [ ] 전략 인터페이스 정의
+- [ ] 기본 모멘텀 스크리너 구현
+- [ ] 기본 스윙 트레이딩 스크리너 구현
+- [ ] 기본 장기 팩터 스크리너 구현
+- [ ] 유동성 필터 구현
+- [ ] 리스크 제외 필터 구현
+- [ ] 종목 선정 실행 결과 저장
+- [ ] 선정된 종목에 대한 설명 반환
 
-## Phase 6: Backtesting MVP
+## 6단계: 백테스트 MVP
 
-- [ ] Define backtest input contract.
-- [ ] Implement daily-bar backtest.
-- [ ] Include transaction cost assumptions.
-- [ ] Include slippage assumptions.
-- [ ] Report CAGR, MDD, volatility, win rate, turnover.
-- [ ] Save backtest runs and result summaries.
+- [ ] 백테스트 입력 계약 정의
+- [ ] 일봉 기반 백테스트 구현
+- [ ] 거래 비용 가정 포함
+- [ ] 슬리피지 가정 포함
+- [ ] CAGR, MDD, 변동성, 승률, 회전율 보고
+- [ ] 백테스트 실행과 결과 요약 저장
 
-## Phase 7: Web UI MVP
+## 7단계: 웹 UI MVP
 
-- [ ] Review reference products and choose layout direction.
-- [ ] Create dashboard view.
-- [ ] Create stock universe/data status view.
-- [ ] Create strategy list/detail view.
-- [ ] Create screening result view.
-- [ ] Create backtest result view.
-- [ ] Add settings page for local configuration.
+- [ ] 참고 제품 검토 후 화면 방향 선택
+- [ ] 대시보드 화면 생성
+- [ ] 종목 유니버스/데이터 상태 화면 생성
+- [ ] 전략 목록/상세 화면 생성
+- [ ] 종목 선정 결과 화면 생성
+- [ ] 백테스트 결과 화면 생성
+- [ ] 로컬 설정 화면 추가
 
-## Phase 8: KIS Read-Only Integration
+## 8단계: KIS 읽기 전용 연동
 
-- [ ] Add KIS credential configuration without committing secrets.
-- [ ] Implement token issue/refresh flow.
-- [ ] Add current quote API.
-- [ ] Add WebSocket real-time quote connection.
-- [ ] Add account read-only checks.
-- [ ] Add broker API audit log.
+- [ ] 비밀 정보가 커밋되지 않도록 KIS 인증 정보 설정 추가
+- [ ] 토큰 발급/갱신 흐름 구현
+- [ ] 현재가 조회 API 추가
+- [ ] WebSocket 실시간 시세 연결 추가
+- [ ] 계좌 읽기 전용 확인 추가
+- [ ] 증권사 API 감사 로그 추가
 
-## Phase 9: Paper Trading
+## 9단계: 모의 투자
 
-- [ ] Add UI setting to enable or disable paper trading.
-- [ ] Implement simulated account.
-- [ ] Implement simulated order placement.
-- [ ] Implement fill model.
-- [ ] Record generated signals and simulated orders.
-- [ ] Compare strategy intent vs simulated execution.
+- [ ] 모의 투자를 켜고 끄는 UI 설정 추가
+- [ ] 시뮬레이션 계좌 구현
+- [ ] 시뮬레이션 주문 생성 구현
+- [ ] 체결 모델 구현
+- [ ] 생성된 신호와 시뮬레이션 주문 기록
+- [ ] 전략 의도와 시뮬레이션 체결 결과 비교
 
-## Phase 10: Guarded Live Trading
+## 10단계: 제한된 실거래
 
-- [ ] Add explicit live-trading enable switch.
-- [ ] Add maximum order amount per stock.
-- [ ] Add maximum daily order count.
-- [ ] Add maximum daily loss stop.
-- [ ] Add kill switch.
-- [ ] Add manual confirmation option.
-- [ ] Add live order API only after review.
+- [ ] 실거래 활성화 스위치 추가
+- [ ] 종목당 최대 주문 금액 추가
+- [ ] 일별 최대 주문 횟수 추가
+- [ ] 일별 최대 손실 중지 조건 추가
+- [ ] 긴급 중지 기능 추가
+- [ ] 수동 확인 옵션 추가
+- [ ] 검토 후에만 실거래 주문 API 추가
 
-## Phase 11: US Market Extension
+## 11단계: 미국 시장 확장
 
-- [ ] Decide US market data source.
-- [ ] Add US symbol normalization.
-- [ ] Add currency handling.
-- [ ] Add US market calendar.
-- [ ] Add US broker/trading plan only if needed.
+- [ ] 미국 시장 데이터 소스 결정
+- [ ] 미국 종목 코드 정규화 추가
+- [ ] 통화 처리 추가
+- [ ] 미국 시장 캘린더 추가
+- [ ] 필요할 경우 미국 증권사/매매 계획 추가

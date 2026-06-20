@@ -1,66 +1,65 @@
-# Local Setup
+# 로컬 설정
 
 ## Docker
 
-The project uses Docker Compose for local MySQL.
+이 프로젝트는 로컬 MySQL 실행에 Docker Compose를 사용한다.
 
-Check Docker:
+Docker 확인:
 
 ```bash
 docker --version
 docker compose version
 ```
 
-If Docker is not installed, install Docker Desktop for Mac:
+Docker가 설치되어 있지 않다면 Mac용 Docker Desktop을 설치한다.
 
 https://docs.docker.com/desktop/setup/install/mac-install/
 
-After installation, open Docker Desktop once and wait until it is running.
+설치 후 Docker Desktop을 한 번 실행하고, 실행 완료 상태가 될 때까지 기다린다.
 
-## Environment File
+## 환경 파일
 
-Create a local environment file:
+로컬 환경 파일을 만든다.
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env` and change local passwords before real use.
+그다음 `.env`를 열어 실제 사용 전에 로컬 비밀번호를 바꾼다.
 
-Do not commit `.env`.
+`.env`는 커밋하지 않는다.
 
 ## MySQL
 
-Start MySQL:
+MySQL 시작:
 
 ```bash
 docker compose up -d mysql
 ```
 
-Check status:
+상태 확인:
 
 ```bash
 docker compose ps
 docker compose logs -f mysql
 ```
 
-Connect with the MySQL CLI inside the container:
+컨테이너 안의 MySQL CLI로 접속:
 
 ```bash
 docker compose exec mysql mysql -uquantmate -p quantmate
 ```
 
-Stop MySQL:
+MySQL 중지:
 
 ```bash
 docker compose down
 ```
 
-Delete the local MySQL data volume:
+로컬 MySQL 데이터 볼륨 삭제:
 
 ```bash
 docker compose down -v
 ```
 
-Use `down -v` only when you intentionally want to remove local database data.
-
+`down -v`는 로컬 DB 데이터를 의도적으로 지울 때만 사용한다.

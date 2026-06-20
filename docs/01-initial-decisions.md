@@ -1,130 +1,130 @@
-# Initial Decisions
+# 초기 결정 사항
 
-Each item starts as `Proposed` until reviewed.
+각 항목은 검토 전까지 `제안` 상태로 둔다.
 
-## Technology Stack
+## 기술 스택
 
-### Backend
+### 백엔드
 
-Status: Proposed
+상태: 제안
 
-Use Python + FastAPI for the main backend.
+메인 백엔드는 Python + FastAPI를 사용한다.
 
-Reasons:
+이유:
 
-- The project already needs Python for data collection, strategy logic, and backtesting.
-- A Python backend avoids early Java/Python integration complexity.
-- FastAPI is well suited for a local API server, async broker calls, scheduled jobs, and a typed API contract.
-- Broker API secrets and trading safety controls should live server-side, not in the browser.
+- 이 프로젝트는 데이터 수집, 전략 계산, 백테스트에 Python이 필요하다.
+- 백엔드까지 Python으로 맞추면 Java/Python 연동 복잡도를 초기에 줄일 수 있다.
+- FastAPI는 로컬 API 서버, 비동기 증권사 호출, 스케줄 작업, 타입 기반 API 계약에 적합하다.
+- 증권사 API 키와 매매 안전장치는 브라우저가 아니라 서버 쪽에 있어야 한다.
 
-Java + Spring Boot remains a fallback option if the server grows into a larger enterprise-style application.
+Java + Spring Boot는 서버가 더 큰 엔터프라이즈형 애플리케이션으로 성장할 때 대안으로 다시 검토한다.
 
-### Quant Runtime
+### 퀀트 실행 영역
 
-Status: Proposed
+상태: 제안
 
-Use Python for data analysis, strategy calculation, and backtesting modules in the same backend codebase at first.
+처음에는 데이터 분석, 전략 계산, 백테스트 모듈을 백엔드 코드베이스 안의 Python 코드로 구현한다.
 
-Reasons:
+이유:
 
-- Python has stronger stock-data, numerical, and backtesting library support.
-- User-defined strategies are easier to prototype in Python.
-- This keeps strategy logic easier to test separately from the web app.
+- Python은 주식 데이터, 수치 계산, 백테스트 생태계가 강하다.
+- 사용자 정의 전략을 Python으로 먼저 실험하기 쉽다.
+- 전략 로직을 웹 UI와 분리해 테스트하기 쉽다.
 
-Later, heavy jobs can move into a separate worker if backtests or data imports become too slow for the API process.
+나중에 데이터 수집이나 백테스트가 API 프로세스에 부담을 주면 별도 워커로 분리한다.
 
-### Web Client
+### 웹 클라이언트
 
-Status: Proposed
+상태: 제안
 
-Use SvelteKit with TypeScript.
+SvelteKit + TypeScript를 사용한다.
 
-Reasons:
+이유:
 
-- SvelteKit is productive for local dashboards, strategy forms, and result views.
-- The user does not need to know Svelte deeply if implementation is handled in small reviewed steps.
-- The UI can remain thin: display data, configure strategies, run jobs, and show results.
+- 로컬 대시보드, 전략 설정 폼, 결과 화면을 만들기 좋다.
+- 구현을 작은 단계로 나누면 사용자가 SvelteKit을 깊이 몰라도 진행할 수 있다.
+- UI는 데이터를 보여주고, 전략을 설정하고, 작업을 실행하고, 결과를 확인하는 얇은 계층으로 유지할 수 있다.
 
-### Database
+### 데이터베이스
 
-Status: Decided
+상태: 결정
 
-Use MySQL 8.4 LTS locally through Docker Compose.
+MySQL 8.4 LTS를 Docker Compose로 로컬에서 실행한다.
 
-Reasons:
+이유:
 
-- MySQL matches the user's current preference.
-- MySQL 8.4 is an LTS line, better suited than innovation releases for a long-running local project.
-- Docker Compose makes setup repeatable and avoids machine-specific install drift.
+- MySQL은 사용자가 고려하던 선택지다.
+- MySQL 8.4는 LTS 계열이라 장기 로컬 프로젝트에 적합하다.
+- Docker Compose를 쓰면 설치 환경을 반복 가능하게 만들고, PC별 설정 차이를 줄일 수 있다.
 
-Native local install is no longer the default path.
+직접 설치 방식은 기본 경로로 사용하지 않는다.
 
-Possible future additions:
+나중에 검토할 수 있는 추가 선택지:
 
-- DuckDB or Parquet files for fast research snapshots.
-- PostgreSQL/TimescaleDB only if MySQL becomes a bottleneck for time-series workloads.
+- 빠른 연구용 스냅샷을 위한 DuckDB 또는 Parquet
+- MySQL이 시계열 처리 병목이 될 경우 PostgreSQL/TimescaleDB
 
-### Broker API
+### 증권사 API
 
-Status: Proposed
+상태: 제안
 
-Use Korea Investment & Securities Open API as the first broker integration.
+첫 증권사 연동은 한국투자증권 Open API를 사용한다.
 
-Initial usage order:
+초기 사용 순서:
 
-1. OAuth/token and configuration handling.
-2. Market data read APIs.
-3. WebSocket real-time quote ingestion.
-4. Account read-only APIs.
-5. Optional paper-trading executor.
-6. Live order APIs.
+1. OAuth/토큰과 설정 처리
+2. 시장 데이터 조회 API
+3. WebSocket 실시간 시세 수집
+4. 계좌 읽기 전용 API
+5. 선택형 모의 투자 실행기
+6. 실거래 주문 API
 
-### Historical Data Sources
+### 과거 데이터 소스
 
-Status: Proposed
+상태: 제안
 
-Use multiple sources depending on data type:
+데이터 종류에 따라 여러 소스를 사용한다.
 
-- KIS Open API: broker-aligned current quotes, real-time data, account/trading.
-- FinanceDataReader: early historical daily data and symbol lists.
-- pykrx: Korean market OHLCV and market data checks.
-- OpenDART: financial statements, disclosures, fundamentals.
-- yfinance: US market or benchmark research only, with license/terms caution.
+- KIS Open API: 증권사 기준 현재가, 실시간 데이터, 계좌/매매
+- FinanceDataReader: 초기 과거 일봉 데이터와 종목 목록
+- pykrx: 한국 시장 OHLCV와 시장 데이터 검증
+- OpenDART: 재무제표, 공시, 기본적 분석 데이터
+- yfinance: 미국 시장 또는 벤치마크 연구용, 사용 약관 주의
 
-The app should store provider metadata with imported data so that later discrepancies can be traced.
+가져온 데이터에는 제공처 정보를 함께 저장해 나중에 데이터 차이를 추적할 수 있게 한다.
 
-## Initial Algorithm Families
+## 초기 알고리즘 묶음
 
-Status: Proposed
+상태: 제안
 
-Built-in algorithms should start with explainable strategies:
+기본 제공 알고리즘은 설명 가능한 전략부터 시작한다.
 
-- Momentum: recent relative strength, moving average trend, breakout.
-- Value: PER/PBR/dividend yield based filters when reliable fundamentals are available.
-- Quality: ROE, operating margin, debt ratio, earnings stability.
-- Low volatility: lower drawdown or volatility among liquid stocks.
-- Liquidity and volume: volume surge, turnover, trading value filters.
-- Supply/demand: foreign/institution net buying, program trading, investor flow data if available.
-- Intraday/trader style: minute-bar momentum, volume spike, volatility breakout, and VWAP-style filters when intraday data is ready.
-- Risk filters: trading halt, management issue, low liquidity, extreme gap, abnormal volatility.
+- 모멘텀: 상대 강도, 이동평균 추세, 돌파
+- 가치: 신뢰 가능한 재무 데이터가 있을 때 PER, PBR, 배당수익률 필터
+- 퀄리티: ROE, 영업이익률, 부채비율, 이익 안정성
+- 저변동성: 유동성 있는 종목 중 변동성이나 낙폭이 낮은 종목
+- 유동성/거래량: 거래량 급증, 회전율, 거래대금 필터
+- 수급: 외국인/기관 순매수, 프로그램 매매, 투자자별 흐름
+- 단타/트레이더형: 분봉 모멘텀, 거래량 급증, 변동성 돌파, VWAP 계열 필터
+- 리스크 필터: 거래정지, 관리종목, 낮은 유동성, 과도한 갭, 이상 변동성
 
-No strategy should be treated as universally good. Each strategy needs:
+어떤 전략도 항상 좋은 전략으로 취급하지 않는다. 각 전략은 다음 정보를 가져야 한다.
 
-- intent
-- required data
-- signal rules
-- risk/failure cases
-- default parameters
-- backtest assumptions
+- 의도
+- 필요한 데이터
+- 신호 규칙
+- 위험과 실패 사례
+- 기본 파라미터
+- 백테스트 가정
 
-## Repository And Secrets
+## 저장소와 비밀 정보
 
-Status: Partially decided
+상태: 일부 결정
 
-GitHub repository:
+GitHub 저장소:
 
 https://github.com/sebastian-ryu/quantmate
 
-Secrets must never be committed. Use local `.env` files and provide only `.env.example`.
+비밀 정보는 절대 커밋하지 않는다. 로컬 `.env` 파일을 사용하고, 저장소에는 `.env.example`만 둔다.
 
-Repository visibility is not recorded yet.
+저장소 공개 여부는 아직 문서에 기록되지 않았다.

@@ -7,6 +7,11 @@ from enum import StrEnum
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
+
+from quantmate_api.db import SessionLocal
+from quantmate_api.models import DailyPrice, DataImportJob, Instrument, Market
 
 
 class AppMode(StrEnum):
@@ -69,6 +74,13 @@ class DashboardResponse(BaseModel):
     strategies: list[Strategy]
     recommendations: list[Recommendation]
     backtest: BacktestPreview
+
+
+class DataStatusResponse(BaseModel):
+    connected: bool
+    provider_status: list[dict[str, str | bool]]
+    table_counts: dict[str, int]
+    message: str
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -232,3 +244,35 @@ async def dashboard() -> DashboardResponse:
         backtest=BACKTEST,
     )
 
+
+@app.get("/api/data/status")
+async def data_status() -> DataStatusResponse:
+    provider_status = [
+        {"name": "KIS Open API", "scope": "현재가/실시간/계좌", "status": "권한 필요", "ready": False},
+        {"name": "FinanceDataReader", "scope": "종목 목록/일봉", "status": "후보", "ready": True},
+        {"name": "pykrx", "scope": "KRX 일봉/시장 데이터", "status": "후보", "ready": True},
+        {"name": "OpenDART", "scope": "재무제표/공시", "status": "API 키 필요", "ready": False},
+    ]
+
+    try:
+        with SessionLocal() as session:
+            table_counts = {
+                "markets": session.scalar(select(func.count()).select_from(Market)) or 0,
+                "instruments": session.scalar(select(func.count()).select_from(Instrument)) or 0,
+                "daily_prices": session.scalar(select(func.count()).select_from(DailyPrice)) or 0,
+                "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
+            }
+    except SQLAlchemyError as exc:
+        return DataStatusResponse(
+            connected=False,
+            provider_status=provider_status,
+            table_counts={},
+            message=f"DB 연결 확인 필요: {exc.__class__.__name__}",
+        )
+
+    return DataStatusResponse(
+        connected=True,
+        provider_status=provider_status,
+        table_counts=table_counts,
+        message="로컬 MySQL 연결 정상",
+    )

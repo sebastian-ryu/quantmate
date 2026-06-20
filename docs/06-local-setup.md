@@ -70,6 +70,12 @@ docker compose down -v
 make db-migrate
 ```
 
+초기 개발용 데모 종목 입력:
+
+```bash
+make db-seed
+```
+
 ## 백엔드
 
 의존성 설치:

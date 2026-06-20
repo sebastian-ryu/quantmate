@@ -50,11 +50,28 @@ export type Dashboard = {
   backtest: BacktestPreview;
 };
 
+export type DataStatus = {
+  connected: boolean;
+  provider_status: Array<{ name: string; scope: string; status: string; ready: boolean }>;
+  table_counts: Record<string, number>;
+  message: string;
+};
+
 export async function fetchDashboard(): Promise<Dashboard> {
   const response = await fetch(`${API_BASE_URL}/api/dashboard`);
 
   if (!response.ok) {
     throw new Error(`대시보드 데이터를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchDataStatus(): Promise<DataStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/data/status`);
+
+  if (!response.ok) {
+    throw new Error(`데이터 상태를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

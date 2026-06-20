@@ -26,3 +26,6 @@ db-migrate:
 
 db-revision:
 	python3 -m alembic -c backend/alembic.ini revision --autogenerate
+
+db-seed:
+	python3 -m quantmate_api.seed

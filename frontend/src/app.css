@@ -308,6 +308,52 @@ button:disabled,
   accent-color: #1f6b8f;
 }
 
+.switch-row {
+  align-items: center;
+  background: #f5f7f8;
+  border: 1px solid #e1e8ea;
+  border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+}
+
+.switch-row input {
+  appearance: none;
+  background: #cbd6da;
+  border-radius: 999px;
+  cursor: pointer;
+  height: 26px;
+  position: relative;
+  width: 48px;
+}
+
+.switch-row input::before {
+  background: #ffffff;
+  border-radius: 50%;
+  content: "";
+  height: 20px;
+  left: 3px;
+  position: absolute;
+  top: 3px;
+  transition: transform 0.16s ease;
+  width: 20px;
+}
+
+.switch-row input:checked {
+  background: #1f6b8f;
+}
+
+.switch-row input:checked::before {
+  transform: translateX(22px);
+}
+
+.switch-row input:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
 .table-wrap {
   max-width: 100%;
   overflow-x: auto;

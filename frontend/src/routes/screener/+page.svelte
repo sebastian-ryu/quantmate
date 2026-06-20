@@ -427,6 +427,7 @@
   let registeredStrategies: UserStrategy[] = [];
   let strategyPersistenceError = '';
   let strategySaving = false;
+  let strategyModalOpen = false;
   let deletingStrategyCode = '';
   let activeFilterChips: FilterChip[] = [];
   let categoryCounts: Record<string, number> = {};
@@ -937,6 +938,15 @@
     }
   }
 
+  function openStrategyModal() {
+    strategyModalOpen = true;
+    strategyPersistenceError = '';
+  }
+
+  function closeStrategyModal() {
+    strategyModalOpen = false;
+  }
+
   async function registerStrategy() {
     const name = strategyName.trim() || `검색기 전략 ${registeredStrategies.length + 1}`;
     const summary = strategySummary.trim() || '검색기에서 저장한 조건 기반 전략입니다.';
@@ -954,6 +964,7 @@
       registeredStrategies = [created, ...registeredStrategies];
       strategyName = '';
       strategySummary = '';
+      strategyModalOpen = false;
     } catch (err) {
       strategyPersistenceError = err instanceof Error ? err.message : '사용자 전략을 저장하지 못했습니다.';
     } finally {
@@ -998,90 +1009,44 @@
     <h1>퀀트 조건과 수급 유입 조건으로 후보를 좁힙니다.</h1>
   </div>
   <div class="action-row">
-    <button type="button" class="secondary" onclick={resetFilters}>초기화</button>
+    <button type="button" onclick={openStrategyModal}>전략 등록</button>
   </div>
 </header>
 
 <section class="screener-workbench">
   <section class="panel popular-screeners" aria-label="인기 종목검색기">
-    <div class="popular-screeners-layout">
-      <div class="preset-strip">
-        <div class="panel-heading inline">
-          <div>
-            <span>인기 종목검색기</span>
-            <strong>{activePreset || '프리셋 선택'}</strong>
-          </div>
-          <span class="muted">선택한 조건은 현재 필터에 누적됩니다.</span>
+    <div class="preset-strip">
+      <div class="panel-heading inline">
+        <div>
+          <span>인기 종목검색기</span>
+          <strong>{activePreset || '프리셋 선택'}</strong>
         </div>
-        <div class="preset-grid">
-          {#each presets as preset}
-            <button
-              type="button"
-              class:active={activePreset === preset.label}
-              onclick={() => applyPreset(preset)}
-            >
-              {preset.label}
-            </button>
-          {/each}
-        </div>
+        <span class="muted">선택한 조건은 현재 필터에 누적됩니다.</span>
       </div>
-
-      <section class="strategy-strip" aria-label="검색식 전략 등록">
-        <div class="panel-heading inline">
-          <div>
-            <span>전략 등록</span>
-            <strong>현재 검색식 저장</strong>
-          </div>
-          <span class="muted">저장 시 현재 {filteredRows.length}개 후보 기준</span>
-        </div>
-        <div class="strategy-register">
-          <label>
-            <span>전략명</span>
-            <input bind:value={strategyName} placeholder="예: 외국인+기관 수급 유입주" />
-          </label>
-          <label>
-            <span>소개</span>
-            <input bind:value={strategySummary} placeholder="예: 외국인과 기관 수급이 함께 들어오는 종목" />
-          </label>
-          <button type="button" onclick={registerStrategy} disabled={strategySaving}>
-            {strategySaving ? '저장 중' : '등록'}
+      <div class="preset-grid">
+        {#each presets as preset}
+          <button
+            type="button"
+            class:active={activePreset === preset.label}
+            onclick={() => applyPreset(preset)}
+          >
+            {preset.label}
           </button>
-        </div>
-        {#if strategyPersistenceError}
-          <div class="empty-state error">{strategyPersistenceError}</div>
-        {/if}
-        {#if registeredStrategies.length}
-          <ul class="registered-strategies compact">
-            {#each registeredStrategies as strategy}
-              <li>
-                <div>
-                  <strong>{strategy.name}</strong>
-                  <p>{strategy.summary}</p>
-                  <span>{formatStrategyDate(strategy.created_at)} · 후보 {strategy.result_count}개</span>
-                </div>
-                <button
-                  type="button"
-                  class="secondary"
-                  disabled={deletingStrategyCode === strategy.code}
-                  onclick={() => removeRegisteredStrategy(strategy.code)}
-                >
-                  {deletingStrategyCode === strategy.code ? '삭제 중' : '삭제'}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </section>
+        {/each}
+      </div>
     </div>
   </section>
 
   <section class="panel screener-builder" aria-label="검색식 설정">
-    <div class="panel-heading inline">
+    <div class="panel-heading inline filter-panel-heading">
       <div>
         <span>필터</span>
         <strong>적용 {appliedFilterCount}개 조건</strong>
       </div>
-      <span class="muted">더미 데이터 기준</span>
+      <div class="filter-heading-actions">
+        <span class="muted">더미 데이터 기준</span>
+        <button type="button" class="secondary" onclick={resetFilters}>초기화</button>
+      </div>
     </div>
 
     <div class="category-tabs" aria-label="필터 분류">
@@ -1494,3 +1459,73 @@
     </div>
   </section>
 </section>
+
+{#if strategyModalOpen}
+  <div class="modal-backdrop" role="presentation"></div>
+  <div
+    class="modal-panel strategy-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="strategy-modal-title"
+  >
+    <div class="modal-header">
+      <div>
+        <span>전략 등록</span>
+        <h2 id="strategy-modal-title">현재 검색식 저장</h2>
+        <p>현재 필터 결과 {filteredRows.length}개 후보를 전략으로 저장합니다.</p>
+      </div>
+      <button type="button" class="secondary icon-button" aria-label="닫기" onclick={closeStrategyModal}>×</button>
+    </div>
+
+    <div class="strategy-modal-form">
+      <label>
+        <span>전략명</span>
+        <input bind:value={strategyName} placeholder="예: 외국인+기관 수급 유입주" />
+      </label>
+      <label>
+        <span>소개</span>
+        <textarea
+          bind:value={strategySummary}
+          rows="3"
+          placeholder="예: 외국인과 기관 수급이 함께 들어오는 종목"
+        ></textarea>
+      </label>
+    </div>
+
+    {#if strategyPersistenceError}
+      <div class="empty-state error">{strategyPersistenceError}</div>
+    {/if}
+
+    {#if registeredStrategies.length}
+      <div class="registered-strategy-panel">
+        <strong>저장된 검색기 전략</strong>
+        <ul class="registered-strategies compact">
+          {#each registeredStrategies as strategy}
+            <li>
+              <div>
+                <strong>{strategy.name}</strong>
+                <p>{strategy.summary}</p>
+                <span>{formatStrategyDate(strategy.created_at)} · 후보 {strategy.result_count}개</span>
+              </div>
+              <button
+                type="button"
+                class="secondary"
+                disabled={deletingStrategyCode === strategy.code}
+                onclick={() => removeRegisteredStrategy(strategy.code)}
+              >
+                {deletingStrategyCode === strategy.code ? '삭제 중' : '삭제'}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
+    <div class="modal-actions">
+      <button type="button" class="secondary" onclick={closeStrategyModal}>취소</button>
+      <button type="button" onclick={registerStrategy} disabled={strategySaving}>
+        {strategySaving ? '저장 중' : '저장'}
+      </button>
+    </div>
+  </div>
+{/if}

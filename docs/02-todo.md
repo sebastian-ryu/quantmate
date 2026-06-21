@@ -137,7 +137,7 @@
 - [x] Yahoo/yfinance 일봉을 `daily_prices`에 저장하는 임시 적재 API 추가
 - [x] Yahoo/yfinance 일봉 수집 데이터를 MySQL `daily_prices`에 저장
 - [x] Yahoo/yfinance 일봉 수집 작업 이력 추가
-- [ ] 재시도와 호출 제한 처리 추가
+- [x] 재시도와 호출 제한 처리 추가
 - [ ] 기본 데이터 품질 검사 추가
 - [x] 백테스트 투입 전 종목별 최소 일봉 커버리지 검사 추가
 

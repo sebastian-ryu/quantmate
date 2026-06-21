@@ -109,6 +109,16 @@ PAPER_TRADING_ENABLED=false
 
 실전투자는 값을 교체하되 `LIVE_TRADING_ENABLED=false`를 유지하고, 실전 주문은 별도 안전장치 검토 전까지 사용하지 않는다.
 
+시장 데이터 호출은 기본적으로 429/5xx 응답과 일시 네트워크 오류에 짧게 재시도한다. 필요하면 `.env`에서 아래 값을 조정한다.
+
+```env
+MARKET_DATA_RETRY_COUNT=2
+MARKET_DATA_RETRY_BACKOFF_SECONDS=0.6
+KIS_REQUEST_MIN_INTERVAL_SECONDS=0.08
+YAHOO_REQUEST_MIN_INTERVAL_SECONDS=0.2
+KRX_REQUEST_MIN_INTERVAL_SECONDS=0.2
+```
+
 ```env
 # KIS_IS_PAPER=false
 # KIS_BASE_URL=https://openapi.koreainvestment.com:9443

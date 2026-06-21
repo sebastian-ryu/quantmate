@@ -56,6 +56,82 @@ KIS_MARKET_CAP_RANKING_MARKET_CODES = {
 }
 KIS_TOKEN_CACHE: dict[str, Any] = {}
 KIS_MARKET_CAP_RANKING_CACHE: dict[str, dict[str, Any]] = {}
+PROVIDER_LAST_REQUEST_AT: dict[str, float] = {}
+RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def provider_request_min_interval(provider_key: str) -> float:
+    provider_env = f"{provider_key.upper()}_REQUEST_MIN_INTERVAL_SECONDS"
+    configured_default = env_float("MARKET_DATA_REQUEST_MIN_INTERVAL_SECONDS", 0)
+    return max(0, env_float(provider_env, configured_default))
+
+
+def wait_for_provider_rate_limit(provider_key: str) -> None:
+    min_interval = provider_request_min_interval(provider_key)
+    if min_interval <= 0:
+        return
+
+    now = time.monotonic()
+    last_request_at = PROVIDER_LAST_REQUEST_AT.get(provider_key, 0)
+    wait_seconds = min_interval - (now - last_request_at)
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+    PROVIDER_LAST_REQUEST_AT[provider_key] = time.monotonic()
+
+
+def request_provider_response(
+    *,
+    provider_key: str,
+    failure_label: str,
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> requests.Response:
+    retry_count = max(0, env_int("MARKET_DATA_RETRY_COUNT", 2))
+    backoff_seconds = max(0, env_float("MARKET_DATA_RETRY_BACKOFF_SECONDS", 0.6))
+    last_exception: requests.RequestException | None = None
+    response: requests.Response | None = None
+
+    for attempt in range(retry_count + 1):
+        wait_for_provider_rate_limit(provider_key)
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.RequestException as exc:
+            last_exception = exc
+            if attempt >= retry_count:
+                raise MarketDataProviderUnavailable(f"{failure_label}: {exc}") from exc
+        else:
+            if response.status_code not in RETRYABLE_HTTP_STATUSES or attempt >= retry_count:
+                return response
+
+        if backoff_seconds > 0:
+            time.sleep(backoff_seconds * (attempt + 1))
+
+    if last_exception is not None:
+        raise MarketDataProviderUnavailable(f"{failure_label}: {last_exception}") from last_exception
+    if response is not None:
+        return response
+    raise MarketDataProviderUnavailable(f"{failure_label}: 응답을 받지 못했습니다.")
 
 
 def has_krx_open_api_auth_key() -> bool:
@@ -212,19 +288,19 @@ def get_kis_access_token(force_refresh: bool = False) -> str:
 
 
 def issue_kis_access_token(*, app_key: str, app_secret: str, base_url: str) -> dict[str, Any]:
-    try:
-        response = requests.post(
-            f"{base_url.rstrip('/')}/oauth2/tokenP",
-            headers={"content-type": "application/json"},
-            json={
-                "grant_type": "client_credentials",
-                "appkey": app_key,
-                "appsecret": app_secret,
-            },
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise MarketDataProviderUnavailable(f"KIS 접근토큰 발급 실패: {exc}") from exc
+    response = request_provider_response(
+        provider_key="kis",
+        failure_label="KIS 접근토큰 발급 실패",
+        method="POST",
+        url=f"{base_url.rstrip('/')}/oauth2/tokenP",
+        headers={"content-type": "application/json"},
+        json={
+            "grant_type": "client_credentials",
+            "appkey": app_key,
+            "appsecret": app_secret,
+        },
+        timeout=20,
+    )
 
     try:
         payload = response.json()
@@ -947,23 +1023,17 @@ def request_kis_open_api(
     if include_hash_key and body:
         headers["hashkey"] = issue_kis_hash_key(body=body, app_key=app_key, app_secret=app_secret)
 
-    try:
-        if method.upper() == "POST":
-            response = requests.post(
-                f"{get_kis_base_url().rstrip('/')}/{path.lstrip('/')}",
-                headers=headers,
-                json=body or {},
-                timeout=20,
-            )
-        else:
-            response = requests.get(
-                f"{get_kis_base_url().rstrip('/')}/{path.lstrip('/')}",
-                headers=headers,
-                params=params or {},
-                timeout=20,
-            )
-    except requests.RequestException as exc:
-        raise MarketDataProviderUnavailable(f"KIS Open API 호출 실패: {exc}") from exc
+    normalized_method = method.upper()
+    response = request_provider_response(
+        provider_key="kis",
+        failure_label="KIS Open API 호출 실패",
+        method=normalized_method,
+        url=f"{get_kis_base_url().rstrip('/')}/{path.lstrip('/')}",
+        headers=headers,
+        json=(body or {}) if normalized_method == "POST" else None,
+        params=(params or {}) if normalized_method != "POST" else None,
+        timeout=20,
+    )
 
     try:
         payload = response.json()
@@ -983,19 +1053,19 @@ def request_kis_open_api(
 
 
 def issue_kis_hash_key(*, body: dict[str, Any], app_key: str, app_secret: str) -> str:
-    try:
-        response = requests.post(
-            f"{get_kis_base_url().rstrip('/')}/uapi/hashkey",
-            headers={
-                "content-type": "application/json; charset=utf-8",
-                "appkey": app_key,
-                "appsecret": app_secret,
-            },
-            json=body,
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise MarketDataProviderUnavailable(f"KIS hashkey 발급 실패: {exc}") from exc
+    response = request_provider_response(
+        provider_key="kis",
+        failure_label="KIS hashkey 발급 실패",
+        method="POST",
+        url=f"{get_kis_base_url().rstrip('/')}/uapi/hashkey",
+        headers={
+            "content-type": "application/json; charset=utf-8",
+            "appkey": app_key,
+            "appsecret": app_secret,
+        },
+        json=body,
+        timeout=20,
+    )
 
     try:
         payload = response.json()
@@ -1031,27 +1101,27 @@ def fetch_yahoo_chart_daily_prices(
     period2 = int(start_of_day_kst(end_date + timedelta(days=1)).timestamp())
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
 
-    try:
-        response = requests.get(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/126.0 Safari/537.36"
-                ),
-            },
-            params={
-                "period1": str(period1),
-                "period2": str(period2),
-                "interval": "1d",
-                "events": "history",
-            },
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise MarketDataProviderUnavailable(f"Yahoo 일봉 호출 실패: {exc}") from exc
+    response = request_provider_response(
+        provider_key="yahoo",
+        failure_label="Yahoo 일봉 호출 실패",
+        method="GET",
+        url=url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0 Safari/537.36"
+            ),
+        },
+        params={
+            "period1": str(period1),
+            "period2": str(period2),
+            "interval": "1d",
+            "events": "history",
+        },
+        timeout=20,
+    )
 
     if response.status_code != 200:
         raise MarketDataProviderUnavailable(f"Yahoo 일봉 호출 실패: HTTP {response.status_code}")
@@ -1105,15 +1175,15 @@ def call_krx_open_api(endpoint: str, params: dict[str, str]) -> dict[str, Any]:
     base_url = os.getenv("KRX_OPEN_API_BASE_URL", "https://openapi.krx.co.kr/svc/apis/sto")
     url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
-    try:
-        response = requests.get(
-            url,
-            headers={"AUTH_KEY": auth_key, "Accept": "application/json"},
-            params=params,
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise MarketDataProviderUnavailable(f"KRX Open API 호출 실패: {exc}") from exc
+    response = request_provider_response(
+        provider_key="krx",
+        failure_label="KRX Open API 호출 실패",
+        method="GET",
+        url=url,
+        headers={"AUTH_KEY": auth_key, "Accept": "application/json"},
+        params=params,
+        timeout=20,
+    )
 
     if response.status_code != 200:
         raise MarketDataProviderUnavailable(

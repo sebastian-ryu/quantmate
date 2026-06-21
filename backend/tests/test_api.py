@@ -2029,6 +2029,140 @@ def test_data_quality_reports_price_coverage(monkeypatch) -> None:
     assert checks["provider-mix"]["status"] == "ok"
 
 
+def test_market_calendar_endpoint_returns_us_holidays() -> None:
+    response = client.get("/api/data/market-calendar?market=NASDAQ&start=2026-06-18&end=2026-06-22")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["market"] == "US"
+    assert data["timezone"] == "America/New_York"
+    assert data["open_days"] == 2
+    assert data["closed_days"] == 3
+    assert data["items"][1]["date"] == "2026-06-19"
+    assert data["items"][1]["reason"] == "Juneteenth National Independence Day"
+
+
+def test_open_dart_corp_code_status_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_open_dart_corp_code_cache_status",
+        lambda: {
+            "provider": "OpenDART",
+            "ready": True,
+            "base_url": "https://opendart.fss.or.kr/api",
+            "cache_path": "/tmp/opendart_corp_codes.json",
+            "cached": True,
+            "cached_count": 1,
+            "fetched_at": "2026-06-21T12:00:00",
+        },
+    )
+
+    response = client.get("/api/data/opendart/corp-codes/status")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "OpenDART"
+    assert data["cached_count"] == 1
+
+
+def test_open_dart_corp_code_cache_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "fetch_open_dart_corp_codes",
+        lambda force_refresh=False: [
+            {
+                "corp_code": "00126380",
+                "corp_name": "삼성전자",
+                "corp_eng_name": "SAMSUNG ELECTRONICS CO,.LTD",
+                "stock_code": "005930",
+                "modify_date": "20240630",
+            },
+            {
+                "corp_code": "00401731",
+                "corp_name": "비상장테스트",
+                "corp_eng_name": "",
+                "stock_code": "",
+                "modify_date": "20240630",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_open_dart_corp_code_cache_status",
+        lambda: {
+            "provider": "OpenDART",
+            "ready": True,
+            "base_url": "https://opendart.fss.or.kr/api",
+            "cache_path": "/tmp/opendart_corp_codes.json",
+            "cached": True,
+            "cached_count": 2,
+            "fetched_at": "2026-06-21T12:00:00",
+        },
+    )
+
+    response = client.post("/api/data/opendart/corp-codes/cache?force_refresh=true")
+    data = response.json()
+
+    assert response.status_code == 201
+    assert data["fetched_count"] == 2
+    assert data["listed_count"] == 1
+    assert data["cache_path"] == "/tmp/opendart_corp_codes.json"
+
+
+def test_open_dart_financial_statements_endpoint(monkeypatch) -> None:
+    def fake_fetch_open_dart_financial_statements(
+        *,
+        symbol: str,
+        business_year: int,
+        report_code: str = "11011",
+        fs_div: str = "CFS",
+        force_refresh_corp_codes: bool = False,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert business_year == 2025
+        assert report_code == "11011"
+        assert fs_div == "CFS"
+        assert force_refresh_corp_codes is False
+        return [
+            {
+                "provider": "OpenDART",
+                "symbol": "005930",
+                "corp_code": "00126380",
+                "corp_name": "삼성전자",
+                "business_year": 2025,
+                "report_code": "11011",
+                "fs_div": "CFS",
+                "receipt_no": "20260301000001",
+                "statement_type": "IS",
+                "statement_name": "손익계산서",
+                "account_id": "ifrs-full_Revenue",
+                "account_name": "매출액",
+                "account_detail": "",
+                "current_term_name": "제57기",
+                "current_amount": 300000000000000,
+                "current_accumulated_amount": None,
+                "previous_term_name": "제56기",
+                "previous_amount": 280000000000000,
+                "previous_accumulated_amount": None,
+                "currency": "KRW",
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_open_dart_financial_statements", fake_fetch_open_dart_financial_statements)
+
+    response = client.get(
+        "/api/data/opendart/financial-statements"
+        "?symbol=005930&business_year=2025&report_code=11011&fs_div=CFS"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "OpenDART"
+    assert data["count"] == 1
+    assert data["items"][0]["account_id"] == "ifrs-full_Revenue"
+    assert data["summary"]["revenue"] == 300000000000000
+
+
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
     def fake_fetch_krx_instruments(
         market: str,

@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from quantmate_api.backtest_engine import build_daily_price_backtest, build_sample_backtest
 from quantmate_api.db import SessionLocal
 from quantmate_api.kis_realtime import kis_realtime_quote_service
+from quantmate_api.market_calendar import market_calendar_range
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
@@ -31,6 +32,8 @@ from quantmate_api.market_data import (
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
+    fetch_open_dart_corp_codes,
+    fetch_open_dart_financial_statements,
     fetch_yahoo_daily_prices,
     fetch_yfinance_symbol_daily_prices,
     get_kis_environment_name,
@@ -38,12 +41,14 @@ from quantmate_api.market_data import (
     get_kis_ws_approval_key,
     get_kis_ws_approval_status,
     get_market_metadata,
+    get_open_dart_corp_code_cache_status,
     has_kis_account_credentials,
     is_kis_open_api_ready,
     is_kis_paper_trading,
     mask_kis_account,
     normalize_market_code,
     normalize_yahoo_symbol,
+    summarize_open_dart_financial_statements,
     submit_kis_domestic_cash_order,
 )
 from quantmate_api.models import (
@@ -359,6 +364,23 @@ class DataQualityResponse(BaseModel):
     checks: list[DataQualityCheck]
 
 
+class MarketCalendarDayResponse(BaseModel):
+    date: date
+    market: str
+    is_open: bool
+    reason: str
+
+
+class MarketCalendarResponse(BaseModel):
+    market: str
+    timezone: str
+    start: date
+    end: date
+    open_days: int
+    closed_days: int
+    items: list[MarketCalendarDayResponse]
+
+
 class KrxInstrumentPreview(BaseModel):
     symbol: str
     name: str
@@ -438,6 +460,78 @@ class KisRealtimeQuoteStatusResponse(BaseModel):
 
 class KisRealtimeQuoteSubscribeRequest(BaseModel):
     symbols: list[str] = Field(min_length=1, max_length=50)
+
+
+class OpenDartCorpCodeCacheStatusResponse(BaseModel):
+    provider: str
+    ready: bool
+    base_url: str
+    cache_path: str
+    cached: bool
+    cached_count: int
+    fetched_at: str
+
+
+class OpenDartCorpCodeCacheResponse(BaseModel):
+    provider: str
+    fetched_count: int
+    listed_count: int
+    cache_path: str
+    message: str
+
+
+class OpenDartFinancialStatementItem(BaseModel):
+    provider: str
+    symbol: str
+    corp_code: str
+    corp_name: str
+    business_year: int
+    report_code: str
+    fs_div: str
+    receipt_no: str
+    statement_type: str
+    statement_name: str
+    account_id: str
+    account_name: str
+    account_detail: str
+    current_term_name: str
+    current_amount: int | None = None
+    current_accumulated_amount: int | None = None
+    previous_term_name: str
+    previous_amount: int | None = None
+    previous_accumulated_amount: int | None = None
+    currency: str
+
+
+class OpenDartFinancialSummaryResponse(BaseModel):
+    revenue: int | None = None
+    operating_income: int | None = None
+    net_income: int | None = None
+    assets: int | None = None
+    liabilities: int | None = None
+    equity: int | None = None
+    operating_cash_flow: int | None = None
+    capex: int | None = None
+    free_cash_flow: int | None = None
+    revenue_growth: float | None = None
+    operating_income_growth: float | None = None
+    net_income_growth: float | None = None
+    operating_margin: float | None = None
+    net_margin: float | None = None
+    debt_ratio: float | None = None
+    roe: float | None = None
+    roa: float | None = None
+
+
+class OpenDartFinancialStatementResponse(BaseModel):
+    provider: str
+    symbol: str
+    business_year: int
+    report_code: str
+    fs_div: str
+    count: int
+    summary: OpenDartFinancialSummaryResponse
+    items: list[OpenDartFinancialStatementItem]
 
 
 class KisBrokerAccountStatusResponse(BaseModel):
@@ -4122,6 +4216,92 @@ async def data_quality() -> DataQualityResponse:
         generated_at=now_kst_naive(),
         summary_status=_quality_summary_status(checks),
         checks=checks,
+    )
+
+
+@app.get("/api/data/market-calendar")
+async def market_calendar(
+    market: str = "KR",
+    start: date | None = None,
+    end: date | None = None,
+) -> MarketCalendarResponse:
+    effective_end = end or today_kst()
+    effective_start = start or (effective_end - timedelta(days=14))
+
+    try:
+        payload = market_calendar_range(
+            market=market,
+            start=effective_start,
+            end=effective_end,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return MarketCalendarResponse(
+        market=payload["market"],
+        timezone=payload["timezone"],
+        start=payload["start"],
+        end=payload["end"],
+        open_days=payload["open_days"],
+        closed_days=payload["closed_days"],
+        items=[MarketCalendarDayResponse(**item) for item in payload["items"]],
+    )
+
+
+@app.get("/api/data/opendart/corp-codes/status")
+async def open_dart_corp_code_status() -> OpenDartCorpCodeCacheStatusResponse:
+    return OpenDartCorpCodeCacheStatusResponse(**get_open_dart_corp_code_cache_status())
+
+
+@app.post("/api/data/opendart/corp-codes/cache", status_code=201)
+async def cache_open_dart_corp_codes(force_refresh: bool = False) -> OpenDartCorpCodeCacheResponse:
+    try:
+        rows = fetch_open_dart_corp_codes(force_refresh=force_refresh)
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    listed_count = sum(1 for row in rows if row.get("stock_code"))
+    status = get_open_dart_corp_code_cache_status()
+
+    return OpenDartCorpCodeCacheResponse(
+        provider="OpenDART",
+        fetched_count=len(rows),
+        listed_count=listed_count,
+        cache_path=status["cache_path"],
+        message=f"OpenDART 고유번호 {len(rows):,}건을 캐시했습니다.",
+    )
+
+
+@app.get("/api/data/opendart/financial-statements")
+async def open_dart_financial_statements(
+    symbol: str,
+    business_year: int,
+    report_code: str = "11011",
+    fs_div: str = "CFS",
+    force_refresh_corp_codes: bool = False,
+) -> OpenDartFinancialStatementResponse:
+    try:
+        items = fetch_open_dart_financial_statements(
+            symbol=symbol,
+            business_year=business_year,
+            report_code=report_code,
+            fs_div=fs_div,
+            force_refresh_corp_codes=force_refresh_corp_codes,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return OpenDartFinancialStatementResponse(
+        provider="OpenDART",
+        symbol=symbol.strip().upper(),
+        business_year=business_year,
+        report_code=report_code.strip(),
+        fs_div=fs_div.strip().upper(),
+        count=len(items),
+        summary=OpenDartFinancialSummaryResponse(**summarize_open_dart_financial_statements(items)),
+        items=[OpenDartFinancialStatementItem(**item) for item in items],
     )
 
 

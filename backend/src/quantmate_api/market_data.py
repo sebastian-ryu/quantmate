@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import time
+import zipfile
 from datetime import date, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 import requests
 
@@ -66,6 +69,10 @@ KIS_DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 KIS_DOMESTIC_BUYABLE_CASH_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 KIS_DOMESTIC_CASH_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 KIS_DOMESTIC_DAILY_ORDER_EXECUTION_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+OPEN_DART_PROVIDER_NAME = "OpenDART"
+OPEN_DART_BASE_URL = "https://opendart.fss.or.kr/api"
+OPEN_DART_CORP_CODE_PATH = "/corpCode.xml"
+OPEN_DART_SINGLE_COMPANY_FULL_FINANCIAL_STATEMENT_PATH = "/fnlttSinglAcntAll.json"
 KIS_MARKET_CAP_RANKING_MARKET_CODES = {
     "ALL": "0000",
     "KOSPI": "0001",
@@ -75,6 +82,7 @@ KIS_MARKET_CAP_RANKING_MARKET_CODES = {
 KIS_TOKEN_CACHE: dict[str, Any] = {}
 KIS_WS_APPROVAL_CACHE: dict[str, Any] = {}
 KIS_MARKET_CAP_RANKING_CACHE: dict[str, dict[str, Any]] = {}
+OPEN_DART_CORP_CODE_CACHE: dict[str, Any] = {}
 PROVIDER_LAST_REQUEST_AT: dict[str, float] = {}
 RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
 
@@ -173,6 +181,14 @@ def is_kis_open_api_ready() -> bool:
     return has_kis_open_api_credentials()
 
 
+def has_open_dart_api_key() -> bool:
+    return bool(os.getenv("OPEN_DART_API_KEY", "").strip())
+
+
+def is_open_dart_ready() -> bool:
+    return has_open_dart_api_key()
+
+
 def is_kis_paper_trading() -> bool:
     return os.getenv("KIS_IS_PAPER", "true").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -191,6 +207,14 @@ def get_kis_ws_url() -> str:
         return configured.rstrip("/")
 
     return KIS_PAPER_WS_URL if is_kis_paper_trading() else KIS_REAL_WS_URL
+
+
+def get_open_dart_base_url() -> str:
+    configured = os.getenv("OPEN_DART_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    return OPEN_DART_BASE_URL
 
 
 def get_kis_environment_name() -> str:
@@ -239,6 +263,14 @@ def get_kis_ws_approval_cache_path() -> Path:
         return Path(configured).expanduser()
 
     return Path(__file__).resolve().parents[3] / ".run" / "kis_ws_approval_cache.json"
+
+
+def get_open_dart_corp_code_cache_path() -> Path:
+    configured = os.getenv("OPEN_DART_CORP_CODE_CACHE_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    return Path(__file__).resolve().parents[3] / ".run" / "opendart_corp_codes.json"
 
 
 def read_kis_token_file_cache(cache_key: str, now: float) -> dict[str, Any] | None:
@@ -306,6 +338,38 @@ def write_kis_ws_approval_file_cache(cache_key: str, cache_record: dict[str, Any
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        return
+
+
+def read_open_dart_corp_code_cache() -> dict[str, Any] | None:
+    path = get_open_dart_corp_code_cache_path()
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    if not isinstance(payload.get("items"), list):
+        return None
+
+    return payload
+
+
+def write_open_dart_corp_code_cache(items: list[dict[str, str]]) -> None:
+    path = get_open_dart_corp_code_cache_path()
+    payload = {
+        "fetched_at": now_kst_naive().isoformat(),
+        "count": len(items),
+        "items": items,
+    }
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         path.chmod(0o600)
     except OSError:
         return
@@ -502,6 +566,165 @@ def get_kis_ws_approval_status() -> dict[str, Any]:
         "ws_url": ws_url,
         "approval_key_cached": bool(configured_key or effective_expires_at > time.time()),
         "expires_in_seconds": max(0, int(effective_expires_at - time.time())) if effective_expires_at else 0,
+    }
+
+
+def get_open_dart_corp_code_cache_status() -> dict[str, Any]:
+    cached = read_open_dart_corp_code_cache()
+    items = cached.get("items", []) if cached else []
+
+    return {
+        "provider": OPEN_DART_PROVIDER_NAME,
+        "ready": is_open_dart_ready(),
+        "base_url": get_open_dart_base_url(),
+        "cache_path": str(get_open_dart_corp_code_cache_path()),
+        "cached": cached is not None,
+        "cached_count": len(items) if isinstance(items, list) else 0,
+        "fetched_at": str(cached.get("fetched_at") or "") if cached else "",
+    }
+
+
+def fetch_open_dart_corp_codes(force_refresh: bool = False) -> list[dict[str, str]]:
+    cached = None if force_refresh else read_open_dart_corp_code_cache()
+    if cached is not None:
+        return [normalize_open_dart_corp_code_row(item) for item in cached.get("items", [])]
+
+    api_key = os.getenv("OPEN_DART_API_KEY", "").strip()
+    if not api_key:
+        raise MarketDataProviderUnavailable("OPEN_DART_API_KEY를 설정하세요.")
+
+    url = f"{get_open_dart_base_url()}{OPEN_DART_CORP_CODE_PATH}"
+    response = request_provider_response(
+        provider_key="opendart",
+        failure_label="OpenDART 고유번호 호출 실패",
+        method="GET",
+        url=url,
+        params={"crtfc_key": api_key},
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        raise MarketDataProviderUnavailable(f"OpenDART 고유번호 호출 실패: HTTP {response.status_code}")
+
+    items = parse_open_dart_corp_code_zip(response.content)
+    write_open_dart_corp_code_cache(items)
+    OPEN_DART_CORP_CODE_CACHE["items"] = items
+    OPEN_DART_CORP_CODE_CACHE["fetched_at"] = now_kst_naive().isoformat()
+    return items
+
+
+def find_open_dart_corp_code_by_stock_code(
+    symbol: str,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, str]:
+    normalized_symbol = normalize_kis_symbol(symbol)
+    for item in fetch_open_dart_corp_codes(force_refresh=force_refresh):
+        if item.get("stock_code") == normalized_symbol:
+            return item
+
+    raise MarketDataProviderUnavailable(f"OpenDART 고유번호에서 종목코드 {normalized_symbol}을 찾지 못했습니다.")
+
+
+def fetch_open_dart_financial_statements(
+    *,
+    symbol: str,
+    business_year: int,
+    report_code: str = "11011",
+    fs_div: str = "CFS",
+    force_refresh_corp_codes: bool = False,
+) -> list[dict[str, Any]]:
+    if business_year < 2015:
+        raise ValueError("OpenDART 전체 재무제표는 2015년 이후 사업연도만 지원합니다.")
+
+    normalized_report_code = normalize_open_dart_report_code(report_code)
+    normalized_fs_div = normalize_open_dart_fs_div(fs_div)
+    corp = find_open_dart_corp_code_by_stock_code(symbol, force_refresh=force_refresh_corp_codes)
+    api_key = os.getenv("OPEN_DART_API_KEY", "").strip()
+    if not api_key:
+        raise MarketDataProviderUnavailable("OPEN_DART_API_KEY를 설정하세요.")
+
+    url = f"{get_open_dart_base_url()}{OPEN_DART_SINGLE_COMPANY_FULL_FINANCIAL_STATEMENT_PATH}"
+    response = request_provider_response(
+        provider_key="opendart",
+        failure_label="OpenDART 재무제표 호출 실패",
+        method="GET",
+        url=url,
+        params={
+            "crtfc_key": api_key,
+            "corp_code": corp["corp_code"],
+            "bsns_year": str(business_year),
+            "reprt_code": normalized_report_code,
+            "fs_div": normalized_fs_div,
+        },
+        timeout=30,
+    )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise MarketDataProviderUnavailable("OpenDART 재무제표 JSON 응답을 해석하지 못했습니다.") from exc
+
+    status = str(payload.get("status") or "")
+    if response.status_code != 200:
+        message = payload.get("message") or response.text
+        raise MarketDataProviderUnavailable(f"OpenDART 재무제표 호출 실패: HTTP {response.status_code} {message}")
+
+    if status == "013":
+        return []
+    if status and status != "000":
+        message = payload.get("message") or "OpenDART 재무제표 응답 오류"
+        raise MarketDataProviderUnavailable(f"{message} ({status})")
+
+    rows = payload.get("list", [])
+    if not isinstance(rows, list):
+        raise MarketDataProviderUnavailable("OpenDART 재무제표 응답 형식이 예상과 다릅니다.")
+
+    return [
+        normalize_open_dart_financial_statement_row(
+            row=row,
+            symbol=normalize_kis_symbol(symbol),
+            corp=corp,
+            business_year=business_year,
+            report_code=normalized_report_code,
+            fs_div=normalized_fs_div,
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def summarize_open_dart_financial_statements(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    revenue = open_dart_account_amount(rows, "revenue")
+    previous_revenue = open_dart_account_amount(rows, "revenue", previous=True)
+    operating_income = open_dart_account_amount(rows, "operating_income")
+    previous_operating_income = open_dart_account_amount(rows, "operating_income", previous=True)
+    net_income = open_dart_account_amount(rows, "net_income")
+    previous_net_income = open_dart_account_amount(rows, "net_income", previous=True)
+    assets = open_dart_account_amount(rows, "assets")
+    liabilities = open_dart_account_amount(rows, "liabilities")
+    equity = open_dart_account_amount(rows, "equity")
+    operating_cash_flow = open_dart_account_amount(rows, "operating_cash_flow")
+    capex = open_dart_account_amount(rows, "capex")
+
+    return {
+        "revenue": revenue,
+        "operating_income": operating_income,
+        "net_income": net_income,
+        "assets": assets,
+        "liabilities": liabilities,
+        "equity": equity,
+        "operating_cash_flow": operating_cash_flow,
+        "capex": capex,
+        "free_cash_flow": open_dart_free_cash_flow(operating_cash_flow=operating_cash_flow, capex=capex),
+        "revenue_growth": percent_change(revenue, previous_revenue),
+        "operating_income_growth": percent_change(operating_income, previous_operating_income),
+        "net_income_growth": percent_change(net_income, previous_net_income),
+        "operating_margin": percent_ratio(operating_income, revenue),
+        "net_margin": percent_ratio(net_income, revenue),
+        "debt_ratio": percent_ratio(liabilities, equity),
+        "roe": percent_ratio(net_income, equity),
+        "roa": percent_ratio(net_income, assets),
     }
 
 
@@ -1391,6 +1614,98 @@ def normalize_krx_market(market: str) -> str:
     return normalized
 
 
+def parse_open_dart_corp_code_zip(content: bytes) -> list[dict[str, str]]:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            xml_names = [name for name in archive.namelist() if name.lower().endswith(".xml")]
+            if not xml_names:
+                raise MarketDataProviderUnavailable("OpenDART 고유번호 ZIP 안에 XML 파일이 없습니다.")
+            xml_content = archive.read(xml_names[0])
+    except zipfile.BadZipFile as exc:
+        preview = content[:300].decode("utf-8", errors="replace")
+        raise MarketDataProviderUnavailable(f"OpenDART 고유번호 응답이 ZIP 형식이 아닙니다: {preview}") from exc
+
+    try:
+        root = ElementTree.fromstring(xml_content)
+    except ElementTree.ParseError as exc:
+        raise MarketDataProviderUnavailable("OpenDART 고유번호 XML을 해석하지 못했습니다.") from exc
+
+    rows = []
+    for element in root.findall(".//list"):
+        item = normalize_open_dart_corp_code_row(
+            {
+                "corp_code": element.findtext("corp_code") or "",
+                "corp_name": element.findtext("corp_name") or "",
+                "corp_eng_name": element.findtext("corp_eng_name") or "",
+                "stock_code": element.findtext("stock_code") or "",
+                "modify_date": element.findtext("modify_date") or "",
+            }
+        )
+        if item["corp_code"]:
+            rows.append(item)
+
+    return rows
+
+
+def normalize_open_dart_corp_code_row(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        "corp_code": str(row.get("corp_code") or "").strip(),
+        "corp_name": str(row.get("corp_name") or "").strip(),
+        "corp_eng_name": str(row.get("corp_eng_name") or "").strip(),
+        "stock_code": str(row.get("stock_code") or "").strip(),
+        "modify_date": str(row.get("modify_date") or "").strip(),
+    }
+
+
+def normalize_open_dart_report_code(report_code: str) -> str:
+    normalized = report_code.strip()
+    valid_report_codes = {"11013", "11012", "11014", "11011"}
+    if normalized not in valid_report_codes:
+        supported = ", ".join(sorted(valid_report_codes))
+        raise ValueError(f"지원하지 않는 OpenDART 보고서 코드입니다: {report_code}. 사용 가능: {supported}")
+    return normalized
+
+
+def normalize_open_dart_fs_div(fs_div: str) -> str:
+    normalized = fs_div.strip().upper()
+    if normalized not in {"CFS", "OFS"}:
+        raise ValueError("OpenDART 재무제표 구분은 CFS 또는 OFS만 지원합니다.")
+    return normalized
+
+
+def normalize_open_dart_financial_statement_row(
+    *,
+    row: dict[str, Any],
+    symbol: str,
+    corp: dict[str, str],
+    business_year: int,
+    report_code: str,
+    fs_div: str,
+) -> dict[str, Any]:
+    return {
+        "provider": OPEN_DART_PROVIDER_NAME,
+        "symbol": symbol,
+        "corp_code": corp["corp_code"],
+        "corp_name": corp["corp_name"],
+        "business_year": business_year,
+        "report_code": report_code,
+        "fs_div": fs_div,
+        "receipt_no": str(row.get("rcept_no") or "").strip(),
+        "statement_type": str(row.get("sj_div") or "").strip(),
+        "statement_name": str(row.get("sj_nm") or "").strip(),
+        "account_id": str(row.get("account_id") or "").strip(),
+        "account_name": str(row.get("account_nm") or "").strip(),
+        "account_detail": str(row.get("account_detail") or "").strip(),
+        "current_term_name": str(row.get("thstrm_nm") or "").strip(),
+        "current_amount": int_from_open_dart(row.get("thstrm_amount")),
+        "current_accumulated_amount": int_from_open_dart(row.get("thstrm_add_amount")),
+        "previous_term_name": str(row.get("frmtrm_nm") or "").strip(),
+        "previous_amount": int_from_open_dart(row.get("frmtrm_amount")),
+        "previous_accumulated_amount": int_from_open_dart(row.get("frmtrm_add_amount")),
+        "currency": str(row.get("currency") or "").strip(),
+    }
+
+
 def normalize_market_code(market_or_exchange: str = "KR") -> str:
     normalized = market_or_exchange.strip().upper()
 
@@ -1764,6 +2079,110 @@ def int_from_kis(value: Any) -> int | None:
         return None
 
     return int(parsed)
+
+
+def int_from_open_dart(value: Any) -> int | None:
+    if value is None:
+        return None
+
+    cleaned = str(value).strip().replace(",", "").replace(" ", "")
+    if not cleaned or cleaned in {"-", "nan", "None"}:
+        return None
+
+    is_parenthesized_negative = cleaned.startswith("(") and cleaned.endswith(")")
+    if is_parenthesized_negative:
+        cleaned = cleaned[1:-1]
+
+    try:
+        parsed = int(float(cleaned))
+    except ValueError:
+        return None
+
+    return -parsed if is_parenthesized_negative else parsed
+
+
+def open_dart_account_amount(
+    rows: list[dict[str, Any]],
+    account_key: str,
+    *,
+    previous: bool = False,
+) -> int | None:
+    for row in rows:
+        if not open_dart_account_matches(row, account_key):
+            continue
+        amount = row.get("previous_amount") if previous else row.get("current_amount")
+        if isinstance(amount, int):
+            return amount
+    return None
+
+
+def open_dart_account_matches(row: dict[str, Any], account_key: str) -> bool:
+    account_id = str(row.get("account_id") or "").lower()
+    account_name = str(row.get("account_name") or "").replace(" ", "")
+
+    matchers = {
+        "revenue": (
+            ("revenue", "salesrevenue"),
+            ("매출액", "영업수익", "수익(매출액)"),
+        ),
+        "operating_income": (
+            ("operatingincomeloss",),
+            ("영업이익", "영업이익(손실)"),
+        ),
+        "net_income": (
+            ("profitloss", "profitlossattributabletoownersofparent"),
+            ("당기순이익", "당기순이익(손실)", "분기순이익", "반기순이익"),
+        ),
+        "assets": (
+            ("assets",),
+            ("자산총계",),
+        ),
+        "liabilities": (
+            ("liabilities",),
+            ("부채총계",),
+        ),
+        "equity": (
+            ("equity", "equityattributabletoownersofparent"),
+            ("자본총계", "지배기업소유주지분"),
+        ),
+        "operating_cash_flow": (
+            ("cashflowsfromusedinoperatingactivities",),
+            ("영업활동현금흐름", "영업활동으로인한현금흐름"),
+        ),
+        "capex": (
+            ("purchaseofpropertyplantandequipment", "paymentsforpurchaseofpropertyplantandequipment"),
+            ("유형자산의취득", "유형자산취득"),
+        ),
+    }
+
+    id_patterns, name_patterns = matchers.get(account_key, ((), ()))
+    return any(pattern in account_id for pattern in id_patterns) or any(
+        pattern in account_name for pattern in name_patterns
+    )
+
+
+def open_dart_free_cash_flow(
+    *,
+    operating_cash_flow: int | None,
+    capex: int | None,
+) -> int | None:
+    if operating_cash_flow is None or capex is None:
+        return None
+    if capex < 0:
+        return operating_cash_flow + capex
+    return operating_cash_flow - capex
+
+
+def percent_change(current: int | None, previous: int | None) -> float | None:
+    if current is None or previous in (None, 0):
+        return None
+    return round((current - previous) / abs(previous) * 100, 2)
+
+
+def percent_ratio(numerator: int | None, denominator: int | None) -> float | None:
+    if numerator is None or denominator in (None, 0):
+        return None
+    return round(numerator / denominator * 100, 2)
 
 
 def default_krx_base_date() -> str:

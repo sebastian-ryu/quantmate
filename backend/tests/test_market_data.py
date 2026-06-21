@@ -1,4 +1,6 @@
 import json
+import zipfile
+from io import BytesIO
 
 import requests
 
@@ -80,3 +82,100 @@ def test_market_metadata_helpers_distinguish_kr_and_us_markets() -> None:
     assert market_data.market_currency("NASDAQ") == "USD"
     assert market_data.market_timezone("KOSPI") == "Asia/Seoul"
     assert market_data.market_timezone("US") == "America/New_York"
+
+
+def test_parse_open_dart_corp_code_zip() -> None:
+    content = BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr(
+            "CORPCODE.xml",
+            """
+            <result>
+              <list>
+                <corp_code>00126380</corp_code>
+                <corp_name>삼성전자</corp_name>
+                <corp_eng_name>SAMSUNG ELECTRONICS CO,.LTD</corp_eng_name>
+                <stock_code>005930</stock_code>
+                <modify_date>20240630</modify_date>
+              </list>
+            </result>
+            """,
+        )
+
+    rows = market_data.parse_open_dart_corp_code_zip(content.getvalue())
+
+    assert rows == [
+        {
+            "corp_code": "00126380",
+            "corp_name": "삼성전자",
+            "corp_eng_name": "SAMSUNG ELECTRONICS CO,.LTD",
+            "stock_code": "005930",
+            "modify_date": "20240630",
+        }
+    ]
+
+
+def test_int_from_open_dart_handles_common_amount_formats() -> None:
+    assert market_data.int_from_open_dart("1,234,567") == 1234567
+    assert market_data.int_from_open_dart("(1,234)") == -1234
+    assert market_data.int_from_open_dart("-") is None
+
+
+def test_summarize_open_dart_financial_statements_derives_ratios() -> None:
+    rows = [
+        {
+            "account_id": "ifrs-full_Revenue",
+            "account_name": "매출액",
+            "current_amount": 1200,
+            "previous_amount": 1000,
+        },
+        {
+            "account_id": "dart_OperatingIncomeLoss",
+            "account_name": "영업이익",
+            "current_amount": 180,
+            "previous_amount": 120,
+        },
+        {
+            "account_id": "ifrs-full_ProfitLoss",
+            "account_name": "당기순이익",
+            "current_amount": 90,
+            "previous_amount": 60,
+        },
+        {
+            "account_id": "ifrs-full_Assets",
+            "account_name": "자산총계",
+            "current_amount": 2000,
+        },
+        {
+            "account_id": "ifrs-full_Liabilities",
+            "account_name": "부채총계",
+            "current_amount": 800,
+        },
+        {
+            "account_id": "ifrs-full_Equity",
+            "account_name": "자본총계",
+            "current_amount": 1200,
+        },
+        {
+            "account_id": "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+            "account_name": "영업활동현금흐름",
+            "current_amount": 150,
+        },
+        {
+            "account_id": "dart_PurchaseOfPropertyPlantAndEquipment",
+            "account_name": "유형자산의 취득",
+            "current_amount": 40,
+        },
+    ]
+
+    summary = market_data.summarize_open_dart_financial_statements(rows)
+
+    assert summary["revenue"] == 1200
+    assert summary["revenue_growth"] == 20.0
+    assert summary["operating_income_growth"] == 50.0
+    assert summary["operating_margin"] == 15.0
+    assert summary["net_margin"] == 7.5
+    assert summary["debt_ratio"] == 66.67
+    assert summary["roe"] == 7.5
+    assert summary["roa"] == 4.5
+    assert summary["free_cash_flow"] == 110

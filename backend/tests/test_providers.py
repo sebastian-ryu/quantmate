@@ -34,6 +34,11 @@ def test_provider_status_rows_reflect_environment(monkeypatch) -> None:
         "get_kis_ws_approval_status",
         lambda: {"approval_key_cached": False},
     )
+    monkeypatch.setattr(
+        providers,
+        "get_open_dart_corp_code_cache_status",
+        lambda: {"cached_count": 0},
+    )
     monkeypatch.delenv("OPEN_DART_API_KEY", raising=False)
 
     rows = {row["name"]: row for row in providers.provider_status_rows()}
@@ -62,6 +67,11 @@ def test_provider_status_rows_reflect_kis_websocket_cache(monkeypatch) -> None:
 
 def test_provider_status_rows_reflect_open_dart_key(monkeypatch) -> None:
     monkeypatch.setenv("OPEN_DART_API_KEY", "dart-test-key")
+    monkeypatch.setattr(
+        providers,
+        "get_open_dart_corp_code_cache_status",
+        lambda: {"cached_count": 0},
+    )
 
     rows = {row["name"]: row for row in providers.provider_status_rows()}
 

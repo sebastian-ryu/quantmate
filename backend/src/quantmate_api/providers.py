@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol
@@ -17,9 +16,11 @@ from quantmate_api.market_data import (
     fetch_krx_instruments,
     fetch_yahoo_daily_prices,
     get_kis_ws_approval_status,
+    get_open_dart_corp_code_cache_status,
     has_kis_account_credentials,
     is_kis_open_api_ready,
     is_krx_open_api_ready,
+    is_open_dart_ready,
 )
 
 
@@ -299,11 +300,20 @@ class OpenDartProvider:
     scope: str = "재무제표/공시"
 
     def status(self) -> ProviderStatus:
-        ready = bool(os.getenv("OPEN_DART_API_KEY", "").strip())
+        ready = is_open_dart_ready()
+        cache_status = get_open_dart_corp_code_cache_status()
+        cached_count = int(cache_status.get("cached_count") or 0)
+        if ready and cached_count > 0:
+            status = f"API 키 설정됨, 고유번호 {cached_count:,}건 캐시"
+        elif ready:
+            status = "API 키 설정됨"
+        else:
+            status = "API 키 필요"
+
         return ProviderStatus(
             name=self.name,
             scope=self.scope,
-            status="API 키 설정됨" if ready else "API 키 필요",
+            status=status,
             ready=ready,
         )
 

@@ -1593,6 +1593,27 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert providers["KIS 계좌"]["status"] in {"계좌번호 설정 필요", "계좌 설정됨"}
 
 
+def test_data_quality_reports_price_coverage(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=main_module.today_kst() - timedelta(days=39),
+        days=40,
+    )
+
+    response = client.get("/api/data/quality")
+    data = response.json()
+    checks = {item["code"]: item for item in data["checks"]}
+
+    assert response.status_code == 200
+    assert data["summary_status"] == "warning"
+    assert checks["daily-price-coverage"]["status"] == "ok"
+    assert checks["daily-price-coverage"]["value"] == "10개 종목"
+    assert checks["ohlcv-validity"]["status"] == "ok"
+    assert checks["provider-mix"]["status"] == "ok"
+
+
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
     def fake_fetch_krx_instruments(
         market: str,

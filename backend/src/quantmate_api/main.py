@@ -10,7 +10,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from quantmate_api.backtest_engine import build_daily_price_backtest, build_sample_backtest
@@ -315,6 +315,20 @@ class DataStatusResponse(BaseModel):
     provider_status: list[dict[str, str | bool]]
     table_counts: dict[str, int]
     message: str
+
+
+class DataQualityCheck(BaseModel):
+    code: str
+    label: str
+    status: str
+    value: str
+    message: str
+
+
+class DataQualityResponse(BaseModel):
+    generated_at: datetime
+    summary_status: str
+    checks: list[DataQualityCheck]
 
 
 class KrxInstrumentPreview(BaseModel):
@@ -3099,6 +3113,37 @@ def _saved_strategy_selection_run_response(run: StrategySelectionRun) -> Strateg
     return StrategyCandidateResponse(**payload)
 
 
+def _quality_check(
+    *,
+    code: str,
+    label: str,
+    status: str,
+    value: str,
+    message: str,
+) -> DataQualityCheck:
+    return DataQualityCheck(
+        code=code,
+        label=label,
+        status=status,
+        value=value,
+        message=message,
+    )
+
+
+def _quality_summary_status(checks: list[DataQualityCheck]) -> str:
+    if any(check.status == "error" for check in checks):
+        return "error"
+    if any(check.status == "warning" for check in checks):
+        return "warning"
+    return "ok"
+
+
+def _provider_counts_label(rows: list[tuple[str, int]]) -> str:
+    if not rows:
+        return "없음"
+    return ", ".join(f"{provider} {count:,}건" for provider, count in rows)
+
+
 @app.get("/api/health")
 async def health() -> HealthResponse:
     return HealthResponse(
@@ -3414,6 +3459,169 @@ async def data_status() -> DataStatusResponse:
         provider_status=provider_status,
         table_counts=table_counts,
         message="로컬 MySQL 연결 정상",
+    )
+
+
+@app.get("/api/data/quality")
+async def data_quality() -> DataQualityResponse:
+    provider_priority = ("KRX Open API", "KIS Open API", "Yahoo Finance")
+
+    try:
+        with SessionLocal() as session:
+            instrument_count = session.scalar(select(func.count()).select_from(Instrument)) or 0
+            daily_price_count = session.scalar(select(func.count()).select_from(DailyPrice)) or 0
+            latest_trade_date = session.scalar(select(func.max(DailyPrice.trade_date)))
+            provider_rows = session.execute(
+                select(DailyPrice.provider, func.count(DailyPrice.id))
+                .group_by(DailyPrice.provider)
+                .order_by(DailyPrice.provider)
+            ).all()
+            covered_symbol_count = (
+                session.scalar(
+                    select(func.count()).select_from(
+                        select(DailyPrice.instrument_id)
+                        .where(
+                            DailyPrice.provider.in_(provider_priority),
+                            DailyPrice.is_adjusted.is_(False),
+                        )
+                        .group_by(DailyPrice.instrument_id)
+                        .having(func.count(DailyPrice.id) >= 20)
+                        .subquery()
+                    )
+                )
+                or 0
+            )
+            invalid_ohlcv_count = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(DailyPrice)
+                    .where(
+                        or_(
+                            DailyPrice.close_price <= 0,
+                            DailyPrice.high_price < DailyPrice.low_price,
+                            DailyPrice.open_price < DailyPrice.low_price,
+                            DailyPrice.open_price > DailyPrice.high_price,
+                            DailyPrice.close_price < DailyPrice.low_price,
+                            DailyPrice.close_price > DailyPrice.high_price,
+                            DailyPrice.volume < 0,
+                            DailyPrice.trading_value < 0,
+                        )
+                    )
+                )
+                or 0
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"데이터 품질 검사 DB 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    checks: list[DataQualityCheck] = []
+    checks.append(
+        _quality_check(
+            code="instrument-universe",
+            label="종목 유니버스",
+            status="ok" if instrument_count >= 50 else "warning" if instrument_count > 0 else "error",
+            value=f"{instrument_count:,}개",
+            message=(
+                "전략 후보를 넓게 찾을 수 있는 종목 수입니다."
+                if instrument_count >= 50
+                else "초기 후보군은 동작하지만 전체 시장 검색에는 종목 적재가 더 필요합니다."
+                if instrument_count > 0
+                else "종목 목록이 비어 있습니다."
+            ),
+        )
+    )
+    checks.append(
+        _quality_check(
+            code="daily-price-count",
+            label="일봉 가격 데이터",
+            status="ok" if daily_price_count >= 1_000 else "warning" if daily_price_count > 0 else "error",
+            value=f"{daily_price_count:,}건",
+            message=(
+                "전략과 백테스트에 사용할 일봉 데이터가 누적되어 있습니다."
+                if daily_price_count >= 1_000
+                else "기본 동작은 가능하지만 기간과 종목 범위를 넓히려면 추가 적재가 필요합니다."
+                if daily_price_count > 0
+                else "일봉 데이터가 없어 실제 데이터 기반 전략 실행이 어렵습니다."
+            ),
+        )
+    )
+
+    if latest_trade_date is None:
+        checks.append(
+            _quality_check(
+                code="daily-price-freshness",
+                label="최근 거래일",
+                status="error",
+                value="없음",
+                message="저장된 일봉 거래일이 없습니다.",
+            )
+        )
+    else:
+        stale_days = (today_kst() - latest_trade_date).days
+        checks.append(
+            _quality_check(
+                code="daily-price-freshness",
+                label="최근 거래일",
+                status="ok" if stale_days <= 7 else "warning" if stale_days <= 21 else "error",
+                value=f"{latest_trade_date.isoformat()} ({stale_days}일 전)",
+                message=(
+                    "최근 데이터가 비교적 최신입니다."
+                    if stale_days <= 7
+                    else "데이터가 다소 오래되었습니다. 전략 실행 전 자동 갱신 여부를 확인하세요."
+                    if stale_days <= 21
+                    else "데이터가 오래되어 현재 시장 상태 반영이 어렵습니다."
+                ),
+            )
+        )
+
+    checks.append(
+        _quality_check(
+            code="daily-price-coverage",
+            label="종목별 일봉 커버리지",
+            status="ok" if covered_symbol_count >= 10 else "warning" if covered_symbol_count > 0 else "error",
+            value=f"{covered_symbol_count:,}개 종목",
+            message=(
+                "전략 후보 최소 수량을 계산할 수 있는 종목별 일봉 길이가 확보되어 있습니다."
+                if covered_symbol_count >= 10
+                else "일부 종목만 전략 계산에 필요한 최소 일봉 길이를 갖고 있습니다."
+                if covered_symbol_count > 0
+                else "최소 20개 일봉을 가진 종목이 없습니다."
+            ),
+        )
+    )
+    checks.append(
+        _quality_check(
+            code="ohlcv-validity",
+            label="OHLCV 이상값",
+            status="ok" if invalid_ohlcv_count == 0 else "error",
+            value=f"{invalid_ohlcv_count:,}건",
+            message=(
+                "가격, 고가/저가, 거래량의 기본 무결성 오류가 없습니다."
+                if invalid_ohlcv_count == 0
+                else "고가/저가/종가/거래량 중 비정상 값이 있어 정제 또는 재수집이 필요합니다."
+            ),
+        )
+    )
+    checks.append(
+        _quality_check(
+            code="provider-mix",
+            label="데이터 제공처",
+            status="ok" if provider_rows else "warning",
+            value=_provider_counts_label([(str(row[0]), int(row[1])) for row in provider_rows]),
+            message=(
+                "저장 데이터의 제공처를 추적할 수 있습니다."
+                if provider_rows
+                else "아직 저장된 제공처별 가격 데이터가 없습니다."
+            ),
+        )
+    )
+
+    return DataQualityResponse(
+        generated_at=now_kst_naive(),
+        summary_status=_quality_summary_status(checks),
+        checks=checks,
     )
 
 

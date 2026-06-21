@@ -6,8 +6,12 @@
     fetchKisBuyableCash,
     fetchKisBrokerAccountStatus,
     fetchKisBrokerBalance,
+    fetchKisTradingSafetyStatus,
     fetchKisOrderExecutions,
+    fetchKisRealtimeLatestQuotes,
+    fetchKisRealtimeQuoteStatus,
     fetchStrategyCandidates,
+    fetchStrategyExecutionContract,
     fetchStrategySelectionRun,
     fetchStrategySelectionRuns,
     type Dashboard,
@@ -17,14 +21,25 @@
     type KisOrderProposal,
     type KisPaperBatchOrderResponse,
     type KisOrderExecutions,
+    type KisRealtimeQuote,
+    type KisRealtimeQuoteStatus,
+    type KisTradingSafetyStatus,
     type Strategy,
     type StrategyCandidateResult,
+    type StrategyExecutionContract,
     type StrategySelectionRunSummary,
+    stopKisRealtimeQuotes,
     submitKisPaperBatchOrders,
+    subscribeKisRealtimeQuotes,
     fetchUserStrategies,
     type UserStrategy
   } from '$lib/api';
-  import { describeStrategyRule } from '$lib/strategyRuleTooltips';
+  import {
+    classifyRiskRule,
+    describeStrategyRule,
+    riskRuleActionDescription,
+    riskRuleActionLabel
+  } from '$lib/strategyRuleTooltips';
 
   type StrategyOption = {
     code: string;
@@ -71,8 +86,6 @@
     riskFlags: string[];
   };
 
-  type CandidateUniverseRow = Omit<StrategyCandidate, 'strategyScore' | 'rationale' | 'riskFlags'>;
-
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'relative-momentum-swing';
   let registeredStrategies: UserStrategy[] = [];
@@ -81,6 +94,10 @@
   let candidatesLoading = false;
   let candidatesError = '';
   let candidateRequestId = 0;
+  let executionContract: StrategyExecutionContract | null = null;
+  let executionContractLoading = false;
+  let executionContractError = '';
+  let executionContractRequestId = 0;
   let recentStrategyRuns: StrategySelectionRunSummary[] = [];
   let selectedStrategyRunId = '';
   let recentStrategyRunsLoading = false;
@@ -88,11 +105,17 @@
   let savedRunViewing = false;
   let savedRunLabel = '';
   let brokerStatus: KisBrokerAccountStatus | null = null;
+  let tradingSafety: KisTradingSafetyStatus | null = null;
   let brokerBalance: KisBrokerBalance | null = null;
   let brokerOrders: KisOrderExecutions | null = null;
   let brokerLoading = false;
   let brokerError = '';
+  let tradingSafetyError = '';
   let brokerOrderError = '';
+  let realtimeStatus: KisRealtimeQuoteStatus | null = null;
+  let realtimeQuotes: KisRealtimeQuote[] = [];
+  let realtimeLoading = false;
+  let realtimeError = '';
   let buyableSymbol = '005930';
   let buyableOrderType: 'market' | 'limit' = 'market';
   let buyablePrice = 0;
@@ -134,237 +157,6 @@
     { label: '모멘텀', description: '최근 수익률과 추세 강도를 종합한 가격 흐름 점수입니다.' }
   ];
 
-  const candidateUniverse: CandidateUniverseRow[] = [
-    {
-      symbol: '005930',
-      name: '삼성전자',
-      exchange: 'KOSPI',
-      sector: '기술',
-      industry: '반도체',
-      marketCap: 2247.7,
-      price: 354000,
-      changePct: -2.3,
-      per: 14.8,
-      pbr: 1.4,
-      roe: 9.8,
-      revenueGrowth: 8.4,
-      foreignNetBuy5d: 1260,
-      institutionNetBuy5d: 820,
-      supplyScore: 86,
-      shortSaleRatio: 3.1,
-      momentum: 82
-    },
-    {
-      symbol: '000660',
-      name: 'SK하이닉스',
-      exchange: 'KOSPI',
-      sector: '기술',
-      industry: '반도체',
-      marketCap: 1957.7,
-      price: 276400,
-      changePct: 2.9,
-      per: 18.3,
-      pbr: 1.6,
-      roe: 12.2,
-      revenueGrowth: 17.2,
-      foreignNetBuy5d: 2480,
-      institutionNetBuy5d: 1120,
-      supplyScore: 91,
-      shortSaleRatio: 4.9,
-      momentum: 78
-    },
-    {
-      symbol: '035720',
-      name: '카카오',
-      exchange: 'KOSPI',
-      sector: '커뮤니케이션',
-      industry: '인터넷 서비스',
-      marketCap: 23.4,
-      price: 43750,
-      changePct: 1.2,
-      per: 27.4,
-      pbr: 1.1,
-      roe: 4.5,
-      revenueGrowth: 3.1,
-      foreignNetBuy5d: 180,
-      institutionNetBuy5d: 260,
-      supplyScore: 58,
-      shortSaleRatio: 6.2,
-      momentum: 71
-    },
-    {
-      symbol: '005380',
-      name: '현대차',
-      exchange: 'KOSPI',
-      sector: '소비순환재',
-      industry: '자동차',
-      marketCap: 138.6,
-      price: 613000,
-      changePct: 2.0,
-      per: 6.2,
-      pbr: 0.8,
-      roe: 12.8,
-      revenueGrowth: 9.5,
-      foreignNetBuy5d: 610,
-      institutionNetBuy5d: 420,
-      supplyScore: 77,
-      shortSaleRatio: 2.8,
-      momentum: 74
-    },
-    {
-      symbol: '035420',
-      name: 'NAVER',
-      exchange: 'KOSPI',
-      sector: '커뮤니케이션',
-      industry: '인터넷 서비스',
-      marketCap: 31.2,
-      price: 194500,
-      changePct: -0.6,
-      per: 22.7,
-      pbr: 1.3,
-      roe: 6.1,
-      revenueGrowth: 7.4,
-      foreignNetBuy5d: 360,
-      institutionNetBuy5d: 190,
-      supplyScore: 64,
-      shortSaleRatio: 5.1,
-      momentum: 66
-    },
-    {
-      symbol: '247540',
-      name: '에코프로비엠',
-      exchange: 'KOSDAQ',
-      sector: '소재',
-      industry: '전지 소재',
-      marketCap: 12.8,
-      price: 132400,
-      changePct: 4.1,
-      per: 42.5,
-      pbr: 3.8,
-      roe: 8.4,
-      revenueGrowth: 19.8,
-      foreignNetBuy5d: 210,
-      institutionNetBuy5d: 340,
-      supplyScore: 69,
-      shortSaleRatio: 7.4,
-      momentum: 83
-    },
-    {
-      symbol: '068270',
-      name: '셀트리온',
-      exchange: 'KOSPI',
-      sector: '헬스케어',
-      industry: '바이오',
-      marketCap: 41.5,
-      price: 188600,
-      changePct: 1.5,
-      per: 31.6,
-      pbr: 2.2,
-      roe: 7.6,
-      revenueGrowth: 11.9,
-      foreignNetBuy5d: 520,
-      institutionNetBuy5d: 780,
-      supplyScore: 79,
-      shortSaleRatio: 3.9,
-      momentum: 76
-    },
-    {
-      symbol: '012450',
-      name: '한화에어로스페이스',
-      exchange: 'KOSPI',
-      sector: '산업재',
-      industry: '방산',
-      marketCap: 15.7,
-      price: 315000,
-      changePct: 3.8,
-      per: 19.4,
-      pbr: 2.5,
-      roe: 14.2,
-      revenueGrowth: 24.3,
-      foreignNetBuy5d: 840,
-      institutionNetBuy5d: 960,
-      supplyScore: 88,
-      shortSaleRatio: 2.2,
-      momentum: 89
-    },
-    {
-      symbol: '105560',
-      name: 'KB금융',
-      exchange: 'KOSPI',
-      sector: '금융',
-      industry: '은행',
-      marketCap: 34.1,
-      price: 84600,
-      changePct: 0.8,
-      per: 5.4,
-      pbr: 0.6,
-      roe: 10.9,
-      revenueGrowth: 5.7,
-      foreignNetBuy5d: 430,
-      institutionNetBuy5d: 510,
-      supplyScore: 73,
-      shortSaleRatio: 1.7,
-      momentum: 68
-    },
-    {
-      symbol: '051910',
-      name: 'LG화학',
-      exchange: 'KOSPI',
-      sector: '소재',
-      industry: '화학',
-      marketCap: 25.6,
-      price: 362000,
-      changePct: -1.1,
-      per: 16.8,
-      pbr: 0.9,
-      roe: 5.6,
-      revenueGrowth: 2.4,
-      foreignNetBuy5d: -120,
-      institutionNetBuy5d: 160,
-      supplyScore: 55,
-      shortSaleRatio: 5.7,
-      momentum: 52
-    },
-    {
-      symbol: '086790',
-      name: '하나금융지주',
-      exchange: 'KOSPI',
-      sector: '금융',
-      industry: '은행',
-      marketCap: 18.9,
-      price: 64200,
-      changePct: 1.0,
-      per: 4.9,
-      pbr: 0.5,
-      roe: 11.7,
-      revenueGrowth: 4.8,
-      foreignNetBuy5d: 390,
-      institutionNetBuy5d: 350,
-      supplyScore: 70,
-      shortSaleRatio: 1.4,
-      momentum: 63
-    },
-    {
-      symbol: '034020',
-      name: '두산에너빌리티',
-      exchange: 'KOSPI',
-      sector: '산업재',
-      industry: '전력설비',
-      marketCap: 13.8,
-      price: 21500,
-      changePct: 2.6,
-      per: 28.1,
-      pbr: 1.8,
-      roe: 6.8,
-      revenueGrowth: 13.6,
-      foreignNetBuy5d: 280,
-      institutionNetBuy5d: 230,
-      supplyScore: 67,
-      shortSaleRatio: 4.4,
-      momentum: 80
-    }
-  ];
-
   onMount(async () => {
     try {
       const [dashboardData, userStrategies] = await Promise.all([
@@ -376,13 +168,25 @@
       selectedStrategy = dashboard.backtest.strategy_code;
       loading = false;
       await tick();
+      void loadExecutionContract(selectedStrategy);
       void loadCandidateRowsForSelectedStrategy();
       void loadRecentStrategyRuns();
-      void loadBrokerAccount();
+      void loadBrokerStatus();
+      void loadRealtimeStatus();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략 데이터를 불러오지 못했습니다.';
       loading = false;
     }
+  });
+
+  onMount(() => {
+    const timer = window.setInterval(() => {
+      if (realtimeStatus?.running) {
+        void loadRealtimeLatestQuotesOnly();
+      }
+    }, 5000);
+
+    return () => window.clearInterval(timer);
   });
 
   $: baseStrategies = dashboard?.strategies ?? [];
@@ -408,11 +212,46 @@
     (total, line) => total + line.estimated_amount,
     0
   );
+  $: brokerEnvironmentTitle =
+    brokerStatus?.environment === 'paper'
+      ? 'KIS 모의 계좌'
+      : brokerStatus?.environment === 'real'
+        ? 'KIS 실전 계좌'
+        : 'KIS 계좌';
+  $: brokerEnvironmentBadge =
+    brokerStatus?.environment === 'paper'
+      ? '모의투자'
+      : brokerStatus?.environment === 'real'
+        ? '실전 읽기'
+        : '환경 확인';
+  $: brokerEnvironmentClass =
+    brokerStatus?.environment === 'paper'
+      ? 'paper'
+      : brokerStatus?.environment === 'real'
+        ? 'live'
+        : 'custom';
+  $: brokerPermissionText = brokerStatus
+    ? brokerStatus.environment === 'paper'
+      ? brokerStatus.paper_trading_enabled
+        ? '모의주문 허용'
+        : '모의주문 잠김'
+      : brokerStatus.live_trading_enabled
+        ? '실거래 활성화됨'
+        : '실전 읽기 전용'
+    : '';
+  $: confirmationRequired = tradingSafety?.manual_confirmation_required ?? true;
   $: canSubmitBatchOrders =
-    Boolean(brokerStatus?.paper_trading_enabled) &&
+    Boolean(tradingSafety?.can_submit_paper_orders ?? brokerStatus?.paper_trading_enabled) &&
     selectedProposalLines.length > 0 &&
-    batchConfirmPhrase.trim() === '모의주문 실행' &&
+    (!confirmationRequired || batchConfirmPhrase.trim() === '모의주문 실행') &&
     !batchSubmitting;
+  $: tradingSafetyStatusText = tradingSafety
+    ? tradingSafety.emergency_stop_enabled
+      ? '긴급 중지'
+      : tradingSafety.can_submit_paper_orders
+        ? '모의주문 가능'
+        : '주문 잠김'
+    : '상태 확인 중';
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
     return {
@@ -476,6 +315,10 @@
     return (rules ?? []).filter(Boolean).slice(0, 4);
   }
 
+  function describeRiskRule(rule: string) {
+    return `${riskRuleActionDescription(rule)} ${describeStrategyRule(rule, 'risk')}`;
+  }
+
   async function handleStrategyChange() {
     orderProposal = null;
     selectedProposalSymbols = [];
@@ -484,12 +327,40 @@
     batchSubmitResult = null;
     proposalError = '';
     savedRunLabel = '';
+    void loadExecutionContract(selectedStrategy);
     await loadCandidateRowsForSelectedStrategy();
   }
 
   async function loadCandidateRowsForSelectedStrategy() {
     await tick();
     await loadCandidateRows(selectedOption);
+  }
+
+  async function loadExecutionContract(strategyCode: string) {
+    const requestId = executionContractRequestId + 1;
+    executionContractRequestId = requestId;
+    executionContractError = '';
+
+    if (!strategyCode) {
+      executionContract = null;
+      return;
+    }
+
+    executionContractLoading = true;
+
+    try {
+      const result = await fetchStrategyExecutionContract(strategyCode);
+      if (executionContractRequestId !== requestId) return;
+      executionContract = result;
+    } catch (err) {
+      if (executionContractRequestId !== requestId) return;
+      executionContract = null;
+      executionContractError = err instanceof Error ? err.message : '전략 실행 계약을 불러오지 못했습니다.';
+    } finally {
+      if (executionContractRequestId === requestId) {
+        executionContractLoading = false;
+      }
+    }
   }
 
   async function loadCandidateRows(option: StrategyOption | null) {
@@ -556,6 +427,7 @@
     try {
       const response = await fetchStrategySelectionRun(runId);
       selectedStrategy = response.strategy_code;
+      void loadExecutionContract(selectedStrategy);
       candidateRows = response.candidates.map(toStrategyCandidate);
       candidateSource = response.source;
       savedRunLabel = response.run_at ? `저장 실행 ${formatDateTime(response.run_at)}` : '저장 실행 결과';
@@ -573,26 +445,116 @@
     }
   }
 
-  async function loadBrokerAccount() {
+  async function loadBrokerStatus() {
     brokerLoading = true;
     brokerError = '';
     brokerOrderError = '';
+    tradingSafetyError = '';
 
     try {
       const status = await fetchKisBrokerAccountStatus();
       brokerStatus = status;
-      if (status.ready) {
-        brokerBalance = await fetchKisBrokerBalance();
-        await wait(900);
-        try {
-          brokerOrders = await fetchKisOrderExecutions();
-        } catch (err) {
-          brokerOrders = null;
-          brokerOrderError = err instanceof Error ? err.message : 'KIS 주문체결 내역을 불러오지 못했습니다.';
-        }
-      } else {
+      if (!status.ready) {
         brokerBalance = null;
         brokerOrders = null;
+      }
+      await loadTradingSafetyStatus();
+    } catch (err) {
+      brokerError = err instanceof Error ? err.message : 'KIS 계좌 정보를 불러오지 못했습니다.';
+      brokerBalance = null;
+      brokerOrders = null;
+    } finally {
+      brokerLoading = false;
+    }
+  }
+
+  async function loadTradingSafetyStatus() {
+    try {
+      tradingSafety = await fetchKisTradingSafetyStatus();
+      tradingSafetyError = '';
+    } catch (err) {
+      tradingSafety = null;
+      tradingSafetyError = err instanceof Error ? err.message : 'KIS 주문 안전 상태를 불러오지 못했습니다.';
+    }
+  }
+
+  async function loadRealtimeStatus() {
+    try {
+      realtimeStatus = await fetchKisRealtimeQuoteStatus();
+      realtimeQuotes = await fetchKisRealtimeLatestQuotes();
+      realtimeError = '';
+    } catch (err) {
+      realtimeError = err instanceof Error ? err.message : 'KIS 실시간 시세 상태를 불러오지 못했습니다.';
+    }
+  }
+
+  async function loadRealtimeLatestQuotesOnly() {
+    try {
+      realtimeStatus = await fetchKisRealtimeQuoteStatus();
+      realtimeQuotes = await fetchKisRealtimeLatestQuotes();
+      realtimeError = '';
+    } catch (err) {
+      realtimeError = err instanceof Error ? err.message : 'KIS 실시간 시세를 갱신하지 못했습니다.';
+    }
+  }
+
+  async function subscribeTopCandidateRealtimeQuotes() {
+    const symbols = candidateRows.slice(0, 10).map((row) => row.symbol);
+    if (!symbols.length) {
+      realtimeError = '구독할 전략 후보 종목이 없습니다.';
+      return;
+    }
+
+    realtimeLoading = true;
+    realtimeError = '';
+
+    try {
+      realtimeStatus = await subscribeKisRealtimeQuotes(symbols);
+      realtimeQuotes = await fetchKisRealtimeLatestQuotes();
+    } catch (err) {
+      realtimeError = err instanceof Error ? err.message : 'KIS 실시간 시세 구독을 시작하지 못했습니다.';
+    } finally {
+      realtimeLoading = false;
+    }
+  }
+
+  async function stopRealtimeQuotes() {
+    realtimeLoading = true;
+    realtimeError = '';
+
+    try {
+      realtimeStatus = await stopKisRealtimeQuotes();
+      realtimeQuotes = await fetchKisRealtimeLatestQuotes();
+    } catch (err) {
+      realtimeError = err instanceof Error ? err.message : 'KIS 실시간 시세 연결을 종료하지 못했습니다.';
+    } finally {
+      realtimeLoading = false;
+    }
+  }
+
+  async function loadBrokerAccount() {
+    brokerLoading = true;
+    brokerError = '';
+    brokerOrderError = '';
+    tradingSafetyError = '';
+
+    try {
+      const status = await fetchKisBrokerAccountStatus();
+      brokerStatus = status;
+      await loadTradingSafetyStatus();
+      if (!status.ready) {
+        brokerBalance = null;
+        brokerOrders = null;
+        return;
+      }
+
+      brokerBalance = await fetchKisBrokerBalance();
+      await wait(900);
+      try {
+        brokerOrders = await fetchKisOrderExecutions();
+      } catch (err) {
+        brokerOrders = null;
+        brokerOrderError = err instanceof Error ? err.message : 'KIS 주문체결 내역을 불러오지 못했습니다.';
       }
     } catch (err) {
       brokerError = err instanceof Error ? err.message : 'KIS 계좌 정보를 불러오지 못했습니다.';
@@ -653,6 +615,7 @@
         order_type: proposalOrderType,
         cash_buffer_rate: Math.max(0, Math.min(50, Number(proposalCashBufferRate) || 0))
       });
+      await loadTradingSafetyStatus();
       selectedProposalSymbols = orderProposal.lines
         .filter((line) => line.status === '주문 가능')
         .map((line) => line.symbol);
@@ -685,7 +648,7 @@
     try {
       batchSubmitResult = await submitKisPaperBatchOrders({
         confirm_submit: true,
-        confirm_phrase: batchConfirmPhrase,
+        confirm_phrase: confirmationRequired ? batchConfirmPhrase : '',
         orders: selectedProposalLines.map((line) => ({
           side: 'buy',
           symbol: line.symbol,
@@ -729,106 +692,6 @@
     };
   }
 
-  function buildLocalCandidateRows(option: StrategyOption | null): StrategyCandidate[] {
-    if (!option) return [];
-
-    return candidateUniverse
-      .map((item) => ({
-        ...item,
-        strategyScore: calculateStrategyScore(option.code, item),
-        rationale: buildLocalRationale(option.code, item),
-        riskFlags: buildLocalRiskFlags(item)
-      }))
-      .sort((left, right) => right.strategyScore - left.strategyScore)
-      .slice(0, 12);
-  }
-
-  function calculateStrategyScore(strategyCode: string, item: CandidateUniverseRow) {
-    if (strategyCode === 'relative-momentum-swing') {
-      return clampScore(
-        item.momentum * 0.5 +
-          item.supplyScore * 0.18 +
-          Math.max(item.changePct, 0) * 4 +
-          item.revenueGrowth * 0.7 -
-          item.shortSaleRatio * 0.8
-      );
-    }
-
-    if (strategyCode === 'value-quality-factor') {
-      return clampScore(
-        item.roe * 2.4 +
-          (30 - Math.min(item.per, 30)) * 1.35 +
-          (4 - Math.min(item.pbr, 4)) * 7 +
-          Math.max(item.revenueGrowth, 0) * 0.7
-      );
-    }
-
-    if (strategyCode === 'growth-breakout-leader') {
-      return clampScore(
-        item.revenueGrowth * 1.5 +
-          item.momentum * 0.35 +
-          Math.max(item.changePct, 0) * 5 +
-          item.supplyScore * 0.2 -
-          Math.max(item.per - 35, 0) * 0.5
-      );
-    }
-
-    if (strategyCode === 'trend-breakout') {
-      return clampScore(
-        item.momentum * 0.48 +
-          Math.max(item.changePct, 0) * 6 +
-          item.supplyScore * 0.25 -
-          Math.max(item.shortSaleRatio - 5, 0) * 1.2
-      );
-    }
-
-    if (strategyCode === 'supply-demand-accumulation') {
-      return clampScore(
-        item.supplyScore * 0.55 +
-          Math.max(item.foreignNetBuy5d, 0) / 70 +
-          Math.max(item.institutionNetBuy5d, 0) / 80 +
-          item.momentum * 0.15
-      );
-    }
-
-    if (strategyCode === 'low-volatility-defensive') {
-      return clampScore(
-        38 -
-          Math.abs(item.changePct) * 4 -
-          item.shortSaleRatio * 2 +
-          item.roe * 2 +
-          (22 - Math.min(item.per, 22)) * 0.9 +
-          (3 - Math.min(item.pbr, 3)) * 6 +
-          item.supplyScore * 0.12
-      );
-    }
-
-    return clampScore(item.momentum * 0.35 + item.supplyScore * 0.35 + item.roe * 1.2 + Math.max(item.revenueGrowth, 0) * 0.8);
-  }
-
-  function clampScore(score: number) {
-    return Math.max(0, Math.min(100, Math.round(score)));
-  }
-
-  function buildLocalRationale(strategyCode: string, item: CandidateUniverseRow) {
-    if (strategyCode.startsWith('user-')) {
-      return [`검색식 기반 후보`, `모멘텀 ${item.momentum}점`, `수급 점수 ${item.supplyScore}점`];
-    }
-
-    return [`모멘텀 ${item.momentum}점`, `수급 점수 ${item.supplyScore}점`, `ROE ${item.roe}%`];
-  }
-
-  function buildLocalRiskFlags(item: CandidateUniverseRow) {
-    const flags: string[] = [];
-
-    if (item.shortSaleRatio >= 6) flags.push('공매도 비율 높음');
-    if (item.per >= 35) flags.push('고PER 구간');
-    if (item.changePct >= 4) flags.push('단기 급등');
-    if (item.roe < 6) flags.push('수익성 낮음');
-
-    return flags;
-  }
-
   function candidateSourceLabel(source: string) {
     if (source.startsWith('daily-price-candidates:')) {
       const provider = source.replace('daily-price-candidates:', '').replace(':filtered', '');
@@ -849,8 +712,16 @@
     }).format(value);
   }
 
+  function formatNullableKrw(value: number | null) {
+    return value === null ? '-' : formatKrw(value);
+  }
+
   function formatNumber(value: number) {
     return value.toLocaleString('ko-KR');
+  }
+
+  function formatNullableNumber(value: number | null) {
+    return value === null ? '-' : value.toLocaleString('ko-KR');
   }
 
   function formatPercent(value: number) {
@@ -869,6 +740,13 @@
 
   function formatSigned(value: number) {
     return `${value > 0 ? '+' : ''}${value.toLocaleString('ko-KR')}`;
+  }
+
+  function realtimeStatusLabel(status: KisRealtimeQuoteStatus | null) {
+    if (!status) return '상태 확인 중';
+    if (status.connected) return '수신 중';
+    if (status.running) return '연결 시도 중';
+    return '대기';
   }
 
   function orderTypeLabel(value: 'market' | 'limit') {
@@ -944,13 +822,46 @@
               <strong>{selectedOption.rebalanceRule}</strong>
             </div>
           </div>
+          <div class="execution-contract-panel">
+            <div class="contract-heading">
+              <strong>실행 연결</strong>
+              <span>같은 전략 코드로 후보 검색, 백테스트, 주문 제안을 연결합니다.</span>
+            </div>
+            {#if executionContractLoading && !executionContract}
+              <div class="contract-status-row">
+                <span class="status-pill">계약 확인 중</span>
+              </div>
+            {:else if executionContractError}
+              <div class="contract-status-row">
+                <span class="status-pill blocked">{executionContractError}</span>
+              </div>
+            {:else if executionContract}
+              <div class="contract-status-row">
+                {#each executionContract.modes as mode}
+                  <span
+                    class="status-pill execution-mode-pill tooltip-anchor"
+                    class:ready={mode.enabled}
+                    class:blocked={!mode.enabled}
+                    aria-label={mode.note}
+                  >
+                    {mode.label}
+                    <span class="tooltip">{mode.note}</span>
+                  </span>
+                {/each}
+              </div>
+              <div class="contract-provider-row">
+                <span>데이터 우선순위</span>
+                <strong>{executionContract.provider_priority.join(' > ')}</strong>
+              </div>
+            {/if}
+          </div>
           <div class="strategy-rule-grid">
             <div>
               <strong>후보 조건</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.signalRules) as rule}
                   <li>
-                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'signal')}>
+                    <span class="tooltip-anchor rule-tooltip" aria-label={describeStrategyRule(rule, 'signal')}>
                       {rule}
                       <span class="tooltip">{describeStrategyRule(rule, 'signal')}</span>
                     </span>
@@ -963,7 +874,7 @@
               <ul class="compact-list">
                 {#each firstRules(selectedOption.rankingRules) as rule}
                   <li>
-                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'ranking')}>
+                    <span class="tooltip-anchor rule-tooltip" aria-label={describeStrategyRule(rule, 'ranking')}>
                       {rule}
                       <span class="tooltip">{describeStrategyRule(rule, 'ranking')}</span>
                     </span>
@@ -972,13 +883,15 @@
               </ul>
             </div>
             <div>
-              <strong>위험 제어</strong>
-              <ul class="compact-list">
+              <strong>위험 처리 기준</strong>
+              <p class="risk-rule-summary">제외/보류, 감점, 주의 중 어떤 방식으로 반영되는지 구분합니다.</p>
+              <ul class="compact-list risk-rule-list">
                 {#each firstRules(selectedOption.riskControls) as rule}
-                  <li>
-                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'risk')}>
+                  <li class="risk-rule-item">
+                    <span class={`risk-action-badge ${classifyRiskRule(rule)}`}>{riskRuleActionLabel(rule)}</span>
+                    <span class="tooltip-anchor rule-tooltip" aria-label={describeRiskRule(rule)}>
                       {rule}
-                      <span class="tooltip">{describeStrategyRule(rule, 'risk')}</span>
+                      <span class="tooltip">{describeRiskRule(rule)}</span>
                     </span>
                   </li>
                 {/each}
@@ -1006,11 +919,11 @@
     <section class="panel broker-panel">
       <div class="panel-heading inline">
         <div>
-          <span>KIS 모의 계좌</span>
+          <span>{brokerEnvironmentTitle}</span>
           <strong>{brokerStatus?.account_label || '계좌 확인 중'}</strong>
         </div>
         <button type="button" class="secondary" onclick={loadBrokerAccount} disabled={brokerLoading}>
-          {brokerLoading ? '갱신 중' : '새로고침'}
+          {brokerLoading ? '조회 중' : '계좌 상세 조회'}
         </button>
       </div>
       {#if brokerError}
@@ -1024,11 +937,67 @@
         </div>
       {:else if brokerStatus}
         <div class="broker-status-row">
-          <span class="source-badge">{brokerStatus.environment === 'paper' ? '모의투자' : '실전 읽기'}</span>
+          <span class={`source-badge ${brokerEnvironmentClass}`}>{brokerEnvironmentBadge}</span>
           <strong>{brokerStatus.message}</strong>
-          <span>{brokerStatus.paper_trading_enabled ? '모의주문 허용' : '모의주문 잠김'}</span>
+          <span>{brokerPermissionText}</span>
         </div>
-        {#if brokerBalance}
+        {#if tradingSafetyError}
+          <div class="empty-state error">{tradingSafetyError}</div>
+        {:else if tradingSafety}
+          <div class="trading-safety-grid">
+            <div>
+              <span>주문 상태</span>
+              <strong
+                class:tone-positive={tradingSafety.can_submit_paper_orders}
+                class:tone-caution={!tradingSafety.can_submit_paper_orders}
+              >
+                {tradingSafetyStatusText}
+              </strong>
+            </div>
+            <div>
+              <span>1회 주문 한도</span>
+              <strong>{formatKrw(tradingSafety.max_order_amount_krw)}</strong>
+            </div>
+            <div>
+              <span>오늘 잔여 주문</span>
+              <strong>
+                {tradingSafety.remaining_daily_order_count === null
+                  ? '무제한'
+                  : `${formatNumber(tradingSafety.remaining_daily_order_count)}건`}
+              </strong>
+            </div>
+            <div>
+              <span>확인 문구</span>
+              <strong>{tradingSafety.manual_confirmation_required ? '필수' : '생략'}</strong>
+            </div>
+            <div>
+              <span>긴급 중지</span>
+              <strong class:tone-caution={tradingSafety.emergency_stop_enabled}>
+                {tradingSafety.emergency_stop_enabled ? '켜짐' : '꺼짐'}
+              </strong>
+            </div>
+            <div>
+              <span>손실 중지</span>
+              <strong class:tone-caution={tradingSafety.daily_loss_stop_enabled}>
+                {tradingSafety.daily_loss_stop_enabled ? '켜짐' : '꺼짐'}
+              </strong>
+            </div>
+            <div>
+              <span>손실 한도</span>
+              <strong>{formatKrw(tradingSafety.max_daily_loss_krw)}</strong>
+            </div>
+          </div>
+          {#if tradingSafety.warnings.length}
+            <div class="proposal-warnings safety-warnings">
+              {#each tradingSafety.warnings.slice(0, 4) as warning}
+                <span>{warning}</span>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+        {#if !brokerBalance && !brokerLoading}
+          <div class="empty-state compact-state">계좌 상세 정보는 필요할 때만 조회합니다.</div>
+        {:else if brokerBalance}
           <div class="broker-summary-grid">
             <div>
               <span>순자산</span>
@@ -1229,6 +1198,95 @@
       {/if}
     </section>
 
+    <section class="panel realtime-panel">
+      <div class="panel-heading inline">
+        <div>
+          <span>KIS 실시간 시세</span>
+          <strong>{realtimeStatusLabel(realtimeStatus)}</strong>
+        </div>
+        <div class="action-row">
+          <button
+            class="secondary"
+            disabled={realtimeLoading || !candidateRows.length}
+            onclick={subscribeTopCandidateRealtimeQuotes}
+            type="button"
+          >
+            {realtimeLoading ? '처리 중' : '상위 후보 구독'}
+          </button>
+          <button class="secondary" disabled={realtimeLoading} onclick={loadRealtimeLatestQuotesOnly} type="button">
+            새로고침
+          </button>
+          <button class="secondary" disabled={realtimeLoading || !realtimeStatus?.running} onclick={stopRealtimeQuotes} type="button">
+            중지
+          </button>
+        </div>
+      </div>
+      <div class="broker-summary-grid compact-summary-grid">
+        <div>
+          <span>연결 상태</span>
+          <strong>{realtimeStatusLabel(realtimeStatus)}</strong>
+        </div>
+        <div>
+          <span>구독 종목</span>
+          <strong>{formatNumber(realtimeStatus?.subscribed_symbols.length ?? 0)}개</strong>
+        </div>
+        <div>
+          <span>수신 종목</span>
+          <strong>{formatNumber(realtimeStatus?.quote_count ?? realtimeQuotes.length)}개</strong>
+        </div>
+        <div>
+          <span>마지막 수신</span>
+          <strong>{realtimeStatus?.last_message_at ? formatDateTime(realtimeStatus.last_message_at) : '-'}</strong>
+        </div>
+      </div>
+      {#if realtimeError || realtimeStatus?.last_error}
+        <div class="empty-state error">{realtimeError || realtimeStatus?.last_error}</div>
+      {/if}
+      {#if realtimeStatus?.subscribed_symbols.length}
+        <div class="tag-row compact-tags">
+          {#each realtimeStatus.subscribed_symbols as symbol}
+            <span>{symbol}</span>
+          {/each}
+        </div>
+      {/if}
+      {#if realtimeQuotes.length}
+        <div class="table-wrap compact-table-wrap">
+          <table class="compact-table realtime-quote-table">
+            <thead>
+              <tr>
+                <th>종목</th>
+                <th>체결 시각</th>
+                <th>현재가</th>
+                <th>등락률</th>
+                <th>체결량</th>
+                <th>누적 거래량</th>
+                <th>매수호가</th>
+                <th>매도호가</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each realtimeQuotes as quote}
+                <tr>
+                  <td><strong>{quote.symbol}</strong></td>
+                  <td>{quote.trade_time ? formatDateTime(quote.trade_time) : '-'}</td>
+                  <td>{formatNullableKrw(quote.price)}</td>
+                  <td class:tone-positive={(quote.change_rate ?? 0) > 0} class:tone-caution={(quote.change_rate ?? 0) < 0}>
+                    {quote.change_rate === null ? '-' : formatPercent(quote.change_rate)}
+                  </td>
+                  <td>{formatNullableNumber(quote.trade_volume)}</td>
+                  <td>{formatNullableNumber(quote.accumulated_volume)}</td>
+                  <td>{formatNullableKrw(quote.bid_price)}</td>
+                  <td>{formatNullableKrw(quote.ask_price)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <div class="empty-state compact-state">상위 후보 구독을 시작하면 최근 실시간 체결값이 여기에 표시됩니다.</div>
+      {/if}
+    </section>
+
     <section class="panel order-proposal-panel">
       <div class="panel-heading inline">
         <div>
@@ -1310,8 +1368,10 @@
             <span>확인 문구</span>
             <input
               bind:value={batchConfirmPhrase}
-              disabled={!brokerStatus?.paper_trading_enabled || batchSubmitting}
-              placeholder="모의주문 실행"
+              disabled={!(tradingSafety?.can_submit_paper_orders ?? brokerStatus?.paper_trading_enabled) ||
+                batchSubmitting ||
+                !confirmationRequired}
+              placeholder={confirmationRequired ? '모의주문 실행' : '확인 문구 생략 설정'}
             />
           </label>
           <button type="button" onclick={submitBatchOrders} disabled={!canSubmitBatchOrders}>
@@ -1453,75 +1513,75 @@
       {:else if candidatesLoading}
         <div class="empty-state">전략 후보 종목을 계산하는 중입니다.</div>
       {:else}
-        <div class="table-wrap">
-        <table class="wide-table strategy-result-table">
-          <thead>
-            <tr>
-              {#each candidateColumns as column}
-                <th>
-                  <button class="tooltip-anchor column-tooltip" title={column.description} type="button">
-                    {column.label}
-                    <span class="tooltip">{column.description}</span>
-                  </button>
-                </th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each candidateRows as row}
+        <div class="table-wrap strategy-results-table-wrap">
+          <table class="wide-table strategy-result-table">
+            <thead>
               <tr>
-                <td>
-                  <strong>{row.name}</strong>
-                  <span>{row.symbol} · {row.industry}</span>
-                </td>
-                <td class="rank-cell">{row.strategyScore}</td>
-                <td>
-                  <ul class="compact-list">
-                    {#each row.rationale as reason}
-                      <li>{reason}</li>
-                    {/each}
-                  </ul>
-                  {#if row.riskFlags.length}
-                    <div class="tag-row compact-tags">
-                      {#each row.riskFlags as flag}
-                        <span>{flag}</span>
+                {#each candidateColumns as column}
+                  <th>
+                    <button class="tooltip-anchor column-tooltip" title={column.description} type="button">
+                      {column.label}
+                      <span class="tooltip">{column.description}</span>
+                    </button>
+                  </th>
+                {/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each candidateRows as row}
+                <tr>
+                  <td>
+                    <strong>{row.name}</strong>
+                    <span>{row.symbol} · {row.industry}</span>
+                  </td>
+                  <td class="rank-cell">{row.strategyScore}</td>
+                  <td>
+                    <ul class="compact-list">
+                      {#each row.rationale as reason}
+                        <li>{reason}</li>
                       {/each}
-                    </div>
-                  {/if}
-                </td>
-                <td>{row.exchange}</td>
-                <td>{row.sector}</td>
-                <td>{row.marketCap.toLocaleString('ko-KR')}조</td>
-                <td>{formatKrw(row.price)}</td>
-                <td class:tone-positive={row.changePct > 0} class:tone-caution={row.changePct < 0}>
-                  <strong>{row.changePct}%</strong>
-                </td>
-                <td>{row.per}x</td>
-                <td>{row.pbr}x</td>
-                <td>{row.roe}%</td>
-                <td>{row.revenueGrowth}%</td>
-                <td class:tone-positive={row.foreignNetBuy5d > 0} class:tone-caution={row.foreignNetBuy5d < 0}>
-                  <strong>{formatSigned(row.foreignNetBuy5d)}억</strong>
-                </td>
-                <td class:tone-positive={row.institutionNetBuy5d > 0} class:tone-caution={row.institutionNetBuy5d < 0}>
-                  <strong>{formatSigned(row.institutionNetBuy5d)}억</strong>
-                </td>
-                <td>{row.supplyScore}</td>
-                <td>{row.shortSaleRatio}%</td>
-                <td>
-                  <meter min="0" max="100" value={row.momentum}>{row.momentum}</meter>
-                  <b>{row.momentum}</b>
-                </td>
-              </tr>
-            {:else}
-              <tr>
-                <td colspan="17">
-                  <div class="empty-state">현재 선택한 전략에 맞는 종목이 없습니다.</div>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+                    </ul>
+                    {#if row.riskFlags.length}
+                      <div class="tag-row compact-tags">
+                        {#each row.riskFlags as flag}
+                          <span>{flag}</span>
+                        {/each}
+                      </div>
+                    {/if}
+                  </td>
+                  <td>{row.exchange}</td>
+                  <td>{row.sector}</td>
+                  <td>{row.marketCap.toLocaleString('ko-KR')}조</td>
+                  <td>{formatKrw(row.price)}</td>
+                  <td class:tone-positive={row.changePct > 0} class:tone-caution={row.changePct < 0}>
+                    <strong>{row.changePct}%</strong>
+                  </td>
+                  <td>{row.per}x</td>
+                  <td>{row.pbr}x</td>
+                  <td>{row.roe}%</td>
+                  <td>{row.revenueGrowth}%</td>
+                  <td class:tone-positive={row.foreignNetBuy5d > 0} class:tone-caution={row.foreignNetBuy5d < 0}>
+                    <strong>{formatSigned(row.foreignNetBuy5d)}억</strong>
+                  </td>
+                  <td class:tone-positive={row.institutionNetBuy5d > 0} class:tone-caution={row.institutionNetBuy5d < 0}>
+                    <strong>{formatSigned(row.institutionNetBuy5d)}억</strong>
+                  </td>
+                  <td>{row.supplyScore}</td>
+                  <td>{row.shortSaleRatio}%</td>
+                  <td>
+                    <meter min="0" max="100" value={row.momentum}>{row.momentum}</meter>
+                    <b>{row.momentum}</b>
+                  </td>
+                </tr>
+              {:else}
+                <tr>
+                  <td colspan="17">
+                    <div class="empty-state">현재 선택한 전략에 맞는 종목이 없습니다.</div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
         </div>
       {/if}
     </section>

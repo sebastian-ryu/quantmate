@@ -1,0 +1,4 @@
+interface:
+  display_name: "QuantMate 데이터 수집"
+  short_description: "KRX/KIS/Yahoo/OpenDART 데이터 공급원과 DB 적재 절차"
+  default_prompt: "QuantMate의 시장 데이터 수집 또는 공급원 연결을 개선해 주세요."

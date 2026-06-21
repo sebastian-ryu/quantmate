@@ -19,6 +19,14 @@
 - `docs/04-working-rules.md`: 세부 작업 규칙
 - `docs/07-skills.md`: 프로젝트 스킬 운영 계획
 
+## 프로젝트 스킬
+
+- `.agents/skills/quantmate-kis-api`: KIS 인증, 실시간 시세, 모의주문, 주문 안전장치 작업
+- `.agents/skills/quantmate-market-data`: KRX/KIS/Yahoo/OpenDART 데이터 수집과 공급원 작업
+- `.agents/skills/quantmate-strategy-backtest`: 전략 후보, 검색기 조건식, 백테스트 계약 작업
+- `.agents/skills/quantmate-ui-qa`: 검색기, 전략, 백테스트 UI 구현과 브라우저 검증 작업
+- `.agents/skills/quantmate-doc-sync`: 코드 변경 후 문서와 TODO 최신화 작업
+
 ## 현재 기본 방향
 
 - 백엔드: Python + FastAPI

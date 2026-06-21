@@ -12,9 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
 from quantmate_api.backtest_engine import build_daily_price_backtest, build_sample_backtest
 from quantmate_api.db import SessionLocal
+from quantmate_api.kis_realtime import kis_realtime_quote_service
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
@@ -33,11 +35,14 @@ from quantmate_api.market_data import (
     fetch_yfinance_symbol_daily_prices,
     get_kis_environment_name,
     get_kis_token_status,
+    get_kis_ws_approval_key,
+    get_kis_ws_approval_status,
+    get_market_metadata,
     has_kis_account_credentials,
     is_kis_open_api_ready,
     is_kis_paper_trading,
-    is_krx_open_api_ready,
     mask_kis_account,
+    normalize_market_code,
     normalize_yahoo_symbol,
     submit_kis_domestic_cash_order,
 )
@@ -55,6 +60,7 @@ from quantmate_api.models import (
     SupplyFlowDaily,
     UserStrategy,
 )
+from quantmate_api.providers import daily_price_provider_names, provider_status_rows
 from quantmate_api.strategy_engine import (
     apply_candidate_quality_filters,
     apply_user_strategy_formula,
@@ -141,6 +147,9 @@ class StrategyCandidate(BaseModel):
     fcf_yield: float = 0
     dividend_yield: float = 0
     payout_ratio: float = 0
+    dividend_growth: float = 0
+    dividend_streak_years: int = 0
+    dividend_stability_score: int = Field(default=0, ge=0, le=100)
     roa: float = 0
     operating_margin: float = 0
     net_margin: float = 0
@@ -171,6 +180,25 @@ class StrategyCandidateResponse(BaseModel):
     strategy_name: str
     source: str
     candidates: list[StrategyCandidate]
+
+
+class StrategyExecutionModeContract(BaseModel):
+    code: str
+    label: str
+    enabled: bool
+    endpoint: str
+    note: str
+
+
+class StrategyExecutionContractResponse(BaseModel):
+    strategy_code: str
+    strategy_name: str
+    source_type: str
+    summary: str
+    formula: str
+    provider_priority: list[str]
+    safety_controls: list[str]
+    modes: list[StrategyExecutionModeContract]
 
 
 class StrategySelectionRunSummary(BaseModel):
@@ -367,6 +395,51 @@ class KisTokenStatusResponse(BaseModel):
     expires_in_seconds: int
 
 
+class KisWebSocketApprovalStatusResponse(BaseModel):
+    provider: str
+    ready: bool
+    environment: str
+    base_url: str
+    ws_url: str
+    approval_key_cached: bool
+    expires_in_seconds: int
+
+
+class KisWebSocketApprovalIssueRequest(BaseModel):
+    force_refresh: bool = False
+
+
+class KisRealtimeQuoteResponse(BaseModel):
+    symbol: str
+    trade_time: str
+    price: int | None = None
+    change: int | None = None
+    change_rate: float | None = None
+    trade_volume: int | None = None
+    accumulated_volume: int | None = None
+    accumulated_trading_value: int | None = None
+    bid_price: int | None = None
+    ask_price: int | None = None
+    received_at: str
+    raw_tr_id: str
+
+
+class KisRealtimeQuoteStatusResponse(BaseModel):
+    provider: str
+    environment: str
+    ws_url: str
+    running: bool
+    connected: bool
+    subscribed_symbols: list[str]
+    quote_count: int
+    last_message_at: str | None = None
+    last_error: str
+
+
+class KisRealtimeQuoteSubscribeRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=50)
+
+
 class KisBrokerAccountStatusResponse(BaseModel):
     provider: str
     ready: bool
@@ -376,6 +449,26 @@ class KisBrokerAccountStatusResponse(BaseModel):
     paper_trading_enabled: bool
     live_trading_enabled: bool
     message: str
+
+
+class KisTradingSafetyStatusResponse(BaseModel):
+    provider: str
+    ready: bool
+    environment: str
+    account_label: str
+    paper_trading_enabled: bool
+    live_trading_enabled: bool
+    emergency_stop_enabled: bool
+    manual_confirmation_required: bool
+    daily_loss_stop_enabled: bool
+    max_order_amount_krw: int
+    max_daily_order_count: int
+    max_daily_loss_krw: int
+    remaining_daily_order_count: int | None
+    can_submit_paper_orders: bool
+    can_submit_live_orders: bool
+    message: str
+    warnings: list[str]
 
 
 class KisBrokerBalanceSummary(BaseModel):
@@ -485,6 +578,7 @@ class KisPaperOrderRequest(BaseModel):
     price: int = Field(default=0, ge=0)
     exchange_id: str = Field(default="KRX", max_length=10)
     confirm_submit: bool = False
+    confirm_phrase: str = ""
 
 
 class KisPaperOrderResponse(BaseModel):
@@ -650,6 +744,23 @@ class KisMarketCapRankingResponse(BaseModel):
     provider: str
     count: int
     items: list[KisMarketCapRankingItem]
+
+
+class KisInstrumentImportRequest(BaseModel):
+    market: str = Field(default="ALL", max_length=20)
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class KisInstrumentImportResponse(BaseModel):
+    provider: str
+    job_id: int
+    market: str
+    fetched_count: int
+    created_count: int
+    updated_count: int
+    skipped_count: int
+    instrument_count: int
+    message: str
 
 
 class KisInvestorTradeDailyItem(BaseModel):
@@ -850,12 +961,32 @@ def _paper_trading_enabled() -> bool:
     return _env_bool("PAPER_TRADING_ENABLED", default=False)
 
 
+def _live_trading_enabled() -> bool:
+    return _env_bool("LIVE_TRADING_ENABLED", default=False)
+
+
+def _emergency_stop_enabled() -> bool:
+    return _env_bool("EMERGENCY_STOP_ENABLED", default=False)
+
+
+def _manual_order_confirmation_required() -> bool:
+    return _env_bool("MANUAL_ORDER_CONFIRMATION_REQUIRED", default=True)
+
+
+def _daily_loss_stop_enabled() -> bool:
+    return _env_bool("DAILY_LOSS_STOP_ENABLED", default=False)
+
+
 def _max_order_amount_krw() -> int:
     return _env_int("MAX_ORDER_AMOUNT_KRW", 5_000_000)
 
 
 def _max_daily_order_count() -> int:
     return _env_int("MAX_DAILY_ORDER_COUNT", 10)
+
+
+def _max_daily_loss_krw() -> int:
+    return _env_int("MAX_DAILY_LOSS_KRW", 50_000)
 
 
 def _masked_kis_account_label() -> str:
@@ -1020,6 +1151,63 @@ def _validate_paper_batch_order_risk_limits(
     return estimated_orders
 
 
+def _int_from_balance_summary(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _daily_loss_amount_from_balance(balance: dict[str, object]) -> int:
+    summary = balance.get("summary")
+    if not isinstance(summary, dict):
+        return 0
+
+    asset_change = _int_from_balance_summary(summary.get("asset_change_amount"))
+    if asset_change is not None and asset_change < 0:
+        return abs(asset_change)
+
+    net_asset = _int_from_balance_summary(summary.get("net_asset_amount"))
+    previous_asset = _int_from_balance_summary(summary.get("previous_total_asset_evaluation_amount"))
+    if net_asset is not None and previous_asset is not None and previous_asset > 0 and net_asset < previous_asset:
+        return previous_asset - net_asset
+
+    return 0
+
+
+def _validate_daily_loss_stop() -> int:
+    if not _daily_loss_stop_enabled():
+        return 0
+
+    max_daily_loss = _max_daily_loss_krw()
+    if max_daily_loss <= 0:
+        return 0
+
+    try:
+        balance = fetch_kis_domestic_balance()
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"일일 손실 중지 확인을 위한 KIS 잔고 조회에 실패했습니다: {exc}",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"일일 손실 중지 확인을 위한 KIS 계좌 설정 확인이 필요합니다: {exc}",
+        ) from exc
+
+    daily_loss = _daily_loss_amount_from_balance(balance)
+    if daily_loss >= max_daily_loss:
+        raise HTTPException(
+            status_code=403,
+            detail=f"오늘 손실 {daily_loss:,}원이 일일 손실 중지 한도 {max_daily_loss:,}원 이상입니다.",
+        )
+
+    return daily_loss
+
+
 def _proposal_available_cash() -> tuple[int, bool, list[str]]:
     try:
         balance = fetch_kis_domestic_balance()
@@ -1048,6 +1236,62 @@ def _remaining_daily_paper_order_slots() -> tuple[int | None, list[str]]:
         return None, [f"일일 주문 횟수 조회 실패: {exc.__class__.__name__}"]
 
     return max(0, max_daily_count - used_count), []
+
+
+def _trading_safety_status_response() -> KisTradingSafetyStatusResponse:
+    api_ready = is_kis_open_api_ready()
+    account_configured = has_kis_account_credentials()
+    ready = api_ready and account_configured
+    paper_mode = is_kis_paper_trading()
+    paper_enabled = _paper_trading_enabled()
+    live_enabled = _live_trading_enabled()
+    emergency_stop = _emergency_stop_enabled()
+    manual_confirmation_required = _manual_order_confirmation_required()
+    daily_loss_stop = _daily_loss_stop_enabled()
+    remaining_slots, slot_warnings = _remaining_daily_paper_order_slots()
+    warnings = list(slot_warnings)
+
+    if not api_ready:
+        warnings.append("KIS App Key/Secret 설정이 필요합니다.")
+    if not account_configured:
+        warnings.append("KIS 계좌번호와 계좌상품코드 설정이 필요합니다.")
+    if emergency_stop:
+        warnings.append("긴급 중지 상태라 주문 제출을 차단합니다.")
+    if not paper_mode:
+        warnings.append("현재 KIS 실전 계좌 설정입니다. 실전 주문 API는 아직 열지 않았습니다.")
+    elif not paper_enabled:
+        warnings.append("PAPER_TRADING_ENABLED=false 상태라 모의주문 제출은 잠겨 있습니다.")
+    if remaining_slots == 0:
+        warnings.append("오늘 남은 모의주문 가능 횟수가 없습니다.")
+    if daily_loss_stop:
+        warnings.append("일일 손실 중지가 켜져 있어 주문 제출 직전에 KIS 잔고 기준 손실 한도를 확인합니다.")
+
+    can_submit_paper_orders = ready and paper_mode and paper_enabled and not emergency_stop and remaining_slots != 0
+    can_submit_live_orders = False
+    if paper_mode:
+        message = "모의주문 안전장치 상태입니다."
+    else:
+        message = "실전 계좌 읽기 상태입니다. 실전 주문 제출은 아직 비활성화되어 있습니다."
+
+    return KisTradingSafetyStatusResponse(
+        provider="KIS Open API",
+        ready=ready,
+        environment=get_kis_environment_name(),
+        account_label=_masked_kis_account_label(),
+        paper_trading_enabled=paper_enabled,
+        live_trading_enabled=live_enabled,
+        emergency_stop_enabled=emergency_stop,
+        manual_confirmation_required=manual_confirmation_required,
+        daily_loss_stop_enabled=daily_loss_stop,
+        max_order_amount_krw=_max_order_amount_krw(),
+        max_daily_order_count=_max_daily_order_count(),
+        max_daily_loss_krw=_max_daily_loss_krw(),
+        remaining_daily_order_count=remaining_slots,
+        can_submit_paper_orders=can_submit_paper_orders,
+        can_submit_live_orders=can_submit_live_orders,
+        message=message,
+        warnings=warnings,
+    )
 
 
 def _build_kis_order_proposal_lines(
@@ -1384,7 +1628,7 @@ KIS_RISK_INDICATOR_PROVIDER = "KIS Risk Indicator"
 KIS_RISK_INDICATOR_COOLDOWN_UNTIL: datetime | None = None
 KIS_FUNDAMENTAL_PROVIDER = "KIS Financial Ratio"
 KIS_FUNDAMENTAL_COOLDOWN_UNTIL: datetime | None = None
-DEFAULT_DAILY_PRICE_PROVIDER_PRIORITY = ("KRX Open API", "KIS Open API", "Yahoo Finance")
+DEFAULT_DAILY_PRICE_PROVIDER_PRIORITY = daily_price_provider_names()
 
 
 def _daily_price_provider_priority() -> list[str]:
@@ -1604,19 +1848,21 @@ def _build_benchmark_curve(
     if len(ordered_months) < 2:
         return []
 
-    balance = float(initial_amount)
     curve: list[dict[str, object]] = []
+    first_rows = sorted(monthly_prices[ordered_months[0]], key=_row_trade_date)
+    base_price = _decimal_or_none(first_rows[0].get("close")) if first_rows else None
+    if base_price is None or base_price <= 0:
+        return []
 
-    for month_key in ordered_months:
+    for month_index, month_key in enumerate(ordered_months):
         rows = sorted(monthly_prices[month_key], key=_row_trade_date)
-        start_price = _decimal_or_none(rows[0].get("close"))
         end_price = _decimal_or_none(rows[-1].get("close"))
 
-        if start_price is None or end_price is None or start_price <= 0:
+        if end_price is None or end_price <= 0:
             continue
 
-        balance *= float(end_price / start_price)
-        curve.append({"label": month_key.replace("-", "."), "benchmark": round(balance)})
+        benchmark_value = initial_amount if month_index == 0 else round(float(initial_amount) * float(end_price / base_price))
+        curve.append({"label": month_key.replace("-", "."), "benchmark": benchmark_value})
 
     return curve
 
@@ -1636,7 +1882,7 @@ def _build_daily_price_backtest_if_available(
     end_date = date(last_year, 12, 31)
     candidate_symbols = [item["symbol"] for item in _seed_candidates_for_strategy(strategy_code, limit=50)]
 
-    existing_result, existing_provider = _build_daily_price_backtest_from_db(
+    existing_result, _existing_provider = _build_daily_price_backtest_from_db(
         strategy_code=strategy_code,
         strategy_name=strategy_name,
         start_year=start_year,
@@ -1647,7 +1893,10 @@ def _build_daily_price_backtest_if_available(
         end_date=end_date,
         candidate_formula=candidate_formula,
     )
-    if existing_result is not None and existing_provider == "KRX Open API":
+    if existing_result is not None and _backtest_result_covers_requested_start(
+        result=existing_result,
+        first_year=first_year,
+    ):
         return existing_result
 
     _auto_import_kis_daily_prices_for_backtest(
@@ -1656,7 +1905,7 @@ def _build_daily_price_backtest_if_available(
         end_date=end_date,
     )
 
-    kis_result, kis_provider = _build_daily_price_backtest_from_db(
+    kis_result, _kis_provider = _build_daily_price_backtest_from_db(
         strategy_code=strategy_code,
         strategy_name=strategy_name,
         start_year=start_year,
@@ -1667,7 +1916,10 @@ def _build_daily_price_backtest_if_available(
         end_date=end_date,
         candidate_formula=candidate_formula,
     )
-    if kis_result is not None and kis_provider == "KIS Open API":
+    if kis_result is not None and _backtest_result_covers_requested_start(
+        result=kis_result,
+        first_year=first_year,
+    ):
         return kis_result
 
     _auto_import_yahoo_daily_prices_for_backtest(
@@ -1687,7 +1939,20 @@ def _build_daily_price_backtest_if_available(
         end_date=end_date,
         candidate_formula=candidate_formula,
     )
-    return refreshed_result
+    return refreshed_result or kis_result or existing_result
+
+
+def _backtest_result_covers_requested_start(*, result: dict[str, object], first_year: int) -> bool:
+    rebalance_history = result.get("rebalance_history")
+    if not isinstance(rebalance_history, list) or not rebalance_history:
+        return False
+
+    first_row = rebalance_history[0]
+    if not isinstance(first_row, dict):
+        return False
+
+    first_rebalance_month = str(first_row.get("date") or "").replace(".", "-")
+    return first_rebalance_month <= f"{first_year}-01"
 
 
 def _build_daily_price_backtest_from_db(
@@ -2000,25 +2265,41 @@ def _load_backtest_price_rows(
         )
 
     minimum_symbols = min(10, len(symbols))
+    provider_options: list[tuple[list[dict[str, object]], str]] = []
     for provider in provider_priority:
         provider_rows = _filter_backtest_price_rows_for_coverage(grouped_by_provider[provider])
-        if _has_minimum_price_coverage(provider_rows, minimum_symbols=minimum_symbols):
-            return provider_rows, provider
+        if _has_minimum_price_coverage(provider_rows, minimum_symbols=1):
+            provider_options.append((provider_rows, provider))
 
     mixed_rows, mixed_provider = _build_mixed_backtest_price_rows(
         grouped_by_provider=grouped_by_provider,
         provider_priority=provider_priority,
+        start_date=start_date,
+        end_date=end_date,
     )
-    if _has_minimum_price_coverage(mixed_rows, minimum_symbols=minimum_symbols):
-        return mixed_rows, mixed_provider
-
-    for provider in provider_priority:
-        provider_rows = _filter_backtest_price_rows_for_coverage(grouped_by_provider[provider])
-        if _has_minimum_price_coverage(provider_rows, minimum_symbols=1):
-            return provider_rows, provider
-
     if _has_minimum_price_coverage(mixed_rows, minimum_symbols=1):
-        return mixed_rows, mixed_provider
+        provider_options.append((mixed_rows, mixed_provider))
+
+    enough_symbol_options = [
+        (rows, provider)
+        for rows, provider in provider_options
+        if _has_minimum_price_coverage(rows, minimum_symbols=minimum_symbols)
+    ]
+    if enough_symbol_options:
+        return _best_backtest_price_rows_for_period(
+            options=enough_symbol_options,
+            provider_priority=provider_priority,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    if provider_options:
+        return _best_backtest_price_rows_for_period(
+            options=provider_options,
+            provider_priority=provider_priority,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     return [], ""
 
@@ -2055,10 +2336,88 @@ def _has_minimum_price_coverage(
     return len(symbols) >= minimum_symbols and len(months) >= 2 and len(price_rows) >= minimum_symbols * 4
 
 
+def _best_backtest_price_rows_for_period(
+    *,
+    options: list[tuple[list[dict[str, object]], str]],
+    provider_priority: list[str],
+    start_date: date,
+    end_date: date,
+) -> tuple[list[dict[str, object]], str]:
+    return max(
+        options,
+        key=lambda item: _backtest_price_coverage_score(
+            price_rows=item[0],
+            provider=item[1],
+            provider_priority=provider_priority,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+    )
+
+
+def _backtest_price_coverage_score(
+    *,
+    price_rows: list[dict[str, object]],
+    provider: str,
+    provider_priority: list[str],
+    start_date: date,
+    end_date: date,
+) -> tuple[int, int, int, int, int, int]:
+    if not price_rows:
+        return (0, 0, 0, 0, 0, 0)
+
+    effective_end_date = min(end_date, today_kst())
+    start_month_index = _month_index_from_date(start_date)
+    end_month_index = _month_index_from_date(effective_end_date)
+    expected_months = max(1, end_month_index - start_month_index + 1)
+    provider_rank = provider_priority.index(provider) if provider in provider_priority else len(provider_priority)
+
+    rows_by_symbol: dict[str, list[dict[str, object]]] = {}
+    covered_months: set[int] = set()
+    for row in price_rows:
+        trade_date = _row_trade_date(row)
+        month_index = _month_index_from_date(trade_date)
+        covered_months.add(month_index)
+        rows_by_symbol.setdefault(str(row["symbol"]), []).append(row)
+
+    full_period_symbol_count = 0
+    for rows in rows_by_symbol.values():
+        symbol_months = {_month_index_from_date(_row_trade_date(row)) for row in rows}
+        if not symbol_months:
+            continue
+        if min(symbol_months) <= start_month_index and max(symbol_months) >= end_month_index:
+            full_period_symbol_count += 1
+
+    bounded_month_count = len(
+        {
+            month_index
+            for month_index in covered_months
+            if start_month_index <= month_index <= end_month_index
+        }
+    )
+    covers_start_month = int(start_month_index in covered_months)
+    covers_end_month = int(end_month_index in covered_months)
+
+    return (
+        min(full_period_symbol_count, len(rows_by_symbol)),
+        min(bounded_month_count, expected_months),
+        covers_start_month,
+        covers_end_month,
+        len(rows_by_symbol),
+        -provider_rank,
+    )
+
+
+def _month_index_from_date(value: date) -> int:
+    return value.year * 12 + value.month - 1
+
+
 def _build_mixed_backtest_price_rows(
     *,
     grouped_by_provider: dict[str, list[dict[str, object]]],
     provider_priority: list[str],
+    start_date: date,
+    end_date: date,
 ) -> tuple[list[dict[str, object]], str]:
     rows_by_symbol_provider: dict[str, dict[str, list[dict[str, object]]]] = {}
 
@@ -2071,13 +2430,24 @@ def _build_mixed_backtest_price_rows(
     used_providers: list[str] = []
 
     for provider_rows in rows_by_symbol_provider.values():
+        symbol_options: list[tuple[list[dict[str, object]], str]] = []
         for provider in provider_priority:
             covered_rows = _filter_backtest_price_rows_for_coverage(provider_rows.get(provider, []))
             if _has_minimum_price_coverage(covered_rows, minimum_symbols=1):
-                mixed_rows.extend(covered_rows)
-                if provider not in used_providers:
-                    used_providers.append(provider)
-                break
+                symbol_options.append((covered_rows, provider))
+
+        if not symbol_options:
+            continue
+
+        best_rows, best_provider = _best_backtest_price_rows_for_period(
+            options=symbol_options,
+            provider_priority=provider_priority,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        mixed_rows.extend(best_rows)
+        if best_provider not in used_providers:
+            used_providers.append(best_provider)
 
     return mixed_rows, _mixed_provider_label(used_providers)
 
@@ -2532,6 +2902,7 @@ def _load_strategy_candidate_result(
     strategy_code: str,
     *,
     limit: int = 12,
+    auto_import: bool = True,
 ) -> tuple[str, list[dict[str, object]]] | None:
     safe_limit = max(1, min(limit, 100))
     target_count = _candidate_target_count(safe_limit)
@@ -2539,6 +2910,9 @@ def _load_strategy_candidate_result(
         strategy_code,
         limit=safe_limit,
     )
+
+    if not auto_import:
+        return daily_price_candidates
 
     if _should_try_kis_candidate_import(daily_price_candidates) or _candidate_result_count(
         daily_price_candidates
@@ -3026,7 +3400,12 @@ def _mixed_provider_label(providers: list[str]) -> str:
     return " + ".join(providers)
 
 
-def _resolve_strategy_candidate_response(strategy_code: str, limit: int = 12) -> StrategyCandidateResponse:
+def _resolve_strategy_candidate_response(
+    strategy_code: str,
+    limit: int = 12,
+    *,
+    auto_import: bool = True,
+) -> StrategyCandidateResponse:
     safe_limit = max(1, min(limit, 100))
     strategy = _find_system_strategy(strategy_code)
     strategy_name = strategy.name if strategy else ""
@@ -3044,12 +3423,20 @@ def _resolve_strategy_candidate_response(strategy_code: str, limit: int = 12) ->
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
     if strategy is not None:
-        daily_price_candidates = _load_strategy_candidate_result(strategy_code, limit=safe_limit)
+        daily_price_candidates = _load_strategy_candidate_result(
+            strategy_code,
+            limit=safe_limit,
+            auto_import=auto_import,
+        )
         if daily_price_candidates is not None:
             source, candidates = daily_price_candidates
 
     if user_strategy is not None:
-        daily_price_candidates = _load_strategy_candidate_result(strategy_code, limit=safe_limit)
+        daily_price_candidates = _load_strategy_candidate_result(
+            strategy_code,
+            limit=safe_limit,
+            auto_import=auto_import,
+        )
         if daily_price_candidates is not None:
             source, candidates = daily_price_candidates
 
@@ -3068,6 +3455,123 @@ def _resolve_strategy_candidate_response(strategy_code: str, limit: int = 12) ->
         strategy_name=strategy_name,
         source=source,
         candidates=[StrategyCandidate(**candidate) for candidate in candidates],
+    )
+
+
+def _strategy_execution_contract(strategy_code: str) -> StrategyExecutionContractResponse:
+    strategy = _find_system_strategy(strategy_code)
+    user_strategy = None
+    formula = ""
+
+    if strategy is None and strategy_code.startswith("user-"):
+        user_strategy = _load_active_user_strategy(strategy_code)
+
+    if strategy is None and user_strategy is None:
+        raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
+
+    if strategy is not None:
+        strategy_name = strategy.name
+        source_type = strategy.source_type
+        summary = strategy.summary
+        formula = " AND ".join(strategy.signal_rules)
+    else:
+        strategy_name = user_strategy.name
+        source_type = "user"
+        summary = user_strategy.summary
+        formula = user_strategy.formula
+
+    paper_order_ready = is_kis_paper_trading() and _paper_trading_enabled() and not _emergency_stop_enabled()
+    modes = [
+        StrategyExecutionModeContract(
+            code="screen",
+            label="전략 후보 검색",
+            enabled=True,
+            endpoint=f"/api/strategies/{strategy_code}/candidates",
+            note="전략 정의와 저장된 검색식을 사용해 후보 종목을 산출합니다.",
+        ),
+        StrategyExecutionModeContract(
+            code="screener",
+            label="검색기 조건 적용",
+            enabled=True,
+            endpoint="/api/screener/search",
+            note="검색기 조건식과 같은 필드 계약을 사용합니다.",
+        ),
+        StrategyExecutionModeContract(
+            code="backtest",
+            label="백테스트",
+            enabled=True,
+            endpoint="/api/backtests/run",
+            note="동일 전략 코드로 과거 일봉 기반 동적 리밸런싱을 실행합니다.",
+        ),
+        StrategyExecutionModeContract(
+            code="paper-order-proposal",
+            label="모의 주문 제안",
+            enabled=is_kis_open_api_ready() and has_kis_account_credentials(),
+            endpoint="/api/broker/kis/order-proposals",
+            note="전략 후보를 종목당 금액과 주문 가능 수량으로 변환합니다.",
+        ),
+        StrategyExecutionModeContract(
+            code="paper-order-submit",
+            label="모의 일괄 주문",
+            enabled=paper_order_ready,
+            endpoint="/api/broker/kis/paper/orders/batch",
+            note="확인 문구, 주문 한도, 일일 횟수, 긴급 중지, 손실 중지 안전장치를 통과해야 합니다.",
+        ),
+        StrategyExecutionModeContract(
+            code="live-order-submit",
+            label="실전 일괄 주문",
+            enabled=False,
+            endpoint="",
+            note="실전 주문 API는 아직 열지 않았고, 별도 검토 후 추가합니다.",
+        ),
+    ]
+
+    return StrategyExecutionContractResponse(
+        strategy_code=strategy_code,
+        strategy_name=strategy_name,
+        source_type=source_type,
+        summary=summary,
+        formula=formula,
+        provider_priority=_daily_price_provider_priority(),
+        safety_controls=[
+            "PAPER_TRADING_ENABLED",
+            "EMERGENCY_STOP_ENABLED",
+            "MANUAL_ORDER_CONFIRMATION_REQUIRED",
+            "MAX_ORDER_AMOUNT_KRW",
+            "MAX_DAILY_ORDER_COUNT",
+            "DAILY_LOSS_STOP_ENABLED",
+            "MAX_DAILY_LOSS_KRW",
+        ],
+        modes=modes,
+    )
+
+
+def _search_screener_response(request: ScreenerSearchRequest) -> ScreenerSearchResponse:
+    base_response = _resolve_strategy_candidate_response(
+        request.strategy_code,
+        limit=request.limit,
+        auto_import=False,
+    )
+    candidates = [candidate.model_dump() for candidate in base_response.candidates]
+    unsupported_conditions: list[str] = []
+    formula = request.formula.strip()
+
+    if formula and not formula.startswith("필터를 선택하면"):
+        candidates, unsupported_conditions = apply_user_strategy_formula(
+            candidates=candidates,
+            formula=formula,
+        )
+
+    source = base_response.source
+    if formula and not formula.startswith("필터를 선택하면"):
+        source = f"{source}:screener-filtered"
+
+    return ScreenerSearchResponse(
+        strategy_code=base_response.strategy_code,
+        strategy_name=base_response.strategy_name,
+        source=source,
+        unsupported_conditions=unsupported_conditions,
+        candidates=[StrategyCandidate(**candidate) for candidate in candidates[: request.limit]],
     )
 
 
@@ -3191,12 +3695,26 @@ async def list_strategies() -> list[Strategy]:
 
 
 @app.get("/api/strategies/{strategy_code}/candidates")
-async def strategy_candidates(strategy_code: str, limit: int = 12) -> StrategyCandidateResponse:
-    response = _resolve_strategy_candidate_response(strategy_code, limit=limit)
+async def strategy_candidates(
+    strategy_code: str,
+    limit: int = 12,
+    refresh: bool = False,
+) -> StrategyCandidateResponse:
+    response = await run_in_threadpool(
+        _resolve_strategy_candidate_response,
+        strategy_code,
+        limit=limit,
+        auto_import=refresh,
+    )
     run_id, run_at = _save_strategy_selection_run(response)
     response.run_id = run_id
     response.run_at = run_at
     return response
+
+
+@app.get("/api/strategies/{strategy_code}/contract")
+async def strategy_execution_contract(strategy_code: str) -> StrategyExecutionContractResponse:
+    return _strategy_execution_contract(strategy_code)
 
 
 @app.get("/api/strategy-runs")
@@ -3239,28 +3757,7 @@ async def get_strategy_selection_run(run_id: int) -> StrategyCandidateResponse:
 
 @app.post("/api/screener/search")
 async def search_screener(request: ScreenerSearchRequest) -> ScreenerSearchResponse:
-    base_response = _resolve_strategy_candidate_response(request.strategy_code, limit=request.limit)
-    candidates = [candidate.model_dump() for candidate in base_response.candidates]
-    unsupported_conditions: list[str] = []
-    formula = request.formula.strip()
-
-    if formula and not formula.startswith("필터를 선택하면"):
-        candidates, unsupported_conditions = apply_user_strategy_formula(
-            candidates=candidates,
-            formula=formula,
-        )
-
-    source = base_response.source
-    if formula and not formula.startswith("필터를 선택하면"):
-        source = f"{source}:screener-filtered"
-
-    return ScreenerSearchResponse(
-        strategy_code=base_response.strategy_code,
-        strategy_name=base_response.strategy_name,
-        source=source,
-        unsupported_conditions=unsupported_conditions,
-        candidates=[StrategyCandidate(**candidate) for candidate in candidates[: request.limit]],
-    )
+    return await run_in_threadpool(_search_screener_response, request)
 
 
 @app.get("/api/user-strategies")
@@ -3430,35 +3927,7 @@ async def dashboard() -> DashboardResponse:
 
 @app.get("/api/data/status")
 async def data_status() -> DataStatusResponse:
-    kis_ready = is_kis_open_api_ready()
-    krx_ready = is_krx_open_api_ready()
-    provider_status = [
-        {
-            "name": "KIS Open API",
-            "scope": "현재가/분봉/재무/수급/실시간/계좌",
-            "status": "인증정보 설정됨" if kis_ready else "App Key/Secret 필요",
-            "ready": kis_ready,
-        },
-        {
-            "name": "KIS 계좌",
-            "scope": "모의투자/실계좌 잔고와 주문 준비 상태",
-            "status": "계좌 설정됨" if has_kis_account_credentials() else "계좌번호 설정 필요",
-            "ready": has_kis_account_credentials(),
-        },
-        {
-            "name": "Yahoo Finance",
-            "scope": "KR 일봉 임시 백테스트 데이터",
-            "status": "임시 사용 가능",
-            "ready": True,
-        },
-        {
-            "name": "KRX Open API",
-            "scope": "공식 인증키 기반 종목/OHLCV",
-            "status": "인증키 설정됨" if krx_ready else "API 인증키 필요",
-            "ready": krx_ready,
-        },
-        {"name": "OpenDART", "scope": "재무제표/공시", "status": "API 키 필요", "ready": False},
-    ]
+    provider_status = provider_status_rows()
 
     try:
         with SessionLocal() as session:
@@ -3689,6 +4158,59 @@ async def kis_token_status() -> KisTokenStatusResponse:
     return KisTokenStatusResponse(**get_kis_token_status())
 
 
+@app.get("/api/data/kis/websocket/approval/status")
+async def kis_websocket_approval_status() -> KisWebSocketApprovalStatusResponse:
+    return KisWebSocketApprovalStatusResponse(**get_kis_ws_approval_status())
+
+
+@app.post("/api/data/kis/websocket/approval-key")
+async def issue_kis_websocket_approval_key(
+    request: KisWebSocketApprovalIssueRequest,
+) -> KisWebSocketApprovalStatusResponse:
+    await run_in_threadpool(get_kis_ws_approval_key, force_refresh=request.force_refresh)
+    return KisWebSocketApprovalStatusResponse(**get_kis_ws_approval_status())
+
+
+@app.get("/api/data/kis/realtime/quotes/status")
+async def kis_realtime_quote_status() -> KisRealtimeQuoteStatusResponse:
+    status = await kis_realtime_quote_service.status()
+    return KisRealtimeQuoteStatusResponse(**status.as_response_row())
+
+
+@app.get("/api/data/kis/realtime/quotes/latest")
+async def kis_realtime_latest_quotes() -> list[KisRealtimeQuoteResponse]:
+    quotes = await kis_realtime_quote_service.latest_quotes()
+    return [KisRealtimeQuoteResponse(**quote.as_response_row()) for quote in quotes]
+
+
+@app.post("/api/data/kis/realtime/quotes/subscribe")
+async def subscribe_kis_realtime_quotes(
+    request: KisRealtimeQuoteSubscribeRequest,
+) -> KisRealtimeQuoteStatusResponse:
+    try:
+        status = await kis_realtime_quote_service.subscribe(request.symbols)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return KisRealtimeQuoteStatusResponse(**status.as_response_row())
+
+
+@app.post("/api/data/kis/realtime/quotes/unsubscribe")
+async def unsubscribe_kis_realtime_quotes(
+    request: KisRealtimeQuoteSubscribeRequest,
+) -> KisRealtimeQuoteStatusResponse:
+    try:
+        status = await kis_realtime_quote_service.unsubscribe(request.symbols)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return KisRealtimeQuoteStatusResponse(**status.as_response_row())
+
+
+@app.post("/api/data/kis/realtime/quotes/stop")
+async def stop_kis_realtime_quotes() -> KisRealtimeQuoteStatusResponse:
+    status = await kis_realtime_quote_service.stop()
+    return KisRealtimeQuoteStatusResponse(**status.as_response_row())
+
+
 @app.get("/api/broker/kis/account/status")
 async def kis_broker_account_status() -> KisBrokerAccountStatusResponse:
     api_ready = is_kis_open_api_ready()
@@ -3711,9 +4233,14 @@ async def kis_broker_account_status() -> KisBrokerAccountStatusResponse:
         account_configured=account_configured,
         account_label=_masked_kis_account_label(),
         paper_trading_enabled=_paper_trading_enabled(),
-        live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED"),
+        live_trading_enabled=_live_trading_enabled(),
         message=message,
     )
+
+
+@app.get("/api/broker/kis/safety-status")
+async def kis_trading_safety_status() -> KisTradingSafetyStatusResponse:
+    return _trading_safety_status_response()
 
 
 @app.get("/api/broker/kis/balance")
@@ -3724,7 +4251,7 @@ async def kis_broker_balance() -> KisBrokerBalanceResponse:
         "mode": "read-only",
     }
     try:
-        result = fetch_kis_domestic_balance()
+        result = await run_in_threadpool(fetch_kis_domestic_balance)
         _try_create_broker_audit_log(
             action="account_balance.read",
             status="success",
@@ -3764,7 +4291,12 @@ async def kis_broker_buyable_cash(
         "order_type": order_type,
     }
     try:
-        result = fetch_kis_buyable_cash(symbol=symbol, order_price=order_price, order_type=order_type)
+        result = await run_in_threadpool(
+            fetch_kis_buyable_cash,
+            symbol=symbol,
+            order_price=order_price,
+            order_type=order_type,
+        )
         _try_create_broker_audit_log(
             action="buyable_cash.read",
             status="success",
@@ -3810,7 +4342,8 @@ async def kis_broker_orders(
         "mode": "read-only",
     }
     try:
-        result = fetch_kis_daily_order_executions(
+        result = await run_in_threadpool(
+            fetch_kis_daily_order_executions,
             start=start,
             end=end,
             side=side,
@@ -3845,10 +4378,12 @@ async def kis_broker_orders(
 @app.post("/api/broker/kis/order-proposals")
 async def kis_order_proposal(request: KisOrderProposalRequest) -> KisOrderProposalResponse:
     strategy_response = await strategy_candidates(request.strategy_code, limit=request.max_positions)
-    available_cash, cash_verified, warnings = _proposal_available_cash()
+    available_cash, cash_verified, warnings = await run_in_threadpool(_proposal_available_cash)
     remaining_slots, slot_warnings = _remaining_daily_paper_order_slots()
     warnings.extend(slot_warnings)
 
+    if _emergency_stop_enabled():
+        warnings.append("긴급 중지 상태라 주문 제출은 차단되며, 제안만 생성합니다.")
     if not is_kis_paper_trading():
         warnings.append("현재 KIS 실전 계좌 설정입니다. 이 화면에서는 주문 제안만 생성합니다.")
     elif not _paper_trading_enabled():
@@ -3920,9 +4455,11 @@ async def kis_paper_batch_order(request: KisPaperBatchOrderRequest) -> KisPaperB
         raise HTTPException(status_code=403, detail="현재 KIS_IS_PAPER=true인 모의투자 설정에서만 사용할 수 있습니다.")
     if not _paper_trading_enabled():
         raise HTTPException(status_code=403, detail="PAPER_TRADING_ENABLED=true 설정 후 사용할 수 있습니다.")
+    if _emergency_stop_enabled():
+        raise HTTPException(status_code=423, detail="EMERGENCY_STOP_ENABLED=true 상태라 주문 제출을 차단했습니다.")
     if not request.confirm_submit:
         raise HTTPException(status_code=400, detail="confirm_submit=true가 있어야 모의주문을 제출합니다.")
-    if request.confirm_phrase.strip() != "모의주문 실행":
+    if _manual_order_confirmation_required() and request.confirm_phrase.strip() != "모의주문 실행":
         raise HTTPException(status_code=400, detail="확인 문구가 일치해야 모의 일괄 주문을 제출합니다.")
 
     batch_id = uuid4().hex[:12]
@@ -3944,6 +4481,20 @@ async def kis_paper_batch_order(request: KisPaperBatchOrderRequest) -> KisPaperB
             for order in request.orders
         ],
     }
+    try:
+        daily_loss_amount = _validate_daily_loss_stop()
+        if daily_loss_amount:
+            request_payload["daily_loss_amount"] = daily_loss_amount
+    except HTTPException as exc:
+        _try_create_broker_audit_log(
+            action="paper_batch_order.daily_loss_stop",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={"detail": exc.detail},
+            message=str(exc.detail),
+        )
+        raise
+
     try:
         estimated_orders = _validate_paper_batch_order_risk_limits(request.orders)
     except HTTPException as exc:
@@ -4060,8 +4611,12 @@ async def kis_paper_order(request: KisPaperOrderRequest) -> KisPaperOrderRespons
         raise HTTPException(status_code=403, detail="현재 KIS_IS_PAPER=true인 모의투자 설정에서만 사용할 수 있습니다.")
     if not _paper_trading_enabled():
         raise HTTPException(status_code=403, detail="PAPER_TRADING_ENABLED=true 설정 후 사용할 수 있습니다.")
+    if _emergency_stop_enabled():
+        raise HTTPException(status_code=423, detail="EMERGENCY_STOP_ENABLED=true 상태라 주문 제출을 차단했습니다.")
     if not request.confirm_submit:
         raise HTTPException(status_code=400, detail="confirm_submit=true가 있어야 모의주문을 제출합니다.")
+    if _manual_order_confirmation_required() and request.confirm_phrase.strip() != "모의주문 실행":
+        raise HTTPException(status_code=400, detail="확인 문구가 일치해야 모의주문을 제출합니다.")
 
     request_payload = {
         "account_label": _masked_kis_account_label(),
@@ -4073,6 +4628,20 @@ async def kis_paper_order(request: KisPaperOrderRequest) -> KisPaperOrderRespons
         "price": request.price,
         "exchange_id": request.exchange_id,
     }
+    try:
+        daily_loss_amount = _validate_daily_loss_stop()
+        if daily_loss_amount:
+            request_payload["daily_loss_amount"] = daily_loss_amount
+    except HTTPException as exc:
+        _try_create_broker_audit_log(
+            action="paper_order.daily_loss_stop",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={"detail": exc.detail},
+            message=str(exc.detail),
+        )
+        raise
+
     try:
         estimated_amount = _validate_paper_order_risk_limits(request)
         request_payload["estimated_amount"] = estimated_amount
@@ -4182,6 +4751,34 @@ async def kis_market_cap_ranking(
         count=len(items),
         items=[KisMarketCapRankingItem(**item) for item in items],
     )
+
+
+@app.post("/api/data/kis/instruments/import", status_code=201)
+async def import_kis_instruments_from_market_cap_ranking(
+    request: KisInstrumentImportRequest,
+) -> KisInstrumentImportResponse:
+    normalized_market = request.market.strip().upper() or "ALL"
+
+    try:
+        rows = await run_in_threadpool(
+            fetch_kis_market_cap_ranking,
+            limit=request.limit,
+            market=normalized_market,
+        )
+        return await run_in_threadpool(
+            _save_kis_instruments_from_market_cap_ranking,
+            market=normalized_market,
+            rows=rows,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"KIS 종목 목록 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
 
 
 @app.get("/api/data/kis/investor-trade-daily")
@@ -4618,7 +5215,7 @@ def _save_yahoo_daily_prices(
     prices: list[dict[str, object]],
 ) -> YahooDailyPriceImportResponse:
     yahoo_symbol = normalize_yahoo_symbol(request.symbol, request.exchange)
-    market = _get_or_create_kr_market(session)
+    market = _get_or_create_market(session, normalize_market_code(request.exchange))
     instrument = _get_or_create_instrument(
         session=session,
         market=market,
@@ -4704,6 +5301,90 @@ def _save_yahoo_daily_prices(
         saved_count=saved_count,
         message=job.message,
     )
+
+
+def _save_kis_instruments_from_market_cap_ranking(
+    *,
+    market: str,
+    rows: list[dict[str, object]],
+) -> KisInstrumentImportResponse:
+    normalized_market = market.strip().upper() or "ALL"
+
+    with SessionLocal() as session:
+        kr_market = _get_or_create_kr_market(session)
+        job = DataImportJob(
+            provider="KIS Open API",
+            job_type="instruments",
+            status="running",
+            message=f"KIS 시가총액 랭킹 기반 {normalized_market} 종목 목록 저장 중",
+        )
+        session.add(job)
+        session.flush()
+
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            name = str(row.get("name") or "").strip()
+            exchange = str(row.get("exchange") or "").strip().upper()
+
+            if not symbol or not name:
+                skipped_count += 1
+                continue
+
+            if not exchange:
+                exchange = normalized_market if normalized_market != "ALL" else "KRX"
+
+            existing = session.scalar(
+                select(Instrument).where(
+                    Instrument.market_id == kr_market.id,
+                    Instrument.symbol == symbol,
+                )
+            )
+
+            if existing is None:
+                _get_or_create_instrument(
+                    session=session,
+                    market=kr_market,
+                    symbol=symbol,
+                    name=name,
+                    exchange=exchange,
+                )
+                created_count += 1
+                continue
+
+            changed = existing.name != name or existing.exchange != exchange or not existing.is_active
+            existing.name = name
+            existing.exchange = exchange
+            existing.is_active = True
+            if changed:
+                updated_count += 1
+
+        instrument_count = session.scalar(
+            select(func.count()).select_from(Instrument).where(Instrument.market_id == kr_market.id)
+        ) or 0
+
+        job.status = "completed"
+        job.finished_at = now_kst_naive()
+        job.message = (
+            f"KIS 랭킹 {len(rows)}건 확인, 신규 {created_count}건, 갱신 {updated_count}건, "
+            f"스킵 {skipped_count}건"
+        )
+        session.commit()
+
+        return KisInstrumentImportResponse(
+            provider="KIS Open API",
+            job_id=job.id,
+            market=normalized_market,
+            fetched_count=len(rows),
+            created_count=created_count,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            instrument_count=instrument_count,
+            message=job.message,
+        )
 
 
 def _save_kis_daily_prices(
@@ -5084,16 +5765,35 @@ def _save_kis_fundamental_ratios(
 
 
 def _get_or_create_kr_market(session) -> Market:
-    market = session.scalar(select(Market).where(Market.code == "KR"))
+    return _get_or_create_market(session, "KR")
+
+
+def _get_or_create_market(session, market_code: str) -> Market:
+    normalized_code = normalize_market_code(market_code)
+    metadata = get_market_metadata(normalized_code)
+
+    market = session.scalar(select(Market).where(Market.code == normalized_code))
     if market is not None:
+        market.name = str(metadata["name"])
+        market.country = str(metadata["country"])
+        market.currency = str(metadata["currency"])
+        market.timezone = str(metadata["timezone"])
+        return market
+
+    market = session.scalar(select(Market).where(Market.code == "KR"))
+    if normalized_code == "KR" and market is not None:
+        market.name = str(metadata["name"])
+        market.country = str(metadata["country"])
+        market.currency = str(metadata["currency"])
+        market.timezone = str(metadata["timezone"])
         return market
 
     market = Market(
-        code="KR",
-        name="한국 주식",
-        country="KR",
-        currency="KRW",
-        timezone="Asia/Seoul",
+        code=normalized_code,
+        name=str(metadata["name"]),
+        country=str(metadata["country"]),
+        currency=str(metadata["currency"]),
+        timezone=str(metadata["timezone"]),
     )
     session.add(market)
     session.flush()

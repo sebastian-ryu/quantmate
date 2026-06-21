@@ -235,6 +235,18 @@ def build_daily_price_backtest(
             }
         )
 
+    annual_rows, annual_returns = _pad_annual_returns_to_period_start(
+        annual_rows=annual_rows,
+        annual_returns=annual_returns,
+        first_year=first_year,
+        initial_amount=initial_amount,
+    )
+    equity_curve = _pad_equity_curve_to_period_start(
+        equity_curve=equity_curve,
+        first_year=first_year,
+        initial_amount=initial_amount,
+    )
+
     if not annual_rows:
         return None
 
@@ -270,6 +282,81 @@ def build_daily_price_backtest(
         "equity_curve": equity_curve,
         "rebalance_history": rebalance_history,
     }
+
+
+def _pad_annual_returns_to_period_start(
+    *,
+    annual_rows: list[dict[str, Any]],
+    annual_returns: list[float],
+    first_year: int,
+    initial_amount: int,
+) -> tuple[list[dict[str, Any]], list[float]]:
+    if not annual_rows:
+        return annual_rows, annual_returns
+
+    first_result_year = int(annual_rows[0]["year"])
+    if first_result_year <= first_year:
+        return annual_rows, annual_returns
+
+    padded_rows = [
+        {
+            "year": str(year),
+            "portfolio_return": 0.0,
+            "yield_pct": 0.0,
+            "balance": initial_amount,
+            "income": 0,
+        }
+        for year in range(first_year, first_result_year)
+    ]
+    padded_returns = [0.0 for _row in padded_rows]
+    return [*padded_rows, *annual_rows], [*padded_returns, *annual_returns]
+
+
+def _pad_equity_curve_to_period_start(
+    *,
+    equity_curve: list[dict[str, Any]],
+    first_year: int,
+    initial_amount: int,
+) -> list[dict[str, Any]]:
+    if not equity_curve:
+        return equity_curve
+
+    period_start_index = first_year * 12
+    first_point_index = _month_label_to_index(str(equity_curve[0]["label"]))
+    if first_point_index is None or first_point_index < period_start_index:
+        return equity_curve
+
+    if first_point_index == period_start_index:
+        return [{**equity_curve[0], "portfolio": initial_amount}, *equity_curve[1:]]
+
+    padded_points = [
+        {
+            "label": _month_index_to_label(month_index),
+            "portfolio": initial_amount,
+        }
+        for month_index in range(period_start_index, first_point_index)
+    ]
+    return [*padded_points, *equity_curve]
+
+
+def _month_label_to_index(label: str) -> int | None:
+    parts = label.replace("-", ".").split(".")
+    if len(parts) != 2:
+        return None
+    try:
+        year = int(parts[0])
+        month = int(parts[1])
+    except ValueError:
+        return None
+    if month < 1 or month > 12:
+        return None
+    return year * 12 + month - 1
+
+
+def _month_index_to_label(month_index: int) -> str:
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return f"{year}.{month:02d}"
 
 
 def build_sample_backtest(

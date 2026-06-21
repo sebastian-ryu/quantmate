@@ -28,6 +28,9 @@
     fcfYield: number;
     dividendYield: number;
     payoutRatio: number;
+    dividendGrowth: number;
+    dividendStreakYears: number;
+    dividendStabilityScore: number;
     roe: number;
     roa: number;
     operatingMargin: number;
@@ -63,6 +66,29 @@
     label: string;
   };
 
+  type ScreenerPreset = {
+    label: string;
+    marketCapMin?: number;
+    perMax?: number;
+    pbrMax?: number;
+    roeMin?: number;
+    debtRatioMax?: number;
+    dividendMin?: number;
+    dividendMax?: number;
+    payoutRatioMin?: number;
+    payoutRatioMax?: number;
+    dividendGrowthMin?: number;
+    dividendStreakYearsMin?: number;
+    dividendStabilityScoreMin?: number;
+    momentumMin?: number;
+    changeMin?: number;
+    volumeSurgeMin?: number;
+    fcfYieldMin?: number;
+    foreignNetBuy5dMin?: number;
+    institutionNetBuy5dMin?: number;
+    supplyScoreMin?: number;
+  };
+
   const fallbackRows: ScreenerRow[] = [
     {
       symbol: '005930',
@@ -83,6 +109,9 @@
       fcfYield: 3.2,
       dividendYield: 1.7,
       payoutRatio: 24,
+      dividendGrowth: 6.2,
+      dividendStreakYears: 8,
+      dividendStabilityScore: 71,
       roe: 9.8,
       roa: 6.1,
       operatingMargin: 15.4,
@@ -131,6 +160,9 @@
       fcfYield: 2.4,
       dividendYield: 0.6,
       payoutRatio: 12,
+      dividendGrowth: 4.1,
+      dividendStreakYears: 4,
+      dividendStabilityScore: 55,
       roe: 12.2,
       roa: 7.4,
       operatingMargin: 18.1,
@@ -179,6 +211,9 @@
       fcfYield: 1.7,
       dividendYield: 0.2,
       payoutRatio: 8,
+      dividendGrowth: 0.5,
+      dividendStreakYears: 3,
+      dividendStabilityScore: 38,
       roe: 4.5,
       roa: 2.7,
       operatingMargin: 7.6,
@@ -227,6 +262,9 @@
       fcfYield: 7.8,
       dividendYield: 4.1,
       payoutRatio: 28,
+      dividendGrowth: 11.5,
+      dividendStreakYears: 10,
+      dividendStabilityScore: 85,
       roe: 14.9,
       roa: 5.9,
       operatingMargin: 9.7,
@@ -275,6 +313,9 @@
       fcfYield: 3.1,
       dividendYield: 0.5,
       payoutRatio: 14,
+      dividendGrowth: 3.2,
+      dividendStreakYears: 5,
+      dividendStabilityScore: 59,
       roe: 7.3,
       roa: 4.4,
       operatingMargin: 12.5,
@@ -323,6 +364,9 @@
       fcfYield: -1.6,
       dividendYield: 0.0,
       payoutRatio: 0,
+      dividendGrowth: 0,
+      dividendStreakYears: 0,
+      dividendStabilityScore: 0,
       roe: 6.1,
       roa: 3.0,
       operatingMargin: 5.9,
@@ -367,12 +411,20 @@
     '수급'
   ];
 
-  const presets = [
+  const presets: ScreenerPreset[] = [
     { label: '대형 우량주', marketCapMin: 100, perMax: 20, debtRatioMax: 150, roeMin: 8 },
     { label: '저평가 후보', pbrMax: 1.2, perMax: 15, roeMin: 8, fcfYieldMin: 3 },
     { label: '모멘텀 후보', momentumMin: 70, changeMin: 0, volumeSurgeMin: 1.2 },
     { label: '수급 유입주', foreignNetBuy5dMin: 300, institutionNetBuy5dMin: 300, supplyScoreMin: 70 },
-    { label: '배당 관심주', dividendMin: 2, payoutRatioMax: 60, debtRatioMax: 180 }
+    {
+      label: '배당 관심주',
+      dividendMin: 2,
+      payoutRatioMin: 10,
+      payoutRatioMax: 60,
+      dividendGrowthMin: 0,
+      dividendStabilityScoreMin: 55,
+      debtRatioMax: 180
+    }
   ];
 
   let query = '';
@@ -393,7 +445,12 @@
   let fcfYieldMin = '';
   let fairValueUpsideMin = '';
   let dividendMin = '';
+  let dividendMax = '';
+  let payoutRatioMin = '';
   let payoutRatioMax = '';
+  let dividendGrowthMin = '';
+  let dividendStreakYearsMin = '';
+  let dividendStabilityScoreMin = '';
   let roeMin = '';
   let roaMin = '';
   let operatingMarginMin = '';
@@ -437,6 +494,7 @@
   let screenerLoading = true;
   let screenerError = '';
   let screenerSource = '실제 데이터 확인 중';
+  let screenerUnsupportedConditions: string[] = [];
   let screenerReady = false;
   let lastScreenerFormula = '';
   let screenerSearchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -453,7 +511,9 @@
   $: showLiquidityGroup = activeCategory === '가격/유동성';
   $: showValuationGroup = activeCategory === '밸류에이션';
   $: showProfitabilityGroup = activeCategory === '수익성';
-  $: showGrowthRiskGroup = ['성장', '배당', '리스크'].includes(activeCategory);
+  $: showGrowthGroup = activeCategory === '성장';
+  $: showDividendGroup = activeCategory === '배당';
+  $: showRiskGroup = activeCategory === '리스크';
   $: showTechnicalGroup = activeCategory === '기술적 분석';
   $: showSupplyGroup = activeCategory === '수급';
   $: filteredRows = rows.filter((row) => {
@@ -486,7 +546,12 @@
       passesMin(row.fcfYield, fcfYieldMin) &&
       passesMin(row.fairValueUpside, fairValueUpsideMin) &&
       passesMin(row.dividendYield, dividendMin) &&
+      passesMax(row.dividendYield, dividendMax) &&
+      passesMin(row.payoutRatio, payoutRatioMin) &&
       passesMax(row.payoutRatio, payoutRatioMax) &&
+      passesMin(row.dividendGrowth, dividendGrowthMin) &&
+      passesMin(row.dividendStreakYears, dividendStreakYearsMin) &&
+      passesMin(row.dividendStabilityScore, dividendStabilityScoreMin) &&
       passesMin(row.roe, roeMin) &&
       passesMin(row.roa, roaMin) &&
       passesMin(row.operatingMargin, operatingMarginMin) &&
@@ -536,7 +601,12 @@
     fcfYieldMin,
     fairValueUpsideMin,
     dividendMin,
+    dividendMax,
+    payoutRatioMin,
     payoutRatioMax,
+    dividendGrowthMin,
+    dividendStreakYearsMin,
+    dividendStabilityScoreMin,
     roeMin,
     roaMin,
     operatingMarginMin,
@@ -586,7 +656,12 @@
       fcfYieldMin ? `fcf_yield >= ${fcfYieldMin}` : '',
       fairValueUpsideMin ? `fair_value_upside >= ${fairValueUpsideMin}` : '',
       dividendMin ? `dividend_yield >= ${dividendMin}` : '',
+      dividendMax ? `dividend_yield <= ${dividendMax}` : '',
+      payoutRatioMin ? `payout_ratio >= ${payoutRatioMin}` : '',
       payoutRatioMax ? `payout_ratio <= ${payoutRatioMax}` : '',
+      dividendGrowthMin ? `dividend_growth >= ${dividendGrowthMin}` : '',
+      dividendStreakYearsMin ? `dividend_streak_years >= ${dividendStreakYearsMin}` : '',
+      dividendStabilityScoreMin ? `dividend_stability_score >= ${dividendStabilityScoreMin}` : '',
       roeMin ? `roe >= ${roeMin}` : '',
       roaMin ? `roa >= ${roaMin}` : '',
       operatingMarginMin ? `operating_margin >= ${operatingMarginMin}` : '',
@@ -637,7 +712,12 @@
     fcfYieldMin;
     fairValueUpsideMin;
     dividendMin;
+    dividendMax;
+    payoutRatioMin;
     payoutRatioMax;
+    dividendGrowthMin;
+    dividendStreakYearsMin;
+    dividendStabilityScoreMin;
     roeMin;
     roaMin;
     operatingMarginMin;
@@ -703,7 +783,15 @@
       밸류에이션: countSelected([perMax, pbrMax, psrMax, evEbitdaMax, fcfYieldMin, fairValueUpsideMin]),
       수익성: countSelected([roeMin, roaMin, operatingMarginMin, netMarginMin, debtRatioMax, currentRatioMin]),
       성장: countSelected([revenueGrowthMin, epsGrowthMin, operatingIncomeGrowthMin]),
-      배당: countSelected([dividendMin, payoutRatioMax]),
+      배당: countSelected([
+        dividendMin,
+        dividendMax,
+        payoutRatioMin,
+        payoutRatioMax,
+        dividendGrowthMin,
+        dividendStreakYearsMin,
+        dividendStabilityScoreMin
+      ]),
       리스크: countSelected([betaMax, volatility20dMax, drawdown52wMax]),
       '기술적 분석': countSelected([
         momentumMin,
@@ -747,8 +835,17 @@
       evEbitdaMax ? { key: 'evEbitdaMax', label: `EV/EBITDA ${evEbitdaMax} 이하` } : null,
       fcfYieldMin ? { key: 'fcfYieldMin', label: `FCF ${fcfYieldMin}% 이상` } : null,
       fairValueUpsideMin ? { key: 'fairValueUpsideMin', label: `상승여력 ${fairValueUpsideMin}% 이상` } : null,
-      dividendMin ? { key: 'dividendMin', label: `배당 ${dividendMin}% 이상` } : null,
+      dividendMin ? { key: 'dividendMin', label: `배당수익률 ${dividendMin}% 이상` } : null,
+      dividendMax ? { key: 'dividendMax', label: `배당수익률 ${dividendMax}% 이하` } : null,
+      payoutRatioMin ? { key: 'payoutRatioMin', label: `배당성향 ${payoutRatioMin}% 이상` } : null,
       payoutRatioMax ? { key: 'payoutRatioMax', label: `배당성향 ${payoutRatioMax}% 이하` } : null,
+      dividendGrowthMin ? { key: 'dividendGrowthMin', label: `배당성장 ${dividendGrowthMin}% 이상` } : null,
+      dividendStreakYearsMin
+        ? { key: 'dividendStreakYearsMin', label: `연속배당 ${dividendStreakYearsMin}년 이상` }
+        : null,
+      dividendStabilityScoreMin
+        ? { key: 'dividendStabilityScoreMin', label: `배당안정성 ${dividendStabilityScoreMin} 이상` }
+        : null,
       roeMin ? { key: 'roeMin', label: `ROE ${roeMin}% 이상` } : null,
       roaMin ? { key: 'roaMin', label: `ROA ${roaMin}% 이상` } : null,
       operatingMarginMin ? { key: 'operatingMarginMin', label: `영업이익률 ${operatingMarginMin}% 이상` } : null,
@@ -843,7 +940,12 @@
     fcfYieldMin = '';
     fairValueUpsideMin = '';
     dividendMin = '';
+    dividendMax = '';
+    payoutRatioMin = '';
     payoutRatioMax = '';
+    dividendGrowthMin = '';
+    dividendStreakYearsMin = '';
+    dividendStabilityScoreMin = '';
     roeMin = '';
     roaMin = '';
     operatingMarginMin = '';
@@ -883,7 +985,12 @@
     roeMin = preset.roeMin?.toString() ?? roeMin;
     debtRatioMax = preset.debtRatioMax?.toString() ?? debtRatioMax;
     dividendMin = preset.dividendMin?.toString() ?? dividendMin;
+    dividendMax = preset.dividendMax?.toString() ?? dividendMax;
+    payoutRatioMin = preset.payoutRatioMin?.toString() ?? payoutRatioMin;
     payoutRatioMax = preset.payoutRatioMax?.toString() ?? payoutRatioMax;
+    dividendGrowthMin = preset.dividendGrowthMin?.toString() ?? dividendGrowthMin;
+    dividendStreakYearsMin = preset.dividendStreakYearsMin?.toString() ?? dividendStreakYearsMin;
+    dividendStabilityScoreMin = preset.dividendStabilityScoreMin?.toString() ?? dividendStabilityScoreMin;
     momentumMin = preset.momentumMin?.toString() ?? momentumMin;
     changeMin = preset.changeMin?.toString() ?? changeMin;
     volumeSurgeMin = preset.volumeSurgeMin?.toString() ?? volumeSurgeMin;
@@ -912,7 +1019,12 @@
     if (key === 'fcfYieldMin') fcfYieldMin = '';
     if (key === 'fairValueUpsideMin') fairValueUpsideMin = '';
     if (key === 'dividendMin') dividendMin = '';
+    if (key === 'dividendMax') dividendMax = '';
+    if (key === 'payoutRatioMin') payoutRatioMin = '';
     if (key === 'payoutRatioMax') payoutRatioMax = '';
+    if (key === 'dividendGrowthMin') dividendGrowthMin = '';
+    if (key === 'dividendStreakYearsMin') dividendStreakYearsMin = '';
+    if (key === 'dividendStabilityScoreMin') dividendStabilityScoreMin = '';
     if (key === 'roeMin') roeMin = '';
     if (key === 'roaMin') roaMin = '';
     if (key === 'operatingMarginMin') operatingMarginMin = '';
@@ -965,9 +1077,11 @@
       });
       rows = response.candidates.map(toScreenerRow);
       screenerSource = candidateSourceLabel(response.source);
+      screenerUnsupportedConditions = response.unsupported_conditions;
     } catch (err) {
       rows = fallbackRows;
       screenerSource = '샘플 후보군';
+      screenerUnsupportedConditions = [];
       screenerError = err instanceof Error ? err.message : '검색기 데이터를 불러오지 못했습니다.';
     } finally {
       screenerLoading = false;
@@ -1010,6 +1124,9 @@
       fcfYield: candidate.fcf_yield,
       dividendYield: candidate.dividend_yield,
       payoutRatio: candidate.payout_ratio,
+      dividendGrowth: candidate.dividend_growth,
+      dividendStreakYears: candidate.dividend_streak_years,
+      dividendStabilityScore: candidate.dividend_stability_score,
       roa: candidate.roa,
       operatingMargin: candidate.operating_margin,
       netMargin: candidate.net_margin,
@@ -1369,9 +1486,9 @@
       </div>
       {/if}
 
-      {#if showGrowthRiskGroup}
+      {#if showGrowthGroup}
       <div class="filter-group inline-filter">
-        <strong>성장/배당/리스크</strong>
+        <strong>성장</strong>
         <div class="filter-controls">
           <label class="compact-control">
             <span>매출 성장률 최소(%)</span>
@@ -1385,14 +1502,50 @@
             <span>영업이익 성장률 최소(%)</span>
             <input bind:value={operatingIncomeGrowthMin} step="0.1" type="number" />
           </label>
+        </div>
+      </div>
+      {/if}
+
+      {#if showDividendGroup}
+      <div class="filter-group inline-filter">
+        <strong>배당</strong>
+        <div class="filter-controls">
           <label class="compact-control">
             <span>배당수익률 최소(%)</span>
             <input bind:value={dividendMin} min="0" step="0.1" type="number" />
           </label>
           <label class="compact-control">
+            <span>배당수익률 최대(%)</span>
+            <input bind:value={dividendMax} min="0" step="0.1" type="number" />
+          </label>
+          <label class="compact-control">
+            <span>배당성향 최소(%)</span>
+            <input bind:value={payoutRatioMin} min="0" step="1" type="number" />
+          </label>
+          <label class="compact-control">
             <span>배당성향 최대(%)</span>
             <input bind:value={payoutRatioMax} min="0" step="1" type="number" />
           </label>
+          <label class="compact-control">
+            <span>배당 성장률 최소(%)</span>
+            <input bind:value={dividendGrowthMin} step="0.1" type="number" />
+          </label>
+          <label class="compact-control">
+            <span>연속 배당 최소(년)</span>
+            <input bind:value={dividendStreakYearsMin} min="0" step="1" type="number" />
+          </label>
+          <label class="compact-control">
+            <span>배당 안정성 점수 최소</span>
+            <input bind:value={dividendStabilityScoreMin} max="100" min="0" step="1" type="number" />
+          </label>
+        </div>
+      </div>
+      {/if}
+
+      {#if showRiskGroup}
+      <div class="filter-group inline-filter">
+        <strong>리스크</strong>
+        <div class="filter-controls">
           <label class="compact-control">
             <span>베타 최대</span>
             <input bind:value={betaMax} min="0" step="0.1" type="number" />
@@ -1509,6 +1662,14 @@
     {#if screenerError}
       <div class="empty-state error">{screenerError}</div>
     {/if}
+    {#if screenerUnsupportedConditions.length}
+      <div class="proposal-warnings">
+        <strong>미연동 조건</strong>
+        {#each screenerUnsupportedConditions as condition}
+          <span>{condition}</span>
+        {/each}
+      </div>
+    {/if}
     <div class="table-wrap">
       <table class="wide-table">
         <thead>
@@ -1523,6 +1684,9 @@
             <th>PBR</th>
             <th>ROE</th>
             <th>성장</th>
+            <th>배당률</th>
+            <th>성향</th>
+            <th>배당성장</th>
             <th>외국인 5일</th>
             <th>기관 5일</th>
             <th>수급 점수</th>
@@ -1548,6 +1712,9 @@
               <td>{row.pbr}x</td>
               <td>{row.roe}%</td>
               <td>{row.revenueGrowth}%</td>
+              <td>{row.dividendYield}%</td>
+              <td>{row.payoutRatio}%</td>
+              <td>{row.dividendGrowth}%</td>
               <td class:tone-positive={row.foreignNetBuy5d > 0} class:tone-caution={row.foreignNetBuy5d < 0}>
                 <strong>{formatSigned(row.foreignNetBuy5d)}억</strong>
               </td>
@@ -1563,7 +1730,7 @@
             </tr>
           {:else}
             <tr>
-              <td colspan="15">
+              <td colspan="18">
                 <div class="empty-state">
                   {screenerLoading ? '검색기 데이터 갱신 중입니다.' : '현재 조건에 맞는 종목이 없습니다.'}
                 </div>

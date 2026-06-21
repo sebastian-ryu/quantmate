@@ -30,7 +30,7 @@
 - `universe_filter`: 거래소, 유동성, 관리종목 제외 같은 기본 필터
 - `signal_rules`: 후보가 되기 위한 조건
 - `ranking_rules`: 후보 간 우선순위 산정 방식
-- `risk_controls`: 과열, 급락, 유동성 부족, 손절 같은 위험 제어
+- `risk_controls`: 과열, 급락, 유동성 부족, 손절 같은 위험 처리 기준. 화면에서는 `제외/보류`, `감점`, `주의`로 구분해 실제 후보 제외 기준인지, 점수 하락 기준인지, 운용 참고 위험인지 표시한다.
 - `explanation_template`: 종목별 선정 사유 생성 규칙
 - `backtest_assumptions`: 비용, 슬리피지, 체결가, 보유 종목 수 가정
 - `references`: 전략 근거 자료

@@ -1,0 +1,4 @@
+interface:
+  display_name: "QuantMate 전략/백테스트"
+  short_description: "전략 후보 선정과 백테스트 계약을 일관되게 수정하는 절차"
+  default_prompt: "QuantMate의 전략 또는 백테스트 기능을 개선해 주세요."

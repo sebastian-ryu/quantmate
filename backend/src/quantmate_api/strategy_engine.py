@@ -258,6 +258,9 @@ NUMERIC_FORMULA_FIELD_ALIASES = {
     "fair_value_upside": "fair_value_upside",
     "dividend_yield": "dividend_yield",
     "payout_ratio": "payout_ratio",
+    "dividend_growth": "dividend_growth",
+    "dividend_streak_years": "dividend_streak_years",
+    "dividend_stability_score": "dividend_stability_score",
     "roe": "roe",
     "roa": "roa",
     "operating_margin": "operating_margin",
@@ -289,6 +292,55 @@ NUMERIC_FORMULA_FIELD_ALIASES = {
 }
 
 TEXT_FORMULA_FIELDS = {"keyword", "exchange", "sector", "industry"}
+KOREAN_NUMERIC_FORMULA_FIELD_ALIASES = {
+    "시가총액": "market_cap",
+    "현재가": "price",
+    "종가": "price",
+    "거래대금": "trading_value_krw_100m",
+    "20일평균거래량": "avg_volume_20d_10k",
+    "회전율": "turnover_pct",
+    "per": "per",
+    "pbr": "pbr",
+    "psr": "psr",
+    "ev/ebitda": "ev_ebitda",
+    "fcfyield": "fcf_yield",
+    "목표가괴리": "fair_value_upside",
+    "배당수익률": "dividend_yield",
+    "배당성향": "payout_ratio",
+    "배당성장률": "dividend_growth",
+    "배당성장": "dividend_growth",
+    "연속배당": "dividend_streak_years",
+    "배당안정성점수": "dividend_stability_score",
+    "roe": "roe",
+    "roa": "roa",
+    "영업이익률": "operating_margin",
+    "순이익률": "net_margin",
+    "부채비율": "debt_ratio",
+    "유동비율": "current_ratio",
+    "매출성장률": "revenue_growth",
+    "eps성장률": "eps_growth",
+    "영업이익성장률": "operating_income_growth",
+    "베타": "beta",
+    "20일변동성": "volatility_20d",
+    "52주낙폭": "drawdown_52w",
+    "모멘텀": "momentum",
+    "모멘텀점수": "momentum",
+    "당일등락률": "change_pct",
+    "일일변동률": "change_pct",
+    "rsi": "rsi14",
+    "rsi14": "rsi14",
+    "거래량급증배수": "volume_surge",
+    "외국인5일순매수": "foreign_net_buy_5d",
+    "외국인20일순매수": "foreign_net_buy_20d",
+    "기관5일순매수": "institution_net_buy_5d",
+    "기관20일순매수": "institution_net_buy_20d",
+    "연기금20일순매수": "pension_net_buy_20d",
+    "프로그램5일순매수": "program_net_buy_5d",
+    "외국인연속순매수일": "consecutive_foreign_buy_days",
+    "공매도비중": "short_sale_ratio",
+    "신용잔고5일변화": "margin_debt_change_5d",
+    "수급점수": "supply_score",
+}
 
 
 def build_strategy_candidates(strategy_code: str, limit: int = 12) -> list[dict[str, Any]]:
@@ -519,6 +571,31 @@ def enrich_strategy_candidates_with_fundamentals(
             if value is not None:
                 next_candidate[candidate_key] = round(value, 2)
 
+        price = _float_or_none(next_candidate.get("price")) or 0
+        eps = _float_or_none(fundamental.get("eps"))
+        sps = _float_or_none(fundamental.get("sps"))
+        bps = _float_or_none(fundamental.get("bps"))
+        dividend_yield = _float_or_none(next_candidate.get("dividend_yield"))
+
+        if price > 0 and eps is not None and eps > 0:
+            next_candidate["per"] = round(price / eps, 2)
+        if price > 0 and bps is not None and bps > 0:
+            next_candidate["pbr"] = round(price / bps, 2)
+        if price > 0 and sps is not None and sps > 0:
+            next_candidate["psr"] = round(price / sps, 2)
+            if eps is not None:
+                next_candidate["net_margin"] = round(eps / sps * 100, 2)
+
+        roe = _float_or_none(next_candidate.get("roe"))
+        debt_ratio = _float_or_none(next_candidate.get("debt_ratio"))
+        if roe is not None and debt_ratio is not None and debt_ratio > -100:
+            next_candidate["roa"] = round(roe * 100 / (100 + max(debt_ratio, 0)), 2)
+
+        per = _float_or_none(next_candidate.get("per"))
+        if dividend_yield is not None and dividend_yield > 0 and per is not None and per > 0:
+            next_candidate["payout_ratio"] = round(max(0, min(100, dividend_yield * per)), 2)
+            next_candidate["dividend_stability_score"] = _derived_dividend_stability_score(next_candidate)
+
         rationale = [
             str(reason) for reason in next_candidate.get("rationale", []) if not str(reason).startswith("ROE ")
         ]
@@ -526,7 +603,7 @@ def enrich_strategy_candidates_with_fundamentals(
         roe = _float_or_none(next_candidate.get("roe"))
         if roe is not None and revenue_growth is not None:
             rationale.append(f"KIS 재무 ROE {roe:.1f}%, 매출성장률 {revenue_growth:.1f}%")
-        rationale.append("KIS 재무비율로 성장성/수익성/부채비율 보강")
+        rationale.append("KIS 재무비율로 성장성/수익성/밸류에이션을 보강")
         next_candidate["rationale"] = rationale
 
         risk_flags = [flag for flag in next_candidate.get("risk_flags", []) if flag != "재무지표 미연동"]
@@ -548,6 +625,9 @@ def _with_candidate_defaults(item: dict[str, Any]) -> dict[str, Any]:
     item.setdefault("fcf_yield", _derived_fcf_yield(item))
     item.setdefault("dividend_yield", _derived_dividend_yield(item))
     item.setdefault("payout_ratio", 25.0)
+    item.setdefault("dividend_growth", _derived_dividend_growth(item))
+    item.setdefault("dividend_streak_years", _derived_dividend_streak_years(item))
+    item.setdefault("dividend_stability_score", _derived_dividend_stability_score(item))
     item.setdefault("roa", _float_or_zero(item.get("roe")) * 0.55)
     item.setdefault("operating_margin", _derived_operating_margin(item))
     item.setdefault("net_margin", _float_or_zero(item.get("roe")) * 0.7)
@@ -729,17 +809,56 @@ def _evaluate_formula_condition(candidate: dict[str, Any], condition: str) -> tu
         return str(candidate.get(field, "")).strip().lower() == value, True
 
     numeric_match = re.fullmatch(
-        r"(?P<field>[\w가-힣_]+)\s*(?P<operator>>=|<=|>|<|==)\s*(?P<value>-?\d+(?:\.\d+)?)",
+        r"(?P<field>[\w가-힣_/%\s]+?)\s*(?P<operator>>=|<=|>|<|==)\s*"
+        r"(?P<value>-?\d+(?:\.\d+)?)(?:\s*(?P<unit>억|조|만원|만주|주|%|점|년|배))?",
         condition,
     )
     if numeric_match:
         field = numeric_match.group("field")
-        if field not in NUMERIC_FORMULA_FIELD_ALIASES:
+        resolved_field = _resolve_numeric_formula_field(field)
+        if resolved_field is None:
             return True, False
-        value = _numeric_value(candidate, NUMERIC_FORMULA_FIELD_ALIASES[field])
-        return _compare_numeric(value, numeric_match.group("operator"), float(numeric_match.group("value"))), True
+        value = _numeric_value(candidate, resolved_field)
+        compare_value = _normalize_formula_compare_value(
+            field=field,
+            resolved_field=resolved_field,
+            raw_value=float(numeric_match.group("value")),
+            unit=numeric_match.group("unit") or "",
+        )
+        return _compare_numeric(value, numeric_match.group("operator"), compare_value), True
 
     return True, False
+
+
+def _resolve_numeric_formula_field(field: str) -> str | None:
+    stripped = field.strip()
+    if stripped in NUMERIC_FORMULA_FIELD_ALIASES:
+        return NUMERIC_FORMULA_FIELD_ALIASES[stripped]
+
+    compact = re.sub(r"\s+", "", stripped).lower()
+    if compact in NUMERIC_FORMULA_FIELD_ALIASES:
+        return NUMERIC_FORMULA_FIELD_ALIASES[compact]
+
+    return KOREAN_NUMERIC_FORMULA_FIELD_ALIASES.get(compact)
+
+
+def _normalize_formula_compare_value(
+    *,
+    field: str,
+    resolved_field: str,
+    raw_value: float,
+    unit: str,
+) -> float:
+    compact_field = re.sub(r"\s+", "", field).lower()
+    if resolved_field == "market_cap" and unit == "억":
+        return raw_value / 10_000
+    if resolved_field == "trading_value_krw_100m" and unit == "조":
+        return raw_value * 10_000
+    if resolved_field == "avg_volume_20d_10k" and unit == "주":
+        return raw_value / 10_000
+    if compact_field == "현재가" and unit == "만원":
+        return raw_value * 10_000
+    return raw_value
 
 
 def _evaluate_contains_condition(
@@ -923,6 +1042,13 @@ def _build_price_candidate(
         "fcf_yield": _metadata_float(metadata, "fcf_yield", _derived_fcf_yield(metadata)),
         "dividend_yield": _metadata_float(metadata, "dividend_yield", _derived_dividend_yield(metadata)),
         "payout_ratio": _metadata_float(metadata, "payout_ratio", 25.0),
+        "dividend_growth": _metadata_float(metadata, "dividend_growth", _derived_dividend_growth(metadata)),
+        "dividend_streak_years": round(
+            _metadata_float(metadata, "dividend_streak_years", _derived_dividend_streak_years(metadata))
+        ),
+        "dividend_stability_score": clamp_score(
+            _metadata_float(metadata, "dividend_stability_score", _derived_dividend_stability_score(metadata))
+        ),
         "roe": float(metadata.get("roe") or 0),
         "roa": _metadata_float(metadata, "roa", float(metadata.get("roe") or 0) * 0.55),
         "operating_margin": _metadata_float(metadata, "operating_margin", _derived_operating_margin(metadata)),
@@ -1314,6 +1440,66 @@ def _derived_dividend_yield(metadata: dict[str, Any]) -> float:
     if sector in {"산업재", "소비순환재"}:
         return 1.8
     return 0.7
+
+
+def _derived_dividend_growth(metadata: dict[str, Any]) -> float:
+    dividend_yield = _float_or_none(metadata.get("dividend_yield"))
+    if dividend_yield is None:
+        dividend_yield = _derived_dividend_yield(metadata)
+    if dividend_yield <= 0:
+        return 0.0
+
+    revenue_growth = _float_or_none(metadata.get("revenue_growth")) or 0
+    eps_growth = _float_or_none(metadata.get("eps_growth")) or revenue_growth * 1.2
+    roe = _float_or_none(metadata.get("roe")) or 0
+    return round(max(-20.0, min(25.0, revenue_growth * 0.3 + eps_growth * 0.3 + roe * 0.08)), 2)
+
+
+def _derived_dividend_streak_years(metadata: dict[str, Any]) -> int:
+    dividend_yield = _float_or_none(metadata.get("dividend_yield"))
+    if dividend_yield is None:
+        dividend_yield = _derived_dividend_yield(metadata)
+    if dividend_yield <= 0:
+        return 0
+
+    sector = str(metadata.get("sector") or "")
+    payout_ratio = _float_or_none(metadata.get("payout_ratio")) or 25
+    debt_ratio = _float_or_none(metadata.get("debt_ratio")) or 85
+    base_years = 5
+    if sector in {"금융", "산업재", "소비순환재"}:
+        base_years += 3
+    if payout_ratio <= 60:
+        base_years += 2
+    if debt_ratio <= 120:
+        base_years += 1
+    return max(0, min(15, base_years))
+
+
+def _derived_dividend_stability_score(metadata: dict[str, Any]) -> int:
+    dividend_yield = _float_or_none(metadata.get("dividend_yield"))
+    if dividend_yield is None:
+        dividend_yield = _derived_dividend_yield(metadata)
+    if dividend_yield <= 0:
+        return 0
+
+    payout_ratio = _float_or_none(metadata.get("payout_ratio")) or 25
+    debt_ratio = _float_or_none(metadata.get("debt_ratio")) or 85
+    fcf_yield = _float_or_none(metadata.get("fcf_yield"))
+    if fcf_yield is None:
+        fcf_yield = _derived_fcf_yield(metadata)
+    dividend_growth = _float_or_none(metadata.get("dividend_growth"))
+    if dividend_growth is None:
+        dividend_growth = _derived_dividend_growth(metadata)
+
+    score = (
+        50
+        + min(dividend_yield, 6) * 4
+        + max(min(dividend_growth, 12), 0) * 1.2
+        + max(min(fcf_yield, 8), -4) * 2
+        - max(payout_ratio - 65, 0) * 0.7
+        - max(debt_ratio - 150, 0) * 0.12
+    )
+    return clamp_score(score)
 
 
 def _derived_operating_margin(metadata: dict[str, Any]) -> float:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "QuantMate 문서 동기화"
+  short_description: "코드 변경 후 작업 목록과 설계 문서를 최신화하는 절차"
+  default_prompt: "QuantMate 변경사항에 맞게 문서를 최신 상태로 정리해 주세요."

@@ -325,6 +325,54 @@ textarea {
   line-height: 1.45;
 }
 
+.risk-rule-summary {
+  color: #6f7f86;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.risk-rule-list {
+  gap: 6px;
+  list-style: none;
+  padding-left: 0;
+}
+
+.risk-rule-item {
+  align-items: flex-start;
+  display: flex;
+  gap: 6px;
+}
+
+.risk-action-badge {
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  margin-top: 3px;
+  padding: 3px 6px;
+}
+
+.risk-action-badge.exclude {
+  background: #fff1e6;
+  border: 1px solid #efc29e;
+  color: #934b16;
+}
+
+.risk-action-badge.deduct {
+  background: #fff8e8;
+  border: 1px solid #ead8a8;
+  color: #715518;
+}
+
+.risk-action-badge.notice {
+  background: #e8f4ff;
+  border: 1px solid #b5d7f2;
+  color: #1b5f8f;
+}
+
 .source-badge {
   background: #e6edf0;
   border: 1px solid #d2dcdf;
@@ -341,6 +389,67 @@ textarea {
   background: #e1f5ec;
   border-color: #acd9c5;
   color: #166243;
+}
+
+.source-badge.paper {
+  background: #e8f4ff;
+  border-color: #b5d7f2;
+  color: #1b5f8f;
+}
+
+.source-badge.live {
+  background: #fff1e6;
+  border-color: #efc29e;
+  color: #934b16;
+}
+
+.execution-contract-panel {
+  background: #f7fafa;
+  border: 1px solid #e2e9eb;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.contract-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.contract-heading strong {
+  font-size: 13px;
+}
+
+.contract-heading span,
+.contract-provider-row span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.contract-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.execution-mode-pill {
+  cursor: default;
+}
+
+.contract-provider-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.contract-provider-row strong {
+  color: #233139;
+  font-size: 12px;
 }
 
 .broker-panel {
@@ -366,6 +475,34 @@ textarea {
 .broker-status-row span:last-child {
   color: #6f7f86;
   font-size: 12px;
+}
+
+.trading-safety-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+}
+
+.trading-safety-grid div {
+  background: #ffffff;
+  border: 1px solid #e5ecef;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.trading-safety-grid span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.trading-safety-grid strong {
+  font-size: 13px;
+}
+
+.safety-warnings {
+  align-items: flex-start;
 }
 
 .broker-summary-grid {
@@ -441,6 +578,15 @@ textarea {
 .order-proposal-panel {
   display: grid;
   gap: 10px;
+}
+
+.realtime-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.realtime-quote-table {
+  min-width: 980px;
 }
 
 .order-proposal-form {
@@ -1298,6 +1444,44 @@ button:disabled,
 .table-wrap {
   max-width: 100%;
   overflow-x: auto;
+}
+
+.strategy-results-table-wrap {
+  border: 1px solid #e5ecef;
+  border-radius: 6px;
+  max-height: min(calc(43px + (10 * 64px)), 72vh);
+  overflow: auto;
+}
+
+.strategy-results-table-wrap table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.strategy-results-table-wrap th {
+  background: #f7fafa;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.rebalance-table-wrap {
+  border: 1px solid #e5ecef;
+  border-radius: 6px;
+  max-height: min(calc(43px + (10 * 54px)), 72vh);
+  overflow: auto;
+}
+
+.rebalance-table-wrap table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.rebalance-table-wrap th {
+  background: #f7fafa;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 table {

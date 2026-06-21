@@ -4,6 +4,7 @@
     fetchDashboard,
     fetchBacktestRun,
     fetchBacktestRuns,
+    fetchStrategyExecutionContract,
     fetchUserStrategies,
     runBacktest as requestBacktest,
     type BacktestBenchmarkPoint,
@@ -11,9 +12,15 @@
     type BacktestRunResult,
     type Dashboard,
     type Strategy,
+    type StrategyExecutionContract,
     type UserStrategy
   } from '$lib/api';
-  import { describeStrategyRule } from '$lib/strategyRuleTooltips';
+  import {
+    classifyRiskRule,
+    describeStrategyRule,
+    riskRuleActionDescription,
+    riskRuleActionLabel
+  } from '$lib/strategyRuleTooltips';
 
   type StrategyOption = {
     code: string;
@@ -126,6 +133,10 @@
   let recentBacktests: BacktestRunSummary[] = [];
   let recentBacktestsLoading = false;
   let recentBacktestsError = '';
+  let executionContract: StrategyExecutionContract | null = null;
+  let executionContractLoading = false;
+  let executionContractError = '';
+  let executionContractRequestId = 0;
 
   const benchmarkOptions = [
     { code: 'kospi200', name: 'KOSPI 200' },
@@ -169,6 +180,7 @@
       selectedStrategy = chooseInitialStrategy(dashboardData, userStrategies);
       loading = false;
       void loadRecentBacktests();
+      void loadExecutionContract(selectedStrategy);
     } catch (err) {
       error = err instanceof Error ? err.message : '전략과 백테스트 데이터를 불러오지 못했습니다.';
       loading = false;
@@ -306,6 +318,42 @@
     return (rules ?? []).filter(Boolean).slice(0, 4);
   }
 
+  function describeRiskRule(rule: string) {
+    return `${riskRuleActionDescription(rule)} ${describeStrategyRule(rule, 'risk')}`;
+  }
+
+  function handleStrategyChange() {
+    clearBacktestResult();
+    void loadExecutionContract(selectedStrategy);
+  }
+
+  async function loadExecutionContract(strategyCode: string) {
+    const requestId = executionContractRequestId + 1;
+    executionContractRequestId = requestId;
+    executionContractError = '';
+
+    if (!strategyCode) {
+      executionContract = null;
+      return;
+    }
+
+    executionContractLoading = true;
+
+    try {
+      const result = await fetchStrategyExecutionContract(strategyCode);
+      if (executionContractRequestId !== requestId) return;
+      executionContract = result;
+    } catch (err) {
+      if (executionContractRequestId !== requestId) return;
+      executionContract = null;
+      executionContractError = err instanceof Error ? err.message : '전략 실행 계약을 불러오지 못했습니다.';
+    } finally {
+      if (executionContractRequestId === requestId) {
+        executionContractLoading = false;
+      }
+    }
+  }
+
   async function runBacktest() {
     if (!selectedOption) {
       backtestError = '백테스트할 전략을 먼저 선택하세요.';
@@ -342,6 +390,7 @@
       const result = await fetchBacktestRun(runId);
       applyBacktestResult(result);
       selectedStrategy = result.strategy_code;
+      void loadExecutionContract(selectedStrategy);
       setInitialAmount(result.initial_amount);
       benchmarkCode = result.benchmark_code || 'none';
       const [loadedStartYear, loadedEndYear] = result.period.split(' ~ ');
@@ -417,7 +466,24 @@
   }
 
   function buildGrowthRows(result: BacktestRunResult | null): GrowthRow[] {
-    return result?.equity_curve ?? [];
+    if (!result?.equity_curve?.length) return [];
+
+    const rows = result.equity_curve;
+    const [firstYear] = parsePeriodYears(result.period);
+    if (!firstYear) return rows;
+
+    const periodStartIndex = firstYear * 12;
+    const firstPointIndex = parseMonthLabel(rows[0].label);
+    if (!Number.isFinite(firstPointIndex) || firstPointIndex <= periodStartIndex) {
+      return rows;
+    }
+
+    const paddedRows = Array.from({ length: firstPointIndex - periodStartIndex }, (_, index) => ({
+      label: monthIndexToLabel(periodStartIndex + index),
+      portfolio: result.initial_amount
+    }));
+
+    return [...paddedRows, ...rows];
   }
 
   function buildBenchmarkMetrics(result: BacktestRunResult | null): Record<string, string> {
@@ -732,6 +798,23 @@
     return year * 12 + month - 1;
   }
 
+  function monthIndexToLabel(monthIndex: number) {
+    const year = Math.floor(monthIndex / 12);
+    const month = (monthIndex % 12) + 1;
+    return `${year}.${String(month).padStart(2, '0')}`;
+  }
+
+  function parsePeriodYears(period: string) {
+    const [startText, endText] = period.split(' ~ ');
+    const start = Number(startText);
+    const end = Number(endText);
+
+    return [
+      Number.isFinite(start) ? start : 0,
+      Number.isFinite(end) ? end : 0
+    ];
+  }
+
   function formatMonthTick(monthIndex: number, interval: number) {
     const year = Math.floor(monthIndex / 12);
     const month = (monthIndex % 12) + 1;
@@ -823,7 +906,7 @@
       <div class="backtest-form-grid strategy-select-grid">
         <label>
           <span>전략</span>
-          <select bind:value={selectedStrategy} disabled={loading || !strategyOptions.length} onchange={clearBacktestResult}>
+          <select bind:value={selectedStrategy} disabled={loading || !strategyOptions.length} onchange={handleStrategyChange}>
             {#if loading && !strategyOptions.length}
               <option value={selectedStrategy}>전략 목록을 불러오는 중입니다</option>
             {:else}
@@ -868,13 +951,46 @@
               <strong>{selectedOption.rebalanceRule}</strong>
             </div>
           </div>
+          <div class="execution-contract-panel">
+            <div class="contract-heading">
+              <strong>실행 연결</strong>
+              <span>같은 전략 코드로 후보 검색, 백테스트, 주문 제안을 연결합니다.</span>
+            </div>
+            {#if executionContractLoading && !executionContract}
+              <div class="contract-status-row">
+                <span class="status-pill">계약 확인 중</span>
+              </div>
+            {:else if executionContractError}
+              <div class="contract-status-row">
+                <span class="status-pill blocked">{executionContractError}</span>
+              </div>
+            {:else if executionContract}
+              <div class="contract-status-row">
+                {#each executionContract.modes as mode}
+                  <span
+                    class="status-pill execution-mode-pill tooltip-anchor"
+                    class:ready={mode.enabled}
+                    class:blocked={!mode.enabled}
+                    aria-label={mode.note}
+                  >
+                    {mode.label}
+                    <span class="tooltip">{mode.note}</span>
+                  </span>
+                {/each}
+              </div>
+              <div class="contract-provider-row">
+                <span>데이터 우선순위</span>
+                <strong>{executionContract.provider_priority.join(' > ')}</strong>
+              </div>
+            {/if}
+          </div>
           <div class="strategy-rule-grid">
             <div>
               <strong>후보 조건</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.signalRules) as rule}
                   <li>
-                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'signal')}>
+                    <span class="tooltip-anchor rule-tooltip" aria-label={describeStrategyRule(rule, 'signal')}>
                       {rule}
                       <span class="tooltip">{describeStrategyRule(rule, 'signal')}</span>
                     </span>
@@ -887,7 +1003,7 @@
               <ul class="compact-list">
                 {#each firstRules(selectedOption.rankingRules) as rule}
                   <li>
-                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'ranking')}>
+                    <span class="tooltip-anchor rule-tooltip" aria-label={describeStrategyRule(rule, 'ranking')}>
                       {rule}
                       <span class="tooltip">{describeStrategyRule(rule, 'ranking')}</span>
                     </span>
@@ -896,13 +1012,15 @@
               </ul>
             </div>
             <div>
-              <strong>위험 제어</strong>
-              <ul class="compact-list">
+              <strong>위험 처리 기준</strong>
+              <p class="risk-rule-summary">제외/보류, 감점, 주의 중 어떤 방식으로 반영되는지 구분합니다.</p>
+              <ul class="compact-list risk-rule-list">
                 {#each firstRules(selectedOption.riskControls) as rule}
-                  <li>
-                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'risk')}>
+                  <li class="risk-rule-item">
+                    <span class={`risk-action-badge ${classifyRiskRule(rule)}`}>{riskRuleActionLabel(rule)}</span>
+                    <span class="tooltip-anchor rule-tooltip" aria-label={describeRiskRule(rule)}>
                       {rule}
-                      <span class="tooltip">{describeStrategyRule(rule, 'risk')}</span>
+                      <span class="tooltip">{describeRiskRule(rule)}</span>
                     </span>
                   </li>
                 {/each}
@@ -1006,7 +1124,7 @@
           {recentBacktestsLoading
             ? '불러오는 중'
             : recentBacktests.length
-              ? `${recentBacktests.length}개 저장됨`
+              ? `최근 ${recentBacktests.length}개 표시`
               : '저장 결과 없음'}
         </strong>
       </div>
@@ -1052,7 +1170,7 @@
           <span>리밸런싱 이력</span>
           <strong>전략 실행 결과</strong>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap rebalance-table-wrap">
           <table class="compact-table rebalance-table">
             <thead>
               <tr>
@@ -1118,8 +1236,7 @@
           onmouseleave={() => (chartTooltip = null)}
           role="presentation"
         >
-          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img">
-            <title>자산 성장</title>
+          <svg aria-label="자산 성장" viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img">
             <text class="chart-title" x={chartWidth / 2} y="18" text-anchor="middle">포트폴리오 평가금액</text>
             {#each growthYAxisTicks as tick}
               <line class="chart-grid-line" x1={chartLeft} x2={chartWidth - chartRight} y1={tick.y} y2={tick.y}></line>
@@ -1150,10 +1267,9 @@
                 cy={point.y}
                 r="7"
                 onmousemove={() => showBenchmarkTooltip(point)}
+                aria-label={`${point.label} · ${backtestResult?.benchmark_name}: ${formatKrw(point.benchmark)}`}
                 role="presentation"
-              >
-                <title>{point.label} · {backtestResult?.benchmark_name}: {formatKrw(point.benchmark)}</title>
-              </circle>
+              ></circle>
             {/each}
             {#each growthChartPoints as point}
               <circle
@@ -1162,10 +1278,9 @@
                 cy={point.y}
                 r="7"
                 onmousemove={() => showStrategyTooltip(point)}
+                aria-label={`${point.label} · ${formatKrw(point.portfolio)}`}
                 role="presentation"
-              >
-                <title>{point.label} · {formatKrw(point.portfolio)}</title>
-              </circle>
+              ></circle>
             {/each}
             {#if growthChartPoints.length}
               <circle

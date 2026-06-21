@@ -10,12 +10,14 @@ from sqlalchemy.pool import StaticPool
 import quantmate_api.main as main_module
 import quantmate_api.market_data as market_data_module
 
+from quantmate_api.kis_realtime import KisRealtimeStatus, parse_kis_realtime_quote
 from quantmate_api.main import app
 from quantmate_api.models import (
     BacktestRun,
     Base,
     BrokerAuditLog,
     DailyPrice,
+    DataImportJob,
     FundamentalRatio,
     Instrument,
     Market,
@@ -25,7 +27,11 @@ from quantmate_api.models import (
     SupplyFlowDaily,
 )
 from quantmate_api.backtest_engine import build_daily_price_backtest
-from quantmate_api.strategy_engine import CANDIDATE_UNIVERSE, build_strategy_candidates_from_daily_prices
+from quantmate_api.strategy_engine import (
+    CANDIDATE_UNIVERSE,
+    apply_user_strategy_formula,
+    build_strategy_candidates_from_daily_prices,
+)
 
 
 client = TestClient(app)
@@ -34,6 +40,9 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def disable_kis_auto_import_by_default(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: False)
+    monkeypatch.delenv("DAILY_LOSS_STOP_ENABLED", raising=False)
+    monkeypatch.delenv("EMERGENCY_STOP_ENABLED", raising=False)
+    monkeypatch.delenv("MANUAL_ORDER_CONFIRMATION_REQUIRED", raising=False)
 
     def unavailable_kis_current_price(symbol: str) -> dict[str, object]:
         raise main_module.MarketDataProviderUnavailable(f"KIS 현재가 테스트 차단: {symbol}")
@@ -154,6 +163,47 @@ def seed_daily_prices(
                         close_price=close_price,
                         volume=100000 + symbol_index * 10000 + day_index * 100,
                         trading_value=close_price * (100000 + symbol_index * 10000 + day_index * 100),
+                        provider=provider,
+                        is_adjusted=False,
+                    )
+                )
+
+        session.commit()
+
+
+def seed_additional_daily_prices(
+    session_factory: sessionmaker,
+    *,
+    symbols: list[dict[str, object]],
+    provider: str,
+    start: date,
+    days: int,
+) -> None:
+    with session_factory() as session:
+        instruments = {
+            instrument.symbol: instrument
+            for instrument in session.scalars(select(Instrument).where(Instrument.symbol.in_([str(item["symbol"]) for item in symbols])))
+        }
+
+        for symbol_index, item in enumerate(symbols):
+            symbol = str(item["symbol"])
+            instrument = instruments[symbol]
+            base_price = 12000 + symbol_index * 1000
+            drift = 1 + symbol_index * 0.12
+
+            for day_index in range(days):
+                trade_date = start + timedelta(days=day_index)
+                close_price = base_price + day_index * drift * 8
+                session.add(
+                    DailyPrice(
+                        instrument_id=instrument.id,
+                        trade_date=trade_date,
+                        open_price=close_price - 20,
+                        high_price=close_price + 45,
+                        low_price=close_price - 50,
+                        close_price=close_price,
+                        volume=90000 + symbol_index * 10000 + day_index * 90,
+                        trading_value=close_price * (90000 + symbol_index * 10000 + day_index * 90),
                         provider=provider,
                         is_adjusted=False,
                     )
@@ -366,6 +416,139 @@ def test_kis_paper_order_requires_enabled_flag(monkeypatch) -> None:
     assert "PAPER_TRADING_ENABLED" in response.json()["detail"]
 
 
+def test_kis_trading_safety_status_reports_env_limits(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+    monkeypatch.setattr(main_module, "has_kis_account_credentials", lambda: True)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
+    monkeypatch.setenv("EMERGENCY_STOP_ENABLED", "true")
+    monkeypatch.setenv("MANUAL_ORDER_CONFIRMATION_REQUIRED", "false")
+    monkeypatch.setenv("DAILY_LOSS_STOP_ENABLED", "true")
+    monkeypatch.setenv("MAX_ORDER_AMOUNT_KRW", "123456")
+    monkeypatch.setenv("MAX_DAILY_ORDER_COUNT", "7")
+    monkeypatch.setenv("MAX_DAILY_LOSS_KRW", "90000")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    response = client.get("/api/broker/kis/safety-status")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["environment"] == "paper"
+    assert data["account_label"] == "******78-01"
+    assert data["paper_trading_enabled"] is True
+    assert data["emergency_stop_enabled"] is True
+    assert data["manual_confirmation_required"] is False
+    assert data["daily_loss_stop_enabled"] is True
+    assert data["max_order_amount_krw"] == 123456
+    assert data["max_daily_order_count"] == 7
+    assert data["max_daily_loss_krw"] == 90000
+    assert data["remaining_daily_order_count"] == 7
+    assert data["can_submit_paper_orders"] is False
+    assert any("긴급 중지" in warning for warning in data["warnings"])
+
+
+def test_kis_paper_order_requires_confirm_phrase(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+
+    response = client.post(
+        "/api/broker/kis/paper/orders",
+        json={
+            "side": "buy",
+            "symbol": "005930",
+            "quantity": 1,
+            "order_type": "limit",
+            "price": 70000,
+            "confirm_submit": True,
+            "confirm_phrase": "실행",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "확인 문구" in response.json()["detail"]
+
+
+def test_kis_paper_batch_order_rejects_emergency_stop(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("EMERGENCY_STOP_ENABLED", "true")
+
+    response = client.post(
+        "/api/broker/kis/paper/orders/batch",
+        json={
+            "confirm_submit": True,
+            "confirm_phrase": "모의주문 실행",
+            "orders": [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quantity": 1,
+                    "order_type": "limit",
+                    "price": 70000,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 423
+    assert "EMERGENCY_STOP_ENABLED" in response.json()["detail"]
+
+
+def test_kis_paper_batch_order_rejects_daily_loss_stop(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("DAILY_LOSS_STOP_ENABLED", "true")
+    monkeypatch.setenv("MAX_DAILY_LOSS_KRW", "50000")
+
+    def fake_balance() -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "account_label": "",
+            "fetched_at": "2026-06-21T10:00:00",
+            "summary": {
+                "asset_change_amount": -60000,
+                "net_asset_amount": 9940000,
+                "previous_total_asset_evaluation_amount": 10000000,
+            },
+            "holdings": [],
+        }
+
+    monkeypatch.setattr(main_module, "fetch_kis_domestic_balance", fake_balance)
+
+    response = client.post(
+        "/api/broker/kis/paper/orders/batch",
+        json={
+            "confirm_submit": True,
+            "confirm_phrase": "모의주문 실행",
+            "orders": [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quantity": 1,
+                    "order_type": "limit",
+                    "price": 70000,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 403
+    assert "일일 손실 중지 한도" in response.json()["detail"]
+
+    with session_factory() as session:
+        log = session.scalar(select(BrokerAuditLog))
+        assert log is not None
+        assert log.action == "paper_batch_order.daily_loss_stop"
+        assert log.status == "failed"
+
+
 def test_kis_paper_order_logs_before_and_after(monkeypatch) -> None:
     session_factory = use_sqlite_session(monkeypatch)
     monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
@@ -400,6 +583,7 @@ def test_kis_paper_order_logs_before_and_after(monkeypatch) -> None:
             "order_type": "limit",
             "price": 70000,
             "confirm_submit": True,
+            "confirm_phrase": "모의주문 실행",
         },
     )
     data = response.json()
@@ -440,6 +624,7 @@ def test_kis_paper_order_rejects_order_amount_limit(monkeypatch) -> None:
             "order_type": "limit",
             "price": 70000,
             "confirm_submit": True,
+            "confirm_phrase": "모의주문 실행",
         },
     )
 
@@ -658,6 +843,27 @@ def test_strategy_candidates_returns_ranked_rows() -> None:
     scores = [item["strategy_score"] for item in data["candidates"]]
     assert scores == sorted(scores, reverse=True)
     assert data["candidates"][0]["rationale"]
+
+
+def test_strategy_execution_contract_reports_shared_modes(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+    monkeypatch.setattr(main_module, "has_kis_account_credentials", lambda: True)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+
+    response = client.get("/api/strategies/relative-momentum-swing/contract")
+    data = response.json()
+    modes = {mode["code"]: mode for mode in data["modes"]}
+
+    assert response.status_code == 200
+    assert data["strategy_code"] == "relative-momentum-swing"
+    assert data["provider_priority"] == ["KRX Open API", "KIS Open API", "Yahoo Finance"]
+    assert modes["screen"]["enabled"] is True
+    assert modes["backtest"]["endpoint"] == "/api/backtests/run"
+    assert modes["paper-order-proposal"]["enabled"] is True
+    assert modes["paper-order-submit"]["enabled"] is True
+    assert modes["live-order-submit"]["enabled"] is False
+    assert "MAX_ORDER_AMOUNT_KRW" in data["safety_controls"]
 
 
 def test_strategy_candidates_use_daily_prices_when_available(monkeypatch) -> None:
@@ -920,7 +1126,12 @@ def test_strategy_candidates_enrich_with_kis_fundamentals(monkeypatch) -> None:
     assert samsung["eps_growth"] == 34.6
     assert samsung["roe"] == 15.7
     assert samsung["debt_ratio"] == 42.1
-    assert "KIS 재무비율로 성장성/수익성/부채비율 보강" in samsung["rationale"]
+    assert samsung["per"] == pytest.approx(2.47, abs=0.01)
+    assert samsung["pbr"] == pytest.approx(0.13, abs=0.01)
+    assert samsung["psr"] == pytest.approx(0.09, abs=0.01)
+    assert samsung["net_margin"] == pytest.approx(3.5, abs=0.01)
+    assert samsung["roa"] == pytest.approx(11.05, abs=0.01)
+    assert "KIS 재무비율로 성장성/수익성/밸류에이션을 보강" in samsung["rationale"]
 
 
 def test_strategy_candidates_enrich_with_kis_risk_indicators(monkeypatch) -> None:
@@ -967,6 +1178,32 @@ def test_strategy_candidates_enrich_with_kis_risk_indicators(monkeypatch) -> Non
     assert "신용잔고 단기 증가" in samsung["risk_flags"]
 
 
+def test_strategy_candidates_default_does_not_auto_import(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+    kis_daily_called = False
+
+    def fake_fetch_kis_daily_prices(
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        is_adjusted: bool = False,
+    ) -> list[dict[str, object]]:
+        nonlocal kis_daily_called
+        kis_daily_called = True
+        return []
+
+    monkeypatch.setattr(main_module, "fetch_kis_daily_prices", fake_fetch_kis_daily_prices)
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["source"] == "sample-engine"
+    assert len(data["candidates"]) >= 10
+    assert kis_daily_called is False
+
+
 def test_strategy_candidates_auto_import_partial_kis_risk_indicators(monkeypatch) -> None:
     session_factory = use_sqlite_session(monkeypatch)
     seed_daily_prices(
@@ -1005,7 +1242,7 @@ def test_strategy_candidates_auto_import_partial_kis_risk_indicators(monkeypatch
     monkeypatch.setattr(main_module, "fetch_kis_daily_short_sale", fake_fetch_kis_daily_short_sale)
     monkeypatch.setattr(main_module, "fetch_kis_daily_credit_balance", rate_limited_kis_daily_credit_balance)
 
-    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    response = client.get("/api/strategies/relative-momentum-swing/candidates?refresh=true")
     data = response.json()
     risk_enriched = next(item for item in data["candidates"] if item["short_sale_ratio"] == 9.2)
 
@@ -1061,7 +1298,7 @@ def test_strategy_candidates_auto_import_kis_before_yahoo(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "fetch_kis_daily_prices", fake_fetch_kis_daily_prices)
     monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
 
-    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    response = client.get("/api/strategies/relative-momentum-swing/candidates?refresh=true")
     data = response.json()
 
     assert response.status_code == 200
@@ -1093,6 +1330,35 @@ def test_screener_search_applies_formula_on_server(monkeypatch) -> None:
     assert data["source"].endswith(":screener-filtered")
     assert data["unsupported_conditions"] == []
     assert [item["symbol"] for item in data["candidates"]] == ["005930"]
+
+
+def test_user_strategy_formula_accepts_korean_numeric_conditions() -> None:
+    candidates = [
+        {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "foreign_net_buy_5d": 600,
+            "institution_net_buy_5d": 350,
+            "momentum": 72,
+            "supply_score": 84,
+        },
+        {
+            "symbol": "000660",
+            "name": "SK하이닉스",
+            "foreign_net_buy_5d": 450,
+            "institution_net_buy_5d": 500,
+            "momentum": 80,
+            "supply_score": 90,
+        },
+    ]
+
+    filtered, unsupported = apply_user_strategy_formula(
+        candidates=candidates,
+        formula="외국인 5일 순매수 >= 500억 AND 기관 5일 순매수 >= 300억 AND 모멘텀 >= 70",
+    )
+
+    assert unsupported == []
+    assert [item["symbol"] for item in filtered] == ["005930"]
 
 
 def test_strategy_candidates_unknown_strategy_returns_404() -> None:
@@ -1193,7 +1459,110 @@ def test_daily_price_backtest_uses_strategy_parameters() -> None:
     assert {row["holdings"] for row in result["rebalance_history"]} == {"20종목"}
 
 
-def test_backtest_run_auto_imports_kis_before_yahoo(monkeypatch) -> None:
+def test_daily_price_backtest_pads_curve_from_requested_start_year() -> None:
+    price_rows: list[dict[str, object]] = []
+    for index in range(12):
+        price_rows.extend(
+            make_price_rows(
+                f"P{index:05d}",
+                name=f"지연후보{index}",
+                start_price=10000 + index * 100,
+                daily_step=8 + index,
+                volume=200000 + index * 1000,
+                start=date(2025, 8, 1),
+                days=90,
+            )
+        )
+
+    result = build_daily_price_backtest(
+        strategy_code="relative-momentum-swing",
+        strategy_name="상대 모멘텀 스윙",
+        start_year=2023,
+        end_year=2026,
+        initial_amount=10_000_000,
+        price_rows=price_rows,
+        provider="테스트 제공처",
+    )
+
+    assert result is not None
+    assert result["equity_curve"][0] == {"label": "2023.01", "portfolio": 10_000_000}
+    assert result["equity_curve"][1] == {"label": "2023.02", "portfolio": 10_000_000}
+    assert result["equity_curve"][31] == {"label": "2025.08", "portfolio": 10_000_000}
+    assert result["equity_curve"][32]["label"] == "2025.09"
+    assert result["annual_returns"][0]["year"] == "2023"
+    assert result["annual_returns"][0]["portfolio_return"] == 0.0
+
+
+def test_daily_price_backtest_starts_requested_period_at_initial_amount() -> None:
+    price_rows: list[dict[str, object]] = []
+    for index in range(12):
+        price_rows.extend(
+            make_price_rows(
+                f"S{index:05d}",
+                name=f"시작후보{index}",
+                start_price=10000 + index * 100,
+                daily_step=8 + index,
+                volume=200000 + index * 1000,
+                start=date(2020, 1, 1),
+                days=760,
+            )
+        )
+
+    result = build_daily_price_backtest(
+        strategy_code="relative-momentum-swing",
+        strategy_name="상대 모멘텀 스윙",
+        start_year=2021,
+        end_year=2022,
+        initial_amount=10_000_000,
+        price_rows=price_rows,
+        provider="테스트 제공처",
+    )
+
+    assert result is not None
+    assert result["equity_curve"][0] == {"label": "2021.01", "portfolio": 10_000_000}
+    assert result["equity_curve"][1]["label"] == "2021.02"
+    assert result["equity_curve"][1]["portfolio"] != 10_000_000
+
+
+def test_backtest_run_prefers_provider_with_longer_period_coverage(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    symbols = CANDIDATE_UNIVERSE[:10]
+    seed_daily_prices(
+        session_factory,
+        symbols=symbols,
+        provider="Yahoo Finance",
+        start=date(2022, 1, 1),
+        days=1700,
+    )
+    seed_additional_daily_prices(
+        session_factory,
+        symbols=symbols,
+        provider="KIS Open API",
+        start=date(2025, 8, 1),
+        days=330,
+    )
+    stub_empty_yahoo_prices(monkeypatch)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2023,
+            "end_year": 2026,
+            "initial_amount": 10000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["source"] == "daily-price-backtest:Yahoo Finance"
+    assert data["rebalance_history"][0]["date"] == "2023-01"
+    assert data["equity_curve"][0]["label"] == "2023.01"
+    assert data["equity_curve"][0]["portfolio"] == data["initial_amount"]
+    assert data["equity_curve"][1]["portfolio"] != data["initial_amount"]
+
+
+def test_backtest_run_uses_kis_without_yahoo_when_kis_covers_period(monkeypatch) -> None:
     use_sqlite_session(monkeypatch)
     monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
     monkeypatch.setattr(main_module, "fetch_yfinance_symbol_daily_prices", lambda **_kwargs: [])
@@ -1209,7 +1578,7 @@ def test_backtest_run_auto_imports_kis_before_yahoo(monkeypatch) -> None:
         return [
             {
                 "symbol": symbol,
-                "trade_date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(),
+                "trade_date": (date(2025, 1, 1) + timedelta(days=index)).isoformat(),
                 "open": base_price + index,
                 "high": base_price + index + 10,
                 "low": base_price + index - 10,
@@ -1219,7 +1588,7 @@ def test_backtest_run_auto_imports_kis_before_yahoo(monkeypatch) -> None:
                 "trading_value": (base_price + index * 2) * (100000 + index),
                 "provider": "KIS Open API",
             }
-            for index in range(40)
+            for index in range(540)
         ]
 
     def fake_fetch_yahoo_daily_prices(
@@ -1475,7 +1844,7 @@ def test_backtest_run_adds_selected_benchmark_curve(monkeypatch) -> None:
     assert data["benchmark_code"] == "sp500"
     assert data["benchmark_name"] == "S&P 500"
     assert data["benchmark_curve"] == [
-        {"label": "2026.01", "benchmark": 1100000},
+        {"label": "2026.01", "benchmark": 1000000},
         {"label": "2026.02", "benchmark": 1210000},
     ]
 
@@ -1592,7 +1961,7 @@ def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
     assert data["benchmark_code"] == "nasdaq100"
     assert data["benchmark_name"] == "Nasdaq 100"
     assert data["benchmark_curve"] == [
-        {"label": "2026.01", "benchmark": 1050000},
+        {"label": "2026.01", "benchmark": 1000000},
         {"label": "2026.02", "benchmark": 1155000},
     ]
 
@@ -1730,6 +2099,158 @@ def test_kis_token_status_does_not_expose_token(monkeypatch) -> None:
     assert "access_token" not in data
 
 
+def test_kis_websocket_approval_status_does_not_expose_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_kis_ws_approval_status",
+        lambda: {
+            "provider": "KIS Open API",
+            "ready": True,
+            "environment": "paper",
+            "base_url": "https://openapivts.koreainvestment.com:29443",
+            "ws_url": "ws://ops.koreainvestment.com:31000",
+            "approval_key_cached": True,
+            "expires_in_seconds": 3600,
+        },
+    )
+
+    response = client.get("/api/data/kis/websocket/approval/status")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["ready"] is True
+    assert data["environment"] == "paper"
+    assert data["approval_key_cached"] is True
+    assert "approval_key" not in data
+
+
+def test_kis_websocket_approval_issue_uses_force_refresh(monkeypatch) -> None:
+    force_refresh_values: list[bool] = []
+
+    def fake_get_kis_ws_approval_key(*, force_refresh: bool = False) -> str:
+        force_refresh_values.append(force_refresh)
+        return "approval-key"
+
+    monkeypatch.setattr(main_module, "get_kis_ws_approval_key", fake_get_kis_ws_approval_key)
+    monkeypatch.setattr(
+        main_module,
+        "get_kis_ws_approval_status",
+        lambda: {
+            "provider": "KIS Open API",
+            "ready": True,
+            "environment": "paper",
+            "base_url": "https://openapivts.koreainvestment.com:29443",
+            "ws_url": "ws://ops.koreainvestment.com:31000",
+            "approval_key_cached": True,
+            "expires_in_seconds": 3600,
+        },
+    )
+
+    response = client.post(
+        "/api/data/kis/websocket/approval-key",
+        json={"force_refresh": True},
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert force_refresh_values == [True]
+    assert data["approval_key_cached"] is True
+    assert "approval_key" not in data
+
+
+def test_parse_kis_realtime_quote_message(monkeypatch) -> None:
+    monkeypatch.setattr("quantmate_api.kis_realtime.today_kst", lambda: date(2026, 6, 21))
+    message = (
+        "0|H0STCNT0|001|"
+        "005930^093015^71000^2^1200^1.72^70500^70000^72000^69500^71100^71000^35^123456^876543210"
+    )
+
+    quote = parse_kis_realtime_quote(message)
+
+    assert quote is not None
+    assert quote.symbol == "005930"
+    assert quote.trade_time == "2026-06-21T09:30:15"
+    assert quote.price == 71000
+    assert quote.change == 1200
+    assert quote.change_rate == 1.72
+    assert quote.ask_price == 71100
+    assert quote.bid_price == 71000
+    assert quote.trade_volume == 35
+    assert quote.accumulated_volume == 123456
+    assert quote.accumulated_trading_value == 876543210
+
+
+def test_kis_realtime_quote_endpoints_use_service(monkeypatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    class FakeRealtimeService:
+        async def status(self) -> KisRealtimeStatus:
+            return KisRealtimeStatus(
+                provider="KIS Open API",
+                environment="paper",
+                ws_url="ws://ops.koreainvestment.com:31000",
+                running=True,
+                connected=False,
+                subscribed_symbols=["005930"],
+                quote_count=0,
+                last_message_at=None,
+                last_error="",
+            )
+
+        async def latest_quotes(self) -> list[object]:
+            return []
+
+        async def subscribe(self, symbols: list[str]) -> KisRealtimeStatus:
+            calls.append(("subscribe", symbols))
+            return await self.status()
+
+        async def unsubscribe(self, symbols: list[str]) -> KisRealtimeStatus:
+            calls.append(("unsubscribe", symbols))
+            return await self.status()
+
+        async def stop(self) -> KisRealtimeStatus:
+            calls.append(("stop", []))
+            return KisRealtimeStatus(
+                provider="KIS Open API",
+                environment="paper",
+                ws_url="ws://ops.koreainvestment.com:31000",
+                running=False,
+                connected=False,
+                subscribed_symbols=[],
+                quote_count=0,
+                last_message_at=None,
+                last_error="",
+            )
+
+    monkeypatch.setattr(main_module, "kis_realtime_quote_service", FakeRealtimeService())
+
+    status_response = client.get("/api/data/kis/realtime/quotes/status")
+    subscribe_response = client.post(
+        "/api/data/kis/realtime/quotes/subscribe",
+        json={"symbols": ["005930", "000660"]},
+    )
+    latest_response = client.get("/api/data/kis/realtime/quotes/latest")
+    unsubscribe_response = client.post(
+        "/api/data/kis/realtime/quotes/unsubscribe",
+        json={"symbols": ["000660"]},
+    )
+    stop_response = client.post("/api/data/kis/realtime/quotes/stop")
+
+    assert status_response.status_code == 200
+    assert status_response.json()["running"] is True
+    assert subscribe_response.status_code == 200
+    assert latest_response.status_code == 200
+    assert latest_response.json() == []
+    assert unsubscribe_response.status_code == 200
+    assert stop_response.status_code == 200
+    assert stop_response.json()["running"] is False
+    assert calls == [
+        ("subscribe", ["005930", "000660"]),
+        ("unsubscribe", ["000660"]),
+        ("stop", []),
+    ]
+
+
 def test_kis_current_price_uses_market_data_provider(monkeypatch) -> None:
     def fake_fetch_kis_current_price(symbol: str) -> dict[str, object]:
         assert symbol == "005930"
@@ -1790,6 +2311,84 @@ def test_kis_market_cap_ranking_uses_market_data_provider(monkeypatch) -> None:
     assert data["count"] == 1
     assert data["items"][0]["symbol"] == "247540"
     assert data["items"][0]["exchange"] == "KOSDAQ"
+
+
+def test_kis_instruments_import_saves_market_cap_ranking(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    with session_factory() as session:
+        market = Market(
+            code="KR",
+            name="한국 주식",
+            country="KR",
+            currency="KRW",
+            timezone="Asia/Seoul",
+        )
+        session.add(market)
+        session.flush()
+        session.add(
+            Instrument(
+                market_id=market.id,
+                symbol="005930",
+                name="삼성전자-old",
+                exchange="KOSPI",
+                asset_type="stock",
+                is_active=False,
+            )
+        )
+        session.commit()
+
+    def fake_fetch_kis_market_cap_ranking(limit: int = 50, market: str = "ALL") -> list[dict[str, object]]:
+        assert limit == 3
+        assert market == "ALL"
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "name": "삼성전자",
+                "exchange": "KOSPI",
+            },
+            {
+                "provider": "KIS Open API",
+                "symbol": "000660",
+                "name": "SK하이닉스",
+                "exchange": "KOSPI",
+            },
+            {
+                "provider": "KIS Open API",
+                "symbol": "",
+                "name": "",
+                "exchange": "KOSDAQ",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_kis_market_cap_ranking", fake_fetch_kis_market_cap_ranking)
+
+    response = client.post("/api/data/kis/instruments/import", json={"market": "ALL", "limit": 3})
+    data = response.json()
+
+    assert response.status_code == 201
+    assert data["provider"] == "KIS Open API"
+    assert data["fetched_count"] == 3
+    assert data["created_count"] == 1
+    assert data["updated_count"] == 1
+    assert data["skipped_count"] == 1
+    assert data["instrument_count"] == 2
+
+    with session_factory() as session:
+        samsung = session.scalar(select(Instrument).where(Instrument.symbol == "005930"))
+        hynix = session.scalar(select(Instrument).where(Instrument.symbol == "000660"))
+        job = session.scalar(select(DataImportJob))
+
+    assert samsung is not None
+    assert samsung.name == "삼성전자"
+    assert samsung.is_active is True
+    assert hynix is not None
+    assert hynix.exchange == "KOSPI"
+    assert job is not None
+    assert job.provider == "KIS Open API"
+    assert job.job_type == "instruments"
+    assert job.status == "completed"
 
 
 def test_kis_investor_trade_daily_uses_market_data_provider(monkeypatch) -> None:
@@ -1974,6 +2573,47 @@ def test_kis_access_token_reuses_file_cache(monkeypatch, tmp_path) -> None:
     assert market_data_module.get_kis_access_token() == "cached-token"
     assert issue_count == 1
     assert token_path.exists()
+
+
+def test_kis_ws_approval_key_reuses_file_cache(monkeypatch, tmp_path) -> None:
+    approval_path = tmp_path / "kis_ws_approval_cache.json"
+    issue_count = 0
+
+    monkeypatch.setenv("KIS_APP_KEY", "app-key")
+    monkeypatch.setenv("KIS_APP_SECRET", "app-secret")
+    monkeypatch.setenv("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
+    monkeypatch.setenv("KIS_WS_URL", "ws://ops.koreainvestment.com:31000")
+    monkeypatch.delenv("KIS_WS_APPROVAL_KEY", raising=False)
+    monkeypatch.setenv("KIS_WS_APPROVAL_CACHE_PATH", str(approval_path))
+    market_data_module.KIS_WS_APPROVAL_CACHE.clear()
+
+    def fake_issue_kis_ws_approval_key(
+        *,
+        app_key: str,
+        app_secret: str,
+        base_url: str,
+    ) -> dict[str, object]:
+        nonlocal issue_count
+        issue_count += 1
+        assert app_key == "app-key"
+        assert app_secret == "app-secret"
+        assert base_url == "https://openapivts.koreainvestment.com:29443"
+        return {
+            "approval_key": "cached-approval-key",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(market_data_module, "issue_kis_ws_approval_key", fake_issue_kis_ws_approval_key)
+
+    assert market_data_module.get_kis_ws_approval_key() == "cached-approval-key"
+    market_data_module.KIS_WS_APPROVAL_CACHE.clear()
+    assert market_data_module.get_kis_ws_approval_key() == "cached-approval-key"
+    status = market_data_module.get_kis_ws_approval_status()
+
+    assert issue_count == 1
+    assert approval_path.exists()
+    assert status["approval_key_cached"] is True
+    assert "approval_key" not in status
 
 
 def test_kis_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:
@@ -2264,6 +2904,55 @@ def test_yahoo_daily_price_import_normalizes_ohlcv_range(monkeypatch) -> None:
         assert row.low_price <= row.open_price <= row.high_price
 
 
+def test_yahoo_daily_price_import_saves_us_market_for_us_exchange(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert symbol == "AAPL"
+        assert exchange == "NASDAQ"
+        return [
+            {
+                "symbol": "AAPL",
+                "trade_date": "2026-06-01",
+                "open": 200.0,
+                "high": 205.0,
+                "low": 198.0,
+                "close": 203.0,
+                "adjusted_close": 203.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+
+    response = client.post(
+        "/api/data/yahoo/daily-prices/import",
+        json={
+            "symbol": "AAPL",
+            "name": "Apple",
+            "exchange": "NASDAQ",
+            "start": "2026-06-01",
+            "end": "2026-06-01",
+        },
+    )
+
+    assert response.status_code == 201
+
+    with session_factory() as session:
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == "AAPL"))
+        assert instrument is not None
+        assert instrument.exchange == "NASDAQ"
+        assert instrument.market.code == "US"
+        assert instrument.market.currency == "USD"
+        assert instrument.market.timezone == "America/New_York"
+
+
 def test_backtest_run_uses_daily_prices_when_available(monkeypatch) -> None:
     use_sqlite_session(monkeypatch)
 
@@ -2350,7 +3039,10 @@ def test_backtest_run_uses_daily_prices_when_available(monkeypatch) -> None:
     assert data["final_amount"] == 1096500
     assert "거래비용 0.25%" in data["notice"]
     assert "슬리피지 0.10%" in data["notice"]
-    assert len(data["equity_curve"]) == 1
+    assert data["equity_curve"] == [
+        {"label": "2026.01", "portfolio": 1000000},
+        {"label": "2026.02", "portfolio": 1096500},
+    ]
 
 
 def test_backtest_run_auto_imports_yahoo_prices_when_db_is_empty(monkeypatch) -> None:

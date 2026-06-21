@@ -1,0 +1,4 @@
+interface:
+  display_name: "QuantMate KIS API"
+  short_description: "KIS 인증, 실시간 시세, 주문 안전장치 작업 절차"
+  default_prompt: "QuantMate에서 한국투자증권 Open API 연동 작업을 진행해 주세요."

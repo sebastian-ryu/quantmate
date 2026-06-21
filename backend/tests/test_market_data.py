@@ -60,3 +60,23 @@ def test_request_provider_response_stops_after_retry_budget(monkeypatch) -> None
 
     assert response.status_code == 503
     assert len(calls) == 2
+
+
+def test_normalize_yahoo_symbol_keeps_korea_suffix_behavior() -> None:
+    assert market_data.normalize_yahoo_symbol("005930", "KOSPI") == "005930.KS"
+    assert market_data.normalize_yahoo_symbol("035720", "KOSDAQ") == "035720.KQ"
+    assert market_data.normalize_yahoo_symbol("005930.KS", "KOSPI") == "005930.KS"
+
+
+def test_normalize_yahoo_symbol_supports_us_symbols_and_indexes() -> None:
+    assert market_data.normalize_yahoo_symbol("AAPL", "NASDAQ") == "AAPL"
+    assert market_data.normalize_yahoo_symbol("BRK.B", "NYSE") == "BRK-B"
+    assert market_data.normalize_yahoo_symbol("^GSPC", "US") == "^GSPC"
+
+
+def test_market_metadata_helpers_distinguish_kr_and_us_markets() -> None:
+    assert market_data.normalize_market_code("KOSDAQ") == "KR"
+    assert market_data.normalize_market_code("NYSE") == "US"
+    assert market_data.market_currency("NASDAQ") == "USD"
+    assert market_data.market_timezone("KOSPI") == "Asia/Seoul"
+    assert market_data.market_timezone("US") == "America/New_York"

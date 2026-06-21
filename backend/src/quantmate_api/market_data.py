@@ -34,9 +34,27 @@ YAHOO_KOREA_SUFFIX_BY_EXCHANGE = {
     "KOSPI": ".KS",
     "KOSDAQ": ".KQ",
 }
+MARKET_METADATA = {
+    "KR": {
+        "name": "한국 주식",
+        "country": "KR",
+        "currency": "KRW",
+        "timezone": "Asia/Seoul",
+        "primary_exchanges": {"KR", "KRX", "KOSPI", "KOSDAQ", "KONEX", "KOSPI200"},
+    },
+    "US": {
+        "name": "미국 주식",
+        "country": "US",
+        "currency": "USD",
+        "timezone": "America/New_York",
+        "primary_exchanges": {"US", "NASDAQ", "NYSE", "NYSEARCA", "ARCA", "AMEX", "NYSEAMERICAN", "BATS"},
+    },
+}
 KIS_PROVIDER_NAME = "KIS Open API"
 KIS_REAL_BASE_URL = "https://openapi.koreainvestment.com:9443"
 KIS_PAPER_BASE_URL = "https://openapivts.koreainvestment.com:29443"
+KIS_REAL_WS_URL = "ws://ops.koreainvestment.com:21000"
+KIS_PAPER_WS_URL = "ws://ops.koreainvestment.com:31000"
 KIS_DOMESTIC_CURRENT_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-price"
 KIS_DOMESTIC_DAILY_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 KIS_DOMESTIC_MARKET_CAP_RANKING_PATH = "/uapi/domestic-stock/v1/ranking/market-cap"
@@ -55,6 +73,7 @@ KIS_MARKET_CAP_RANKING_MARKET_CODES = {
     "KOSPI200": "2001",
 }
 KIS_TOKEN_CACHE: dict[str, Any] = {}
+KIS_WS_APPROVAL_CACHE: dict[str, Any] = {}
 KIS_MARKET_CAP_RANKING_CACHE: dict[str, dict[str, Any]] = {}
 PROVIDER_LAST_REQUEST_AT: dict[str, float] = {}
 RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
@@ -166,6 +185,14 @@ def get_kis_base_url() -> str:
     return KIS_PAPER_BASE_URL if is_kis_paper_trading() else KIS_REAL_BASE_URL
 
 
+def get_kis_ws_url() -> str:
+    configured = os.getenv("KIS_WS_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    return KIS_PAPER_WS_URL if is_kis_paper_trading() else KIS_REAL_WS_URL
+
+
 def get_kis_environment_name() -> str:
     return "paper" if is_kis_paper_trading() else "real"
 
@@ -206,6 +233,14 @@ def get_kis_token_cache_path() -> Path:
     return Path(__file__).resolve().parents[3] / ".run" / "kis_token_cache.json"
 
 
+def get_kis_ws_approval_cache_path() -> Path:
+    configured = os.getenv("KIS_WS_APPROVAL_CACHE_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    return Path(__file__).resolve().parents[3] / ".run" / "kis_ws_approval_cache.json"
+
+
 def read_kis_token_file_cache(cache_key: str, now: float) -> dict[str, Any] | None:
     path = get_kis_token_cache_path()
     if not path.exists():
@@ -226,8 +261,43 @@ def read_kis_token_file_cache(cache_key: str, now: float) -> dict[str, Any] | No
     return payload
 
 
+def read_kis_ws_approval_file_cache(cache_key: str, now: float) -> dict[str, Any] | None:
+    path = get_kis_ws_approval_cache_path()
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    if payload.get("cache_key") != cache_key:
+        return None
+    if not payload.get("approval_key"):
+        return None
+    if float(payload.get("expires_at_epoch", 0)) <= now + 60:
+        return None
+
+    return payload
+
+
 def write_kis_token_file_cache(cache_key: str, cache_record: dict[str, Any]) -> None:
     path = get_kis_token_cache_path()
+    payload = {
+        "cache_key": cache_key,
+        **cache_record,
+    }
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        return
+
+
+def write_kis_ws_approval_file_cache(cache_key: str, cache_record: dict[str, Any]) -> None:
+    path = get_kis_ws_approval_cache_path()
     payload = {
         "cache_key": cache_key,
         **cache_record,
@@ -287,6 +357,52 @@ def get_kis_access_token(force_refresh: bool = False) -> str:
     return access_token
 
 
+def get_kis_ws_approval_key(force_refresh: bool = False) -> str:
+    app_key = os.getenv("KIS_APP_KEY", "").strip()
+    app_secret = os.getenv("KIS_APP_SECRET", "").strip()
+
+    if not app_key or not app_secret:
+        raise MarketDataProviderUnavailable("KIS_APP_KEY와 KIS_APP_SECRET을 설정하세요.")
+
+    configured_key = os.getenv("KIS_WS_APPROVAL_KEY", "").strip()
+    if configured_key and not force_refresh:
+        return configured_key
+
+    base_url = get_kis_base_url()
+    ws_url = get_kis_ws_url()
+    cache_key = f"{base_url}:{ws_url}:{app_key}"
+    cached = KIS_WS_APPROVAL_CACHE.get(cache_key)
+    now = time.time()
+
+    if (
+        not force_refresh
+        and isinstance(cached, dict)
+        and cached.get("approval_key")
+        and float(cached.get("expires_at_epoch", 0)) > now + 60
+    ):
+        return str(cached["approval_key"])
+
+    file_cached = None if force_refresh else read_kis_ws_approval_file_cache(cache_key=cache_key, now=now)
+    if file_cached is not None:
+        KIS_WS_APPROVAL_CACHE[cache_key] = file_cached
+        return str(file_cached["approval_key"])
+
+    payload = issue_kis_ws_approval_key(app_key=app_key, app_secret=app_secret, base_url=base_url)
+    approval_key = str(payload.get("approval_key") or "")
+
+    if not approval_key:
+        raise MarketDataProviderUnavailable("KIS WebSocket 접속키 응답에 approval_key가 없습니다.")
+
+    expires_in = int_value(payload.get("expires_in")) or int_value(payload.get("expires_in_seconds")) or 24 * 60 * 60
+    cache_record = {
+        "approval_key": approval_key,
+        "expires_at_epoch": now + max(expires_in - 60, 60),
+    }
+    KIS_WS_APPROVAL_CACHE[cache_key] = cache_record
+    write_kis_ws_approval_file_cache(cache_key=cache_key, cache_record=cache_record)
+    return approval_key
+
+
 def issue_kis_access_token(*, app_key: str, app_secret: str, base_url: str) -> dict[str, Any]:
     response = request_provider_response(
         provider_key="kis",
@@ -314,6 +430,37 @@ def issue_kis_access_token(*, app_key: str, app_secret: str, base_url: str) -> d
     return payload
 
 
+def issue_kis_ws_approval_key(*, app_key: str, app_secret: str, base_url: str) -> dict[str, Any]:
+    response = request_provider_response(
+        provider_key="kis",
+        failure_label="KIS WebSocket 접속키 발급 실패",
+        method="POST",
+        url=f"{base_url.rstrip('/')}/oauth2/Approval",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/plain",
+            "charset": "UTF-8",
+        },
+        json={
+            "grant_type": "client_credentials",
+            "appkey": app_key,
+            "secretkey": app_secret,
+        },
+        timeout=20,
+    )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise MarketDataProviderUnavailable("KIS WebSocket 접속키 JSON 응답을 해석하지 못했습니다.") from exc
+
+    if response.status_code != 200:
+        message = payload.get("error_description") or payload.get("msg1") or response.text
+        raise MarketDataProviderUnavailable(f"KIS WebSocket 접속키 발급 실패: HTTP {response.status_code} {message}")
+
+    return payload
+
+
 def get_kis_token_status() -> dict[str, Any]:
     base_url = get_kis_base_url()
     app_key = os.getenv("KIS_APP_KEY", "").strip()
@@ -331,6 +478,29 @@ def get_kis_token_status() -> dict[str, Any]:
         "environment": get_kis_environment_name(),
         "base_url": base_url,
         "token_cached": bool(configured_token or effective_expires_at > time.time()),
+        "expires_in_seconds": max(0, int(effective_expires_at - time.time())) if effective_expires_at else 0,
+    }
+
+
+def get_kis_ws_approval_status() -> dict[str, Any]:
+    base_url = get_kis_base_url()
+    ws_url = get_kis_ws_url()
+    app_key = os.getenv("KIS_APP_KEY", "").strip()
+    configured_key = os.getenv("KIS_WS_APPROVAL_KEY", "").strip()
+    cache_key = f"{base_url}:{ws_url}:{app_key}"
+    cached = KIS_WS_APPROVAL_CACHE.get(cache_key)
+    expires_at = float(cached.get("expires_at_epoch", 0)) if isinstance(cached, dict) else 0
+    file_cached = read_kis_ws_approval_file_cache(cache_key=cache_key, now=time.time()) if app_key else None
+    file_expires_at = float(file_cached.get("expires_at_epoch", 0)) if isinstance(file_cached, dict) else 0
+    effective_expires_at = max(expires_at, file_expires_at)
+
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "ready": is_kis_open_api_ready(),
+        "environment": get_kis_environment_name(),
+        "base_url": base_url,
+        "ws_url": ws_url,
+        "approval_key_cached": bool(configured_key or effective_expires_at > time.time()),
         "expires_in_seconds": max(0, int(effective_expires_at - time.time())) if effective_expires_at else 0,
     }
 
@@ -1221,13 +1391,53 @@ def normalize_krx_market(market: str) -> str:
     return normalized
 
 
+def normalize_market_code(market_or_exchange: str = "KR") -> str:
+    normalized = market_or_exchange.strip().upper()
+
+    if not normalized:
+        return "KR"
+
+    for market_code, metadata in MARKET_METADATA.items():
+        if normalized == market_code or normalized in metadata["primary_exchanges"]:
+            return market_code
+
+    return "KR"
+
+
+def get_market_metadata(market_or_exchange: str = "KR") -> dict[str, Any]:
+    return MARKET_METADATA[normalize_market_code(market_or_exchange)]
+
+
+def market_currency(market_or_exchange: str = "KR") -> str:
+    return str(get_market_metadata(market_or_exchange)["currency"])
+
+
+def market_timezone(market_or_exchange: str = "KR") -> str:
+    return str(get_market_metadata(market_or_exchange)["timezone"])
+
+
+def is_us_exchange(exchange: str) -> bool:
+    return normalize_market_code(exchange) == "US"
+
+
 def normalize_yahoo_symbol(symbol: str, exchange: str = "KOSPI") -> str:
     cleaned = symbol.strip().upper()
+
+    if not cleaned:
+        raise ValueError("종목코드를 입력하세요.")
+
+    if cleaned.startswith("^"):
+        return cleaned
+
+    normalized_exchange = exchange.strip().upper()
+    market_code = normalize_market_code(normalized_exchange)
+
+    if market_code == "US":
+        return cleaned.replace(".", "-")
 
     if "." in cleaned:
         return cleaned
 
-    normalized_exchange = exchange.strip().upper()
     suffix = YAHOO_KOREA_SUFFIX_BY_EXCHANGE.get(normalized_exchange, ".KS")
 
     return f"{cleaned}{suffix}"

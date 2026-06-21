@@ -1,6 +1,30 @@
 import { env } from '$env/dynamic/public';
 
 const API_BASE_URL = env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+const DEFAULT_REQUEST_TIMEOUT_MS = 12000;
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
+) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('서버 응답 시간이 길어져 요청을 중단했습니다. 잠시 후 다시 시도해 주세요.');
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 export type Strategy = {
   code: string;
@@ -20,6 +44,25 @@ export type Strategy = {
   backtest_assumptions: string[];
   references: string[];
   default_enabled: boolean;
+};
+
+export type StrategyExecutionModeContract = {
+  code: string;
+  label: string;
+  enabled: boolean;
+  endpoint: string;
+  note: string;
+};
+
+export type StrategyExecutionContract = {
+  strategy_code: string;
+  strategy_name: string;
+  source_type: string;
+  summary: string;
+  formula: string;
+  provider_priority: string[];
+  safety_controls: string[];
+  modes: StrategyExecutionModeContract[];
 };
 
 export type Recommendation = {
@@ -62,6 +105,9 @@ export type StrategyCandidateResult = {
   fcf_yield: number;
   dividend_yield: number;
   payout_ratio: number;
+  dividend_growth: number;
+  dividend_streak_years: number;
+  dividend_stability_score: number;
   roa: number;
   operating_margin: number;
   net_margin: number;
@@ -247,6 +293,26 @@ export type KisBrokerAccountStatus = {
   paper_trading_enabled: boolean;
   live_trading_enabled: boolean;
   message: string;
+};
+
+export type KisTradingSafetyStatus = {
+  provider: string;
+  ready: boolean;
+  environment: string;
+  account_label: string;
+  paper_trading_enabled: boolean;
+  live_trading_enabled: boolean;
+  emergency_stop_enabled: boolean;
+  manual_confirmation_required: boolean;
+  daily_loss_stop_enabled: boolean;
+  max_order_amount_krw: number;
+  max_daily_order_count: number;
+  max_daily_loss_krw: number;
+  remaining_daily_order_count: number | null;
+  can_submit_paper_orders: boolean;
+  can_submit_live_orders: boolean;
+  message: string;
+  warnings: string[];
 };
 
 export type KisBrokerBalanceSummary = {
@@ -436,6 +502,33 @@ export type KisPaperBatchOrderResponse = {
   after_audit_log_id: number | null;
 };
 
+export type KisRealtimeQuoteStatus = {
+  provider: string;
+  environment: string;
+  ws_url: string;
+  running: boolean;
+  connected: boolean;
+  subscribed_symbols: string[];
+  quote_count: number;
+  last_message_at: string | null;
+  last_error: string;
+};
+
+export type KisRealtimeQuote = {
+  symbol: string;
+  trade_time: string;
+  price: number | null;
+  change: number | null;
+  change_rate: number | null;
+  trade_volume: number | null;
+  accumulated_volume: number | null;
+  accumulated_trading_value: number | null;
+  bid_price: number | null;
+  ask_price: number | null;
+  received_at: string;
+  raw_tr_id: string;
+};
+
 export type YahooDailyPrice = {
   symbol: string;
   trade_date: string;
@@ -535,8 +628,19 @@ export async function fetchKisBrokerAccountStatus(): Promise<KisBrokerAccountSta
   return response.json();
 }
 
+export async function fetchKisTradingSafetyStatus(): Promise<KisTradingSafetyStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/safety-status`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 주문 안전 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
 export async function fetchKisBrokerBalance(): Promise<KisBrokerBalance> {
-  const response = await fetch(`${API_BASE_URL}/api/broker/kis/balance`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/broker/kis/balance`, {}, 10000);
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
@@ -547,7 +651,7 @@ export async function fetchKisBrokerBalance(): Promise<KisBrokerBalance> {
 }
 
 export async function fetchKisOrderExecutions(): Promise<KisOrderExecutions> {
-  const response = await fetch(`${API_BASE_URL}/api/broker/kis/orders`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/broker/kis/orders`, {}, 10000);
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
@@ -567,7 +671,7 @@ export async function fetchKisBuyableCash(params: {
   if (params.order_price !== undefined) search.set('order_price', String(params.order_price));
   if (params.order_type) search.set('order_type', params.order_type);
 
-  const response = await fetch(`${API_BASE_URL}/api/broker/kis/buyable-cash?${search}`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/broker/kis/buyable-cash?${search}`, {}, 10000);
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
@@ -580,13 +684,17 @@ export async function fetchKisBuyableCash(params: {
 export async function createKisOrderProposal(
   request: KisOrderProposalRequest
 ): Promise<KisOrderProposal> {
-  const response = await fetch(`${API_BASE_URL}/api/broker/kis/order-proposals`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/api/broker/kis/order-proposals`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(request)
     },
-    body: JSON.stringify(request)
-  });
+    20000
+  );
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);
@@ -610,6 +718,75 @@ export async function submitKisPaperBatchOrders(
   if (!response.ok) {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `KIS 모의 일괄 주문을 제출하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchKisRealtimeQuoteStatus(): Promise<KisRealtimeQuoteStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/data/kis/realtime/quotes/status`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 실시간 시세 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchKisRealtimeLatestQuotes(): Promise<KisRealtimeQuote[]> {
+  const response = await fetch(`${API_BASE_URL}/api/data/kis/realtime/quotes/latest`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 실시간 시세를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function subscribeKisRealtimeQuotes(symbols: string[]): Promise<KisRealtimeQuoteStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/data/kis/realtime/quotes/subscribe`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ symbols })
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 실시간 시세 구독을 시작하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function unsubscribeKisRealtimeQuotes(symbols: string[]): Promise<KisRealtimeQuoteStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/data/kis/realtime/quotes/unsubscribe`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ symbols })
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 실시간 시세 구독을 해제하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function stopKisRealtimeQuotes(): Promise<KisRealtimeQuoteStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/data/kis/realtime/quotes/stop`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 실시간 시세 연결을 종료하지 못했습니다. (${response.status})`);
   }
 
   return response.json();
@@ -680,10 +857,23 @@ export async function importYahooDailyPricesForStrategy(
 export async function fetchStrategyCandidates(
   strategyCode: string
 ): Promise<StrategyCandidateResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/strategies/${strategyCode}/candidates`);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/strategies/${strategyCode}/candidates`, {}, 15000);
 
   if (!response.ok) {
     throw new Error(`전략 후보 종목을 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchStrategyExecutionContract(
+  strategyCode: string
+): Promise<StrategyExecutionContract> {
+  const response = await fetch(`${API_BASE_URL}/api/strategies/${strategyCode}/contract`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `전략 실행 계약을 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();
@@ -714,13 +904,17 @@ export async function fetchStrategySelectionRun(runId: number): Promise<Strategy
 export async function searchScreener(
   request: ScreenerSearchRequest = {}
 ): Promise<ScreenerSearchResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/screener/search`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/api/screener/search`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(request)
     },
-    body: JSON.stringify(request)
-  });
+    8000
+  );
 
   if (!response.ok) {
     const detail = await readErrorDetail(response);

@@ -147,9 +147,24 @@ def test_summarize_open_dart_financial_statements_derives_ratios() -> None:
             "current_amount": 2000,
         },
         {
+            "account_id": "ifrs-full_EquityAndLiabilities",
+            "account_name": "부채와자본총계",
+            "current_amount": 2000,
+        },
+        {
             "account_id": "ifrs-full_Liabilities",
             "account_name": "부채총계",
             "current_amount": 800,
+        },
+        {
+            "account_id": "ifrs-full_CurrentAssets",
+            "account_name": "유동자산",
+            "current_amount": 900,
+        },
+        {
+            "account_id": "ifrs-full_CurrentLiabilities",
+            "account_name": "유동부채",
+            "current_amount": 450,
         },
         {
             "account_id": "ifrs-full_Equity",
@@ -166,6 +181,22 @@ def test_summarize_open_dart_financial_statements_derives_ratios() -> None:
             "account_name": "유형자산의 취득",
             "current_amount": 40,
         },
+        {
+            "account_id": "ifrs-full_CashAndCashEquivalents",
+            "account_name": "현금및현금성자산",
+            "current_amount": 300,
+        },
+        {
+            "account_id": "ifrs-full_DepreciationAndAmortizationExpense",
+            "account_name": "감가상각비및무형자산상각비",
+            "current_amount": 20,
+        },
+        {
+            "account_id": "ifrs-full_DividendsPaidClassifiedAsFinancingActivities",
+            "account_name": "배당금의 지급",
+            "current_amount": -30,
+            "previous_amount": -20,
+        },
     ]
 
     summary = market_data.summarize_open_dart_financial_statements(rows)
@@ -176,6 +207,11 @@ def test_summarize_open_dart_financial_statements_derives_ratios() -> None:
     assert summary["operating_margin"] == 15.0
     assert summary["net_margin"] == 7.5
     assert summary["debt_ratio"] == 66.67
+    assert summary["current_ratio"] == 200.0
     assert summary["roe"] == 7.5
     assert summary["roa"] == 4.5
+    assert summary["cash_and_cash_equivalents"] == 300
+    assert summary["ebitda"] == 200
+    assert summary["dividends_paid"] == 30
+    assert summary["dividend_growth"] == 50.0
     assert summary["free_cash_flow"] == 110

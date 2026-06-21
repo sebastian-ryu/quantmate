@@ -13,7 +13,7 @@ def test_provider_registry_groups_current_sources() -> None:
         "KRX Open API",
         "KIS Open API",
     ]
-    assert [provider.name for provider in registry.fundamental_providers] == ["KIS Open API"]
+    assert [provider.name for provider in registry.fundamental_providers] == ["KIS Open API", "OpenDART"]
     assert [provider.name for provider in registry.broker_providers] == ["KIS 계좌"]
     assert [provider.name for provider in registry.status_providers] == [
         "KIS Open API",

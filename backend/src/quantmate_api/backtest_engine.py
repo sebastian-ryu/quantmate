@@ -112,6 +112,37 @@ STRATEGY_BACKTEST_PARAMETERS = {
 }
 
 
+def backtest_policy_for_strategy(
+    strategy_code: str,
+    *,
+    initial_amount: int | None = None,
+) -> dict[str, Any]:
+    parameters = _backtest_parameters(strategy_code)
+    holding_count = int(parameters["holding_count"])
+    rebalance_interval_months = int(parameters["rebalance_interval_months"])
+    initial_rebalance_amount = (
+        int(round(initial_amount / holding_count))
+        if initial_amount is not None and holding_count > 0
+        else None
+    )
+
+    return {
+        "rebalance_interval_months": rebalance_interval_months,
+        "rebalance_label": _rebalance_label(rebalance_interval_months),
+        "rebalance_timing": (
+            "리밸런싱 월의 1일 직전까지 확보된 데이터로 후보를 선정하고, "
+            "해당 월 첫 거래일 종가 진입을 가정"
+        ),
+        "return_price_basis": "월 첫 거래일 종가부터 월 마지막 거래일 종가까지",
+        "holding_count": holding_count,
+        "weighting_method": "동일비중",
+        "rebalance_amount_rule": "리밸런싱 시점의 평가금액을 보유 종목 수로 나누어 동일금액 배분",
+        "initial_rebalance_amount": initial_rebalance_amount,
+        "trading_cost_pct": float(parameters["trading_cost_pct"]),
+        "slippage_pct": float(parameters["slippage_pct"]),
+    }
+
+
 def build_daily_price_backtest(
     *,
     strategy_code: str,
@@ -277,6 +308,10 @@ def build_daily_price_backtest(
             f"{_rebalance_label(rebalance_interval_months)} 리밸런싱, "
             f"거래비용 {trading_cost_pct:.2f}%와 슬리피지 {slippage_pct:.2f}%를 반영합니다."
         ),
+        "backtest_policy": backtest_policy_for_strategy(
+            strategy_code,
+            initial_amount=initial_amount,
+        ),
         "metrics": metrics,
         "annual_returns": annual_rows,
         "equity_curve": equity_curve,
@@ -410,6 +445,10 @@ def build_sample_backtest(
         "notice": (
             "현재 결과는 서버 샘플 백테스트 엔진으로 계산했습니다. "
             "KRX 일봉 데이터 적재 후 같은 API를 실제 리밸런싱 계산으로 교체합니다."
+        ),
+        "backtest_policy": backtest_policy_for_strategy(
+            strategy_code,
+            initial_amount=initial_amount,
         ),
         "metrics": metrics,
         "annual_returns": annual_rows,

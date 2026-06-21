@@ -276,6 +276,65 @@ textarea {
   width: 100%;
 }
 
+.backtest-policy-panel {
+  background: #f8fbfb;
+  border: 1px solid #dfe9eb;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.backtest-policy-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.backtest-policy-heading strong {
+  font-size: 13px;
+}
+
+.backtest-policy-heading span {
+  color: #6f7f86;
+  font-size: 12px;
+}
+
+.backtest-policy-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.backtest-policy-card {
+  background: #ffffff;
+  border: 1px solid #e4ecef;
+  border-radius: 7px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.backtest-policy-card span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.backtest-policy-card strong {
+  color: #213137;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.backtest-policy-card p {
+  color: #63747b;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
+
 .strategy-note {
   background: #f7fafa;
   border: 1px solid #e2e9eb;
@@ -1449,8 +1508,6 @@ button:disabled,
 .strategy-results-table-wrap {
   border: 1px solid #e5ecef;
   border-radius: 6px;
-  max-height: min(calc(43px + (10 * 64px)), 72vh);
-  overflow: auto;
 }
 
 .strategy-results-table-wrap table {
@@ -1460,9 +1517,6 @@ button:disabled,
 
 .strategy-results-table-wrap th {
   background: #f7fafa;
-  position: sticky;
-  top: 0;
-  z-index: 2;
 }
 
 .rebalance-table-wrap {
@@ -1571,33 +1625,22 @@ td:first-child span {
   grid-column: 2;
 }
 
-.recent-backtest-picker,
-.recent-run-picker {
+.recent-backtest-picker {
   align-items: end;
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.recent-backtest-picker label,
-.recent-run-picker label {
+.recent-backtest-picker label {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
 
-.recent-backtest-picker select,
-.recent-run-picker select {
+.recent-backtest-picker select {
   min-width: 0;
   width: 100%;
-}
-
-.recent-run-picker {
-  background: #f7fafa;
-  border: 1px solid #e2e9eb;
-  border-radius: 6px;
-  margin-bottom: 10px;
-  padding: 8px 10px;
 }
 
 .compact-state {
@@ -1880,8 +1923,7 @@ td b {
     flex-direction: column;
   }
 
-  .recent-backtest-picker,
-  .recent-run-picker {
+  .recent-backtest-picker {
     align-items: stretch;
     grid-template-columns: 1fr;
   }

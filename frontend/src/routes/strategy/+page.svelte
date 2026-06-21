@@ -12,8 +12,6 @@
     fetchKisRealtimeQuoteStatus,
     fetchStrategyCandidates,
     fetchStrategyExecutionContract,
-    fetchStrategySelectionRun,
-    fetchStrategySelectionRuns,
     type Dashboard,
     type KisBuyableCash,
     type KisBrokerAccountStatus,
@@ -27,7 +25,6 @@
     type Strategy,
     type StrategyCandidateResult,
     type StrategyExecutionContract,
-    type StrategySelectionRunSummary,
     stopKisRealtimeQuotes,
     submitKisPaperBatchOrders,
     subscribeKisRealtimeQuotes,
@@ -98,12 +95,6 @@
   let executionContractLoading = false;
   let executionContractError = '';
   let executionContractRequestId = 0;
-  let recentStrategyRuns: StrategySelectionRunSummary[] = [];
-  let selectedStrategyRunId = '';
-  let recentStrategyRunsLoading = false;
-  let recentStrategyRunsError = '';
-  let savedRunViewing = false;
-  let savedRunLabel = '';
   let brokerStatus: KisBrokerAccountStatus | null = null;
   let tradingSafety: KisTradingSafetyStatus | null = null;
   let brokerBalance: KisBrokerBalance | null = null;
@@ -170,7 +161,6 @@
       await tick();
       void loadExecutionContract(selectedStrategy);
       void loadCandidateRowsForSelectedStrategy();
-      void loadRecentStrategyRuns();
       void loadBrokerStatus();
       void loadRealtimeStatus();
     } catch (err) {
@@ -198,9 +188,6 @@
   $: customStrategyOptions = strategyOptions.filter((item) => item.sourceKind === 'custom');
   $: selectedOption =
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
-  $: if (!selectedStrategyRunId && recentStrategyRuns.length) {
-    selectedStrategyRunId = String(recentStrategyRuns[0].id);
-  }
   $: averageScore = candidateRows.length
     ? Math.round(candidateRows.reduce((total, item) => total + item.strategyScore, 0) / candidateRows.length)
     : 0;
@@ -326,7 +313,6 @@
     batchSubmitError = '';
     batchSubmitResult = null;
     proposalError = '';
-    savedRunLabel = '';
     void loadExecutionContract(selectedStrategy);
     await loadCandidateRowsForSelectedStrategy();
   }
@@ -382,10 +368,6 @@
       candidateRows = response.candidates.map(toStrategyCandidate);
       if (!buyableSymbol && candidateRows[0]?.symbol) buyableSymbol = candidateRows[0].symbol;
       candidateSource = response.source;
-      if (response.run_id) {
-        selectedStrategyRunId = String(response.run_id);
-        void loadRecentStrategyRuns();
-      }
     } catch (err) {
       if (candidateRequestId !== requestId) return;
       candidatesError = err instanceof Error ? err.message : '전략 후보 종목을 불러오지 못했습니다.';
@@ -395,53 +377,6 @@
       if (candidateRequestId === requestId) {
         candidatesLoading = false;
       }
-    }
-  }
-
-  async function loadRecentStrategyRuns() {
-    recentStrategyRunsLoading = true;
-
-    try {
-      recentStrategyRuns = await fetchStrategySelectionRuns(8);
-      recentStrategyRunsError = '';
-      if (!selectedStrategyRunId && recentStrategyRuns[0]) {
-        selectedStrategyRunId = String(recentStrategyRuns[0].id);
-      }
-    } catch (err) {
-      recentStrategyRunsError = err instanceof Error ? err.message : '최근 전략 실행 결과를 불러오지 못했습니다.';
-    } finally {
-      recentStrategyRunsLoading = false;
-    }
-  }
-
-  async function viewSelectedStrategyRun() {
-    const runId = Number(selectedStrategyRunId);
-    if (!Number.isFinite(runId) || runId <= 0) {
-      recentStrategyRunsError = '불러올 전략 실행 결과를 선택하세요.';
-      return;
-    }
-
-    savedRunViewing = true;
-    candidatesError = '';
-
-    try {
-      const response = await fetchStrategySelectionRun(runId);
-      selectedStrategy = response.strategy_code;
-      void loadExecutionContract(selectedStrategy);
-      candidateRows = response.candidates.map(toStrategyCandidate);
-      candidateSource = response.source;
-      savedRunLabel = response.run_at ? `저장 실행 ${formatDateTime(response.run_at)}` : '저장 실행 결과';
-      recentStrategyRunsError = '';
-      orderProposal = null;
-      selectedProposalSymbols = [];
-      batchConfirmPhrase = '';
-      batchSubmitError = '';
-      batchSubmitResult = null;
-      proposalError = '';
-    } catch (err) {
-      recentStrategyRunsError = err instanceof Error ? err.message : '저장된 전략 실행 결과를 불러오지 못했습니다.';
-    } finally {
-      savedRunViewing = false;
     }
   }
 
@@ -1470,42 +1405,9 @@
             ? '전략 목록 로딩 중'
             : candidatesLoading
             ? '후보 계산 중'
-            : `${savedRunLabel || candidateSourceLabel(candidateSource)} · 전략 점수 평균 ${averageScore || '-'}`}
+            : `${candidateSourceLabel(candidateSource)} · 전략 점수 평균 ${averageScore || '-'}`}
         </span>
       </div>
-      <div class="recent-run-picker">
-        <label>
-          <span>최근 전략 실행</span>
-          <select bind:value={selectedStrategyRunId} disabled={recentStrategyRunsLoading || !recentStrategyRuns.length}>
-            {#if recentStrategyRunsLoading}
-              <option value="">불러오는 중입니다</option>
-            {:else if recentStrategyRuns.length}
-              {#each recentStrategyRuns as row}
-                <option value={String(row.id)}>
-                  {formatDateTime(row.created_at)} · {row.strategy_name} · {row.result_count}개
-                  {row.top_candidates ? ` · ${row.top_candidates}` : ''}
-                </option>
-              {/each}
-            {:else}
-              <option value="">저장된 전략 실행 결과가 없습니다</option>
-            {/if}
-          </select>
-        </label>
-        <button
-          class="secondary"
-          disabled={recentStrategyRunsLoading || savedRunViewing || !selectedStrategyRunId}
-          onclick={viewSelectedStrategyRun}
-          type="button"
-        >
-          {#if savedRunViewing}
-            <span class="button-spinner dark"></span>
-          {/if}
-          보기
-        </button>
-      </div>
-      {#if recentStrategyRunsError}
-        <div class="empty-state error compact-state">{recentStrategyRunsError}</div>
-      {/if}
       {#if candidatesError}
         <div class="empty-state">{candidatesError}</div>
       {:else if loading && !selectedOption}

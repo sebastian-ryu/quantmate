@@ -122,7 +122,7 @@ MAX_DAILY_LOSS_KRW=50000
 시장 데이터 호출은 기본적으로 429/5xx 응답과 일시 네트워크 오류에 짧게 재시도한다. 필요하면 `.env`에서 아래 값을 조정한다.
 
 데이터 공급원은 백엔드 provider registry에서 역할별로 관리한다. 현재 일봉 우선순위는 `KRX Open API -> KIS Open API -> Yahoo Finance`이며, KRX 일봉은 인증 승인 후 구현할 수 있도록 어댑터 자리만 열어두었다.
-OpenDART 공시/재무제표 연동을 준비할 경우 `.env`에 아래 값을 입력한다. 서버는 고유번호 ZIP을 받아 `.run/opendart_corp_codes.json`에 캐시하고, 단일회사 전체 재무제표 조회 API로 종목별 재무제표 행과 매출/이익/마진/부채비율/ROE/ROA 요약 지표를 확인할 수 있다.
+OpenDART 공시/재무제표 연동을 준비할 경우 `.env`에 아래 값을 입력한다. 서버는 고유번호 ZIP을 받아 `.run/opendart_corp_codes.json`에 캐시하고, 단일회사 전체 재무제표 조회 API로 종목별 재무제표 행과 매출/이익/마진/부채비율/ROE/ROA 요약 지표를 확인할 수 있다. 저장 API를 호출하거나 전략 후보를 열면 OpenDART 요약이 `fundamental_ratios`에 저장되어 검색기/전략 후보 재무 필드 보강에 사용된다.
 
 ```env
 OPEN_DART_API_KEY=발급받은_OPEN_DART_API_KEY
@@ -137,6 +137,7 @@ OPENDART_REQUEST_MIN_INTERVAL_SECONDS=0.2
 curl http://127.0.0.1:8000/api/data/opendart/corp-codes/status
 curl -X POST "http://127.0.0.1:8000/api/data/opendart/corp-codes/cache?force_refresh=true"
 curl "http://127.0.0.1:8000/api/data/opendart/financial-statements?symbol=005930&business_year=2025&report_code=11011&fs_div=CFS"
+curl -X POST "http://127.0.0.1:8000/api/data/opendart/financial-statements/import?symbol=005930&business_year=2025&report_code=11011&fs_div=CFS"
 ```
 
 미국 시장 확장을 위한 NYSE/Nasdaq 정규 휴장일 캘린더도 제공한다. 현재는 정규 휴장일 계산만 포함하고 조기폐장은 별도 확장 대상으로 둔다.

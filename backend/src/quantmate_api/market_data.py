@@ -704,8 +704,18 @@ def summarize_open_dart_financial_statements(rows: list[dict[str, Any]]) -> dict
     assets = open_dart_account_amount(rows, "assets")
     liabilities = open_dart_account_amount(rows, "liabilities")
     equity = open_dart_account_amount(rows, "equity")
+    current_assets = open_dart_account_amount(rows, "current_assets")
+    current_liabilities = open_dart_account_amount(rows, "current_liabilities")
     operating_cash_flow = open_dart_account_amount(rows, "operating_cash_flow")
     capex = open_dart_account_amount(rows, "capex")
+    cash_and_cash_equivalents = open_dart_account_amount(rows, "cash_and_cash_equivalents")
+    depreciation_amortization = open_dart_account_amount(rows, "depreciation_amortization")
+    dividends_paid = open_dart_cash_outflow_amount(rows, "dividends_paid")
+    previous_dividends_paid = open_dart_cash_outflow_amount(rows, "dividends_paid", previous=True)
+    ebitda = open_dart_ebitda(
+        operating_income=operating_income,
+        depreciation_amortization=depreciation_amortization,
+    )
 
     return {
         "revenue": revenue,
@@ -714,15 +724,23 @@ def summarize_open_dart_financial_statements(rows: list[dict[str, Any]]) -> dict
         "assets": assets,
         "liabilities": liabilities,
         "equity": equity,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
         "operating_cash_flow": operating_cash_flow,
         "capex": capex,
+        "cash_and_cash_equivalents": cash_and_cash_equivalents,
+        "depreciation_amortization": depreciation_amortization,
+        "ebitda": ebitda,
+        "dividends_paid": dividends_paid,
         "free_cash_flow": open_dart_free_cash_flow(operating_cash_flow=operating_cash_flow, capex=capex),
+        "dividend_growth": percent_change(dividends_paid, previous_dividends_paid),
         "revenue_growth": percent_change(revenue, previous_revenue),
         "operating_income_growth": percent_change(operating_income, previous_operating_income),
         "net_income_growth": percent_change(net_income, previous_net_income),
         "operating_margin": percent_ratio(operating_income, revenue),
         "net_margin": percent_ratio(net_income, revenue),
         "debt_ratio": percent_ratio(liabilities, equity),
+        "current_ratio": percent_ratio(current_assets, current_liabilities),
         "roe": percent_ratio(net_income, equity),
         "roa": percent_ratio(net_income, assets),
     }
@@ -2119,6 +2137,25 @@ def open_dart_account_amount(
 def open_dart_account_matches(row: dict[str, Any], account_key: str) -> bool:
     account_id = str(row.get("account_id") or "").lower()
     account_name = str(row.get("account_name") or "").replace(" ", "")
+    normalized_account_id = "".join(character for character in account_id if character.isalnum())
+
+    exact_balance_sheet_matchers = {
+        "assets": (
+            ("ifrsfullassets", "assets"),
+            ("자산총계",),
+        ),
+        "liabilities": (
+            ("ifrsfullliabilities", "liabilities"),
+            ("부채총계",),
+        ),
+        "equity": (
+            ("ifrsfullequity", "equity"),
+            ("자본총계",),
+        ),
+    }
+    if account_key in exact_balance_sheet_matchers:
+        exact_id_patterns, exact_name_patterns = exact_balance_sheet_matchers[account_key]
+        return normalized_account_id in exact_id_patterns or account_name in exact_name_patterns
 
     matchers = {
         "revenue": (
@@ -2145,6 +2182,14 @@ def open_dart_account_matches(row: dict[str, Any], account_key: str) -> bool:
             ("equity", "equityattributabletoownersofparent"),
             ("자본총계", "지배기업소유주지분"),
         ),
+        "current_assets": (
+            ("currentassets",),
+            ("유동자산",),
+        ),
+        "current_liabilities": (
+            ("currentliabilities",),
+            ("유동부채",),
+        ),
         "operating_cash_flow": (
             ("cashflowsfromusedinoperatingactivities",),
             ("영업활동현금흐름", "영업활동으로인한현금흐름"),
@@ -2152,6 +2197,18 @@ def open_dart_account_matches(row: dict[str, Any], account_key: str) -> bool:
         "capex": (
             ("purchaseofpropertyplantandequipment", "paymentsforpurchaseofpropertyplantandequipment"),
             ("유형자산의취득", "유형자산취득"),
+        ),
+        "cash_and_cash_equivalents": (
+            ("cashandcashequivalents",),
+            ("현금및현금성자산",),
+        ),
+        "depreciation_amortization": (
+            ("depreciationandamortizationexpense", "depreciationdepletionandamortization"),
+            ("감가상각비", "감가상각비및무형자산상각비", "유무형자산상각비"),
+        ),
+        "dividends_paid": (
+            ("dividendspaidclassifiedasfinancingactivities", "cashdividendspaid", "dividendspaid"),
+            ("배당금지급", "배당금의지급", "현금배당", "현금배당금지급"),
         ),
     }
 
@@ -2171,6 +2228,30 @@ def open_dart_free_cash_flow(
     if capex < 0:
         return operating_cash_flow + capex
     return operating_cash_flow - capex
+
+
+def open_dart_cash_outflow_amount(
+    rows: list[dict[str, Any]],
+    account_key: str,
+    *,
+    previous: bool = False,
+) -> int | None:
+    amount = open_dart_account_amount(rows, account_key, previous=previous)
+    if amount is None:
+        return None
+    return abs(amount)
+
+
+def open_dart_ebitda(
+    *,
+    operating_income: int | None,
+    depreciation_amortization: int | None,
+) -> int | None:
+    if operating_income is None:
+        return None
+    if depreciation_amortization is None:
+        return operating_income
+    return operating_income + abs(depreciation_amortization)
 
 
 def percent_change(current: int | None, previous: int | None) -> float | None:

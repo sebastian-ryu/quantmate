@@ -40,6 +40,7 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def disable_kis_auto_import_by_default(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: False)
+    monkeypatch.setattr(main_module, "is_open_dart_ready", lambda: False)
     monkeypatch.delenv("DAILY_LOSS_STOP_ENABLED", raising=False)
     monkeypatch.delenv("EMERGENCY_STOP_ENABLED", raising=False)
     monkeypatch.delenv("MANUAL_ORDER_CONFIRMATION_REQUIRED", raising=False)
@@ -858,6 +859,8 @@ def test_strategy_execution_contract_reports_shared_modes(monkeypatch) -> None:
     assert response.status_code == 200
     assert data["strategy_code"] == "relative-momentum-swing"
     assert data["provider_priority"] == ["KRX Open API", "KIS Open API", "Yahoo Finance"]
+    assert data["backtest_policy"]["holding_count"] == 10
+    assert data["backtest_policy"]["rebalance_label"] == "월 1회"
     assert modes["screen"]["enabled"] is True
     assert modes["backtest"]["endpoint"] == "/api/backtests/run"
     assert modes["paper-order-proposal"]["enabled"] is True
@@ -1131,7 +1134,84 @@ def test_strategy_candidates_enrich_with_kis_fundamentals(monkeypatch) -> None:
     assert samsung["psr"] == pytest.approx(0.09, abs=0.01)
     assert samsung["net_margin"] == pytest.approx(3.5, abs=0.01)
     assert samsung["roa"] == pytest.approx(11.05, abs=0.01)
-    assert "KIS 재무비율로 성장성/수익성/밸류에이션을 보강" in samsung["rationale"]
+    assert "KIS 재무 지표로 성장성/수익성/밸류에이션을 보강" in samsung["rationale"]
+
+
+def test_strategy_candidates_enrich_with_open_dart_fundamentals(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=date(2026, 1, 1),
+        days=40,
+    )
+
+    with session_factory() as session:
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == "005930"))
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period="202512",
+                period_type="annual",
+                provider=main_module.OPEN_DART_FUNDAMENTAL_PROVIDER,
+                revenue_growth=20.0,
+                operating_income_growth=50.0,
+                net_income_growth=40.0,
+                roe=7.5,
+                roa=4.5,
+                operating_margin=15.0,
+                net_margin=7.5,
+                fcf_yield=5.25,
+                ev_ebitda=8.75,
+                dividend_yield=2.4,
+                payout_ratio=30.0,
+                current_ratio=180.0,
+                dividend_growth=12.0,
+                dividends_paid=30.0,
+                dividend_streak_years=1,
+                dividend_stability_score=78,
+                eps=None,
+                sps=None,
+                bps=None,
+                reserve_ratio=None,
+                debt_ratio=66.67,
+            )
+        )
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period="202412",
+                period_type="annual",
+                provider=main_module.OPEN_DART_FUNDAMENTAL_PROVIDER,
+                dividends_paid=20.0,
+                debt_ratio=70.0,
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+    samsung = next(item for item in data["candidates"] if item["symbol"] == "005930")
+
+    assert response.status_code == 200
+    assert "OpenDART 재무" in data["source"]
+    assert samsung["revenue_growth"] == 20.0
+    assert samsung["operating_income_growth"] == 50.0
+    assert samsung["eps_growth"] == 40.0
+    assert samsung["roe"] == 7.5
+    assert samsung["roa"] == 4.5
+    assert samsung["operating_margin"] == 15.0
+    assert samsung["net_margin"] == 7.5
+    assert samsung["fcf_yield"] == 5.25
+    assert samsung["ev_ebitda"] == 8.75
+    assert samsung["dividend_yield"] == 2.4
+    assert samsung["payout_ratio"] == 30.0
+    assert samsung["current_ratio"] == 180.0
+    assert samsung["dividend_growth"] == 12.0
+    assert samsung["dividend_streak_years"] == 2
+    assert samsung["dividend_stability_score"] == 78
+    assert samsung["debt_ratio"] == 66.67
+    assert "OpenDART 재무 지표로 성장성/수익성/밸류에이션을 보강" in samsung["rationale"]
 
 
 def test_strategy_candidates_enrich_with_kis_risk_indicators(monkeypatch) -> None:
@@ -1386,6 +1466,8 @@ def test_backtest_run_returns_monthly_equity_curve(monkeypatch) -> None:
     assert data["period"] == "2024 ~ 2025"
     assert data["initial_amount"] == 10000000
     assert data["final_amount"] != data["initial_amount"]
+    assert data["backtest_policy"]["holding_count"] == 10
+    assert data["backtest_policy"]["initial_rebalance_amount"] == 1000000
     assert len(data["annual_returns"]) == 2
     assert len(data["equity_curve"]) == 24
     assert data["equity_curve"][0]["label"] == "2024.01"
@@ -1454,6 +1536,9 @@ def test_daily_price_backtest_uses_strategy_parameters() -> None:
     assert "상위 20개" in result["notice"]
     assert "분기 1회" in result["notice"]
     assert "거래비용 0.20%" in result["notice"]
+    assert result["backtest_policy"]["holding_count"] == 20
+    assert result["backtest_policy"]["rebalance_interval_months"] == 3
+    assert result["backtest_policy"]["initial_rebalance_amount"] == 500000
     assert result["rebalance_history"]
     assert len(result["rebalance_history"]) < len(result["equity_curve"])
     assert {row["holdings"] for row in result["rebalance_history"]} == {"20종목"}
@@ -1762,6 +1847,7 @@ def test_backtest_run_persists_recent_summary(monkeypatch) -> None:
     assert detail["run_id"] == data["run_id"]
     assert detail["strategy_code"] == "trend-breakout"
     assert detail["equity_curve"] == data["equity_curve"]
+    assert detail["backtest_policy"] == data["backtest_policy"]
 
 
 def test_backtest_run_adds_selected_benchmark_curve(monkeypatch) -> None:
@@ -1964,6 +2050,8 @@ def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
         {"label": "2026.01", "benchmark": 1000000},
         {"label": "2026.02", "benchmark": 1155000},
     ]
+    assert data["backtest_policy"]["holding_count"] == 10
+    assert data["backtest_policy"]["initial_rebalance_amount"] == 100000
 
 
 def test_data_status_returns_table_counts(monkeypatch) -> None:
@@ -2161,6 +2249,220 @@ def test_open_dart_financial_statements_endpoint(monkeypatch) -> None:
     assert data["count"] == 1
     assert data["items"][0]["account_id"] == "ifrs-full_Revenue"
     assert data["summary"]["revenue"] == 300000000000000
+
+
+def test_import_open_dart_financial_statements_saves_summary(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_open_dart_financial_statements(
+        *,
+        symbol: str,
+        business_year: int,
+        report_code: str = "11011",
+        fs_div: str = "CFS",
+        force_refresh_corp_codes: bool = False,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert business_year == 2025
+        assert report_code == "11011"
+        assert fs_div == "CFS"
+        assert force_refresh_corp_codes is False
+        base = {
+            "provider": "OpenDART",
+            "symbol": "005930",
+            "corp_code": "00126380",
+            "corp_name": "삼성전자",
+            "business_year": 2025,
+            "report_code": "11011",
+            "fs_div": "CFS",
+            "receipt_no": "20260301000001",
+            "statement_name": "테스트 재무제표",
+            "account_detail": "",
+            "current_term_name": "제57기",
+            "current_accumulated_amount": None,
+            "previous_term_name": "제56기",
+            "previous_accumulated_amount": None,
+            "currency": "KRW",
+        }
+        return [
+            {
+                **base,
+                "statement_type": "IS",
+                "account_id": "ifrs-full_Revenue",
+                "account_name": "매출액",
+                "current_amount": 1200,
+                "previous_amount": 1000,
+            },
+            {
+                **base,
+                "statement_type": "IS",
+                "account_id": "dart_OperatingIncomeLoss",
+                "account_name": "영업이익",
+                "current_amount": 180,
+                "previous_amount": 120,
+            },
+            {
+                **base,
+                "statement_type": "IS",
+                "account_id": "ifrs-full_ProfitLoss",
+                "account_name": "당기순이익",
+                "current_amount": 90,
+                "previous_amount": 60,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_Assets",
+                "account_name": "자산총계",
+                "current_amount": 2000,
+                "previous_amount": 1800,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_EquityAndLiabilities",
+                "account_name": "부채와자본총계",
+                "current_amount": 2000,
+                "previous_amount": 1800,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_Liabilities",
+                "account_name": "부채총계",
+                "current_amount": 800,
+                "previous_amount": 700,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_CurrentAssets",
+                "account_name": "유동자산",
+                "current_amount": 900,
+                "previous_amount": 850,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_CurrentLiabilities",
+                "account_name": "유동부채",
+                "current_amount": 450,
+                "previous_amount": 425,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_Equity",
+                "account_name": "자본총계",
+                "current_amount": 1200,
+                "previous_amount": 1100,
+            },
+            {
+                **base,
+                "statement_type": "BS",
+                "account_id": "ifrs-full_CashAndCashEquivalents",
+                "account_name": "현금및현금성자산",
+                "current_amount": 300,
+                "previous_amount": 250,
+            },
+            {
+                **base,
+                "statement_type": "IS",
+                "account_id": "ifrs-full_DepreciationAndAmortizationExpense",
+                "account_name": "감가상각비및무형자산상각비",
+                "current_amount": 20,
+                "previous_amount": 18,
+            },
+            {
+                **base,
+                "statement_type": "CF",
+                "account_id": "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+                "account_name": "영업활동현금흐름",
+                "current_amount": 150,
+                "previous_amount": 120,
+            },
+            {
+                **base,
+                "statement_type": "CF",
+                "account_id": "dart_PurchaseOfPropertyPlantAndEquipment",
+                "account_name": "유형자산의 취득",
+                "current_amount": 40,
+                "previous_amount": 35,
+            },
+            {
+                **base,
+                "statement_type": "CF",
+                "account_id": "ifrs-full_DividendsPaidClassifiedAsFinancingActivities",
+                "account_name": "배당금의 지급",
+                "current_amount": -30,
+                "previous_amount": -20,
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_open_dart_financial_statements", fake_fetch_open_dart_financial_statements)
+
+    with session_factory() as session:
+        market = Market(code="KR", name="Korea", country="KR", currency="KRW", timezone="Asia/Seoul")
+        session.add(market)
+        session.flush()
+        instrument = Instrument(
+            market_id=market.id,
+            symbol="005930",
+            name="삼성전자",
+            exchange="KOSPI",
+            asset_type="stock",
+            is_active=True,
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(
+            QuoteSnapshot(
+                instrument_id=instrument.id,
+                snapshot_date=date(2026, 6, 21),
+                provider=main_module.KIS_QUOTE_SNAPSHOT_PROVIDER,
+                market_cap=10000,
+                price=70000,
+                change_pct=0,
+                volume=1000000,
+                trading_value=70000000000,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/data/opendart/financial-statements/import"
+        "?symbol=005930&business_year=2025&report_code=11011&fs_div=CFS"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == main_module.OPEN_DART_FUNDAMENTAL_PROVIDER
+    assert data["saved_count"] == 1
+    assert data["summary"]["debt_ratio"] == 66.67
+    assert data["summary"]["current_ratio"] == 200.0
+    assert data["summary"]["operating_margin"] == 15.0
+    assert data["summary"]["free_cash_flow"] == 110
+    assert data["summary"]["dividends_paid"] == 30
+    assert data["summary"]["ebitda"] == 200
+    assert data["summary"]["dividend_growth"] == 50.0
+
+    with session_factory() as session:
+        ratio = session.scalar(
+            select(FundamentalRatio).where(FundamentalRatio.provider == main_module.OPEN_DART_FUNDAMENTAL_PROVIDER)
+        )
+
+    assert ratio is not None
+    assert ratio.fiscal_period == "202512"
+    assert float(ratio.roe) == 7.5
+    assert float(ratio.roa) == 4.5
+    assert float(ratio.operating_margin) == 15.0
+    assert float(ratio.current_ratio) == 200.0
+    assert float(ratio.free_cash_flow) == 110
+    assert float(ratio.fcf_yield) == 1.1
+    assert float(ratio.dividends_paid) == 30
+    assert float(ratio.dividend_yield) == 0.3
+    assert float(ratio.payout_ratio) == pytest.approx(33.3333, abs=0.0001)
+    assert float(ratio.ev_ebitda) == 52.5
 
 
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:

@@ -14,7 +14,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
-from quantmate_api.backtest_engine import build_daily_price_backtest, build_sample_backtest
+from quantmate_api.backtest_engine import (
+    backtest_policy_for_strategy,
+    build_daily_price_backtest,
+    build_sample_backtest,
+)
 from quantmate_api.db import SessionLocal
 from quantmate_api.kis_realtime import kis_realtime_quote_service
 from quantmate_api.market_calendar import market_calendar_range
@@ -45,6 +49,7 @@ from quantmate_api.market_data import (
     has_kis_account_credentials,
     is_kis_open_api_ready,
     is_kis_paper_trading,
+    is_open_dart_ready,
     mask_kis_account,
     normalize_market_code,
     normalize_yahoo_symbol,
@@ -195,6 +200,19 @@ class StrategyExecutionModeContract(BaseModel):
     note: str
 
 
+class BacktestPolicyResponse(BaseModel):
+    rebalance_interval_months: int
+    rebalance_label: str
+    rebalance_timing: str
+    return_price_basis: str
+    holding_count: int
+    weighting_method: str
+    rebalance_amount_rule: str
+    initial_rebalance_amount: int | None = None
+    trading_cost_pct: float
+    slippage_pct: float
+
+
 class StrategyExecutionContractResponse(BaseModel):
     strategy_code: str
     strategy_name: str
@@ -202,6 +220,7 @@ class StrategyExecutionContractResponse(BaseModel):
     summary: str
     formula: str
     provider_priority: list[str]
+    backtest_policy: BacktestPolicyResponse
     safety_controls: list[str]
     modes: list[StrategyExecutionModeContract]
 
@@ -318,6 +337,7 @@ class BacktestRunResponse(BaseModel):
     benchmark_code: str = "none"
     benchmark_name: str = ""
     benchmark_curve: list[BacktestBenchmarkPoint] = Field(default_factory=list)
+    backtest_policy: BacktestPolicyResponse
     metrics: list[BacktestPerformanceMetric]
     annual_returns: list[BacktestAnnualReturn]
     equity_curve: list[BacktestEquityPoint]
@@ -510,15 +530,23 @@ class OpenDartFinancialSummaryResponse(BaseModel):
     assets: int | None = None
     liabilities: int | None = None
     equity: int | None = None
+    current_assets: int | None = None
+    current_liabilities: int | None = None
     operating_cash_flow: int | None = None
     capex: int | None = None
+    cash_and_cash_equivalents: int | None = None
+    depreciation_amortization: int | None = None
+    ebitda: int | None = None
+    dividends_paid: int | None = None
     free_cash_flow: int | None = None
+    dividend_growth: float | None = None
     revenue_growth: float | None = None
     operating_income_growth: float | None = None
     net_income_growth: float | None = None
     operating_margin: float | None = None
     net_margin: float | None = None
     debt_ratio: float | None = None
+    current_ratio: float | None = None
     roe: float | None = None
     roa: float | None = None
 
@@ -532,6 +560,17 @@ class OpenDartFinancialStatementResponse(BaseModel):
     count: int
     summary: OpenDartFinancialSummaryResponse
     items: list[OpenDartFinancialStatementItem]
+
+
+class OpenDartFinancialStatementImportResponse(BaseModel):
+    provider: str
+    symbol: str
+    business_year: int
+    report_code: str
+    fs_div: str
+    count: int
+    saved_count: int
+    summary: OpenDartFinancialSummaryResponse
 
 
 class KisBrokerAccountStatusResponse(BaseModel):
@@ -922,6 +961,9 @@ class KisFinancialRatioItem(BaseModel):
     operating_income_growth: float | None = None
     net_income_growth: float | None = None
     roe: float | None = None
+    roa: float | None = None
+    operating_margin: float | None = None
+    net_margin: float | None = None
     eps: float | None = None
     sps: float | None = None
     bps: float | None = None
@@ -1722,6 +1764,12 @@ KIS_RISK_INDICATOR_PROVIDER = "KIS Risk Indicator"
 KIS_RISK_INDICATOR_COOLDOWN_UNTIL: datetime | None = None
 KIS_FUNDAMENTAL_PROVIDER = "KIS Financial Ratio"
 KIS_FUNDAMENTAL_COOLDOWN_UNTIL: datetime | None = None
+OPEN_DART_FUNDAMENTAL_PROVIDER = "OpenDART Financial Statement"
+OPEN_DART_FUNDAMENTAL_COOLDOWN_UNTIL: datetime | None = None
+FUNDAMENTAL_PROVIDER_LABELS = {
+    KIS_FUNDAMENTAL_PROVIDER: "KIS 재무",
+    OPEN_DART_FUNDAMENTAL_PROVIDER: "OpenDART 재무",
+}
 DEFAULT_DAILY_PRICE_PROVIDER_PRIORITY = daily_price_provider_names()
 
 
@@ -1853,6 +1901,10 @@ def _saved_backtest_response(run: BacktestRun) -> BacktestRunResponse:
     payload.setdefault("benchmark_code", "none")
     payload.setdefault("benchmark_name", "")
     payload.setdefault("benchmark_curve", [])
+    payload.setdefault(
+        "backtest_policy",
+        backtest_policy_for_strategy(run.strategy_code, initial_amount=run.initial_amount),
+    )
     _attach_saved_benchmark_curve_if_missing(payload=payload, run=run)
 
     return BacktestRunResponse(**payload)
@@ -2595,7 +2647,7 @@ def _build_daily_price_strategy_candidates_if_available(
             candidates=candidates,
             fundamentals=fundamentals,
         )
-        provider = f"{provider} + KIS 재무"
+        provider = f"{provider} + {_fundamental_provider_source_label(fundamentals)}"
 
     if supply_flows:
         candidates = enrich_strategy_candidates_with_supply_flows(
@@ -2614,6 +2666,19 @@ def _build_daily_price_strategy_candidates_if_available(
     candidates = apply_candidate_quality_filters(strategy_code, candidates, limit=safe_limit)
 
     return f"daily-price-candidates:{provider}", candidates
+
+
+def _fundamental_provider_source_label(fundamentals: dict[str, dict[str, object]]) -> str:
+    labels: list[str] = []
+    for metrics in fundamentals.values():
+        provider_label = str(metrics.get("provider_label") or "").strip()
+        if not provider_label:
+            continue
+        for label in provider_label.split(" + "):
+            if label and label not in labels:
+                labels.append(label)
+
+    return " + ".join(labels) if labels else "재무"
 
 
 def _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
@@ -2940,6 +3005,118 @@ def _pause_kis_fundamental_import(*, minutes: int) -> None:
     KIS_FUNDAMENTAL_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
 
 
+def _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 6,
+) -> None:
+    if not is_open_dart_ready():
+        return
+    if _is_open_dart_fundamental_in_cooldown():
+        return
+
+    safe_limit = max(1, min(max_symbols, 4))
+    candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
+    symbols = [str(item["symbol"]) for item in candidates]
+    if not symbols:
+        return
+
+    try:
+        with SessionLocal() as session:
+            fresh_symbols = set(
+                session.scalars(
+                    select(Instrument.symbol)
+                    .join(FundamentalRatio, FundamentalRatio.instrument_id == Instrument.id)
+                    .where(
+                        Instrument.symbol.in_(symbols),
+                        FundamentalRatio.provider == OPEN_DART_FUNDAMENTAL_PROVIDER,
+                        FundamentalRatio.period_type == "annual",
+                        FundamentalRatio.fiscal_period.in_(
+                            [f"{business_year}12" for business_year in _open_dart_candidate_business_years()]
+                        ),
+                    )
+                    .distinct()
+                ).all()
+            )
+    except SQLAlchemyError:
+        return
+
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        if symbol in fresh_symbols:
+            continue
+
+        try:
+            business_year, _items, summary = _fetch_latest_open_dart_financial_summary(symbol=symbol)
+            with SessionLocal() as session:
+                _save_open_dart_fundamental_summary(
+                    session=session,
+                    symbol=symbol,
+                    name=str(candidate["name"]),
+                    exchange=str(candidate["exchange"]),
+                    business_year=business_year,
+                    summary=summary,
+                )
+        except MarketDataProviderUnavailable as exc:
+            if _is_open_dart_temporary_limit_error(exc):
+                _pause_open_dart_fundamental_import(minutes=30)
+                break
+            continue
+        except (SQLAlchemyError, ValueError):
+            continue
+
+
+def _open_dart_candidate_business_years(max_years: int = 3) -> list[int]:
+    latest_year = today_kst().year - 1
+    earliest_year = max(2015, latest_year - max(1, max_years) + 1)
+    return list(range(latest_year, earliest_year - 1, -1))
+
+
+def _fetch_latest_open_dart_financial_summary(
+    *,
+    symbol: str,
+    report_code: str = "11011",
+    fs_div: str = "CFS",
+) -> tuple[int, list[dict[str, object]], dict[str, object]]:
+    for business_year in _open_dart_candidate_business_years():
+        items = fetch_open_dart_financial_statements(
+            symbol=symbol,
+            business_year=business_year,
+            report_code=report_code,
+            fs_div=fs_div,
+        )
+        if not items:
+            continue
+
+        summary = summarize_open_dart_financial_statements(items)
+        if any(value is not None for value in summary.values()):
+            return business_year, items, summary
+
+    raise MarketDataProviderUnavailable(f"OpenDART에서 {symbol}의 최근 사업보고서 재무요약을 찾지 못했습니다.")
+
+
+def _is_open_dart_fundamental_in_cooldown() -> bool:
+    return OPEN_DART_FUNDAMENTAL_COOLDOWN_UNTIL is not None and OPEN_DART_FUNDAMENTAL_COOLDOWN_UNTIL > now_kst_naive()
+
+
+def _pause_open_dart_fundamental_import(*, minutes: int) -> None:
+    global OPEN_DART_FUNDAMENTAL_COOLDOWN_UNTIL
+    OPEN_DART_FUNDAMENTAL_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
+
+
+def _is_open_dart_temporary_limit_error(exc: MarketDataProviderUnavailable) -> bool:
+    message = str(exc)
+    temporary_fragments = (
+        "사용한도를 초과",
+        "사용한도",
+        "too many",
+        "429",
+        "temporarily",
+        "timeout",
+    )
+    return any(fragment in message for fragment in temporary_fragments)
+
+
 def _is_kis_temporary_limit_error(exc: MarketDataProviderUnavailable) -> bool:
     message = str(exc)
     temporary_fragments = (
@@ -3036,6 +3213,10 @@ def _load_strategy_candidate_result(
 
     if daily_price_candidates is not None:
         _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=min(target_count, 4),
+        )
+        _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 4),
         )
@@ -3324,33 +3505,66 @@ def _load_fundamental_metrics_by_symbol(
         .join(Instrument, Instrument.id == FundamentalRatio.instrument_id)
         .where(
             Instrument.symbol.in_(symbols),
-            FundamentalRatio.provider == KIS_FUNDAMENTAL_PROVIDER,
+            FundamentalRatio.provider.in_([KIS_FUNDAMENTAL_PROVIDER, OPEN_DART_FUNDAMENTAL_PROVIDER]),
             FundamentalRatio.period_type == "annual",
         )
-        .order_by(Instrument.symbol, FundamentalRatio.fiscal_period.desc())
+        .order_by(Instrument.symbol, FundamentalRatio.provider, FundamentalRatio.fiscal_period.desc())
     ).all()
 
-    rows_by_symbol: dict[str, list[FundamentalRatio]] = {}
+    rows_by_symbol_provider: dict[str, dict[str, list[FundamentalRatio]]] = {}
     for symbol, ratio in rows:
-        rows_by_symbol.setdefault(str(symbol), []).append(ratio)
+        rows_by_symbol_provider.setdefault(str(symbol), {}).setdefault(ratio.provider, []).append(ratio)
 
     metrics: dict[str, dict[str, object]] = {}
-    for normalized_symbol, ratios in rows_by_symbol.items():
-        ratio = _select_fundamental_ratio_for_candidate(ratios)
-        if ratio is None:
-            continue
-        metrics[normalized_symbol] = {
-            "fiscal_period": ratio.fiscal_period,
-            "revenue_growth": _decimal_or_float(ratio.revenue_growth),
-            "operating_income_growth": _decimal_or_float(ratio.operating_income_growth),
-            "net_income_growth": _decimal_or_float(ratio.net_income_growth),
-            "roe": _decimal_or_float(ratio.roe),
-            "eps": _decimal_or_float(ratio.eps),
-            "sps": _decimal_or_float(ratio.sps),
-            "bps": _decimal_or_float(ratio.bps),
-            "reserve_ratio": _decimal_or_float(ratio.reserve_ratio),
-            "debt_ratio": _decimal_or_float(ratio.debt_ratio),
-        }
+    for normalized_symbol, ratios_by_provider in rows_by_symbol_provider.items():
+        merged: dict[str, object] = {}
+        provider_labels: list[str] = []
+        for provider in (KIS_FUNDAMENTAL_PROVIDER, OPEN_DART_FUNDAMENTAL_PROVIDER):
+            ratio = _select_fundamental_ratio_for_candidate(ratios_by_provider.get(provider, []))
+            if ratio is None:
+                continue
+            provider_labels.append(FUNDAMENTAL_PROVIDER_LABELS.get(provider, provider))
+            provider_values = {
+                "fiscal_period": ratio.fiscal_period,
+                "revenue_growth": _decimal_or_float(ratio.revenue_growth),
+                "operating_income_growth": _decimal_or_float(ratio.operating_income_growth),
+                "net_income_growth": _decimal_or_float(ratio.net_income_growth),
+                "roe": _decimal_or_float(ratio.roe),
+                "roa": _decimal_or_float(ratio.roa),
+                "operating_margin": _decimal_or_float(ratio.operating_margin),
+                "net_margin": _decimal_or_float(ratio.net_margin),
+                "free_cash_flow": _decimal_or_float(ratio.free_cash_flow),
+                "dividends_paid": _decimal_or_float(ratio.dividends_paid),
+                "current_assets": _decimal_or_float(ratio.current_assets),
+                "current_liabilities": _decimal_or_float(ratio.current_liabilities),
+                "cash_and_cash_equivalents": _decimal_or_float(ratio.cash_and_cash_equivalents),
+                "ebitda": _decimal_or_float(ratio.ebitda),
+                "fcf_yield": _decimal_or_float(ratio.fcf_yield),
+                "ev_ebitda": _decimal_or_float(ratio.ev_ebitda),
+                "dividend_yield": _decimal_or_float(ratio.dividend_yield),
+                "payout_ratio": _decimal_or_float(ratio.payout_ratio),
+                "current_ratio": _decimal_or_float(ratio.current_ratio),
+                "dividend_growth": _decimal_or_float(ratio.dividend_growth),
+                "dividend_streak_years": ratio.dividend_streak_years,
+                "dividend_stability_score": ratio.dividend_stability_score,
+                "eps": _decimal_or_float(ratio.eps),
+                "sps": _decimal_or_float(ratio.sps),
+                "bps": _decimal_or_float(ratio.bps),
+                "reserve_ratio": _decimal_or_float(ratio.reserve_ratio),
+                "debt_ratio": _decimal_or_float(ratio.debt_ratio),
+            }
+            for key, value in provider_values.items():
+                if value is not None:
+                    merged[key] = value
+
+        if merged:
+            dividend_streak_years = _dividend_streak_years_from_ratios(
+                ratios_by_provider.get(OPEN_DART_FUNDAMENTAL_PROVIDER, [])
+            )
+            if dividend_streak_years is not None:
+                merged["dividend_streak_years"] = dividend_streak_years
+            merged["provider_label"] = " + ".join(provider_labels)
+            metrics[normalized_symbol] = merged
 
     return metrics
 
@@ -3374,11 +3588,55 @@ def _select_fundamental_ratio_for_candidate(ratios: list[FundamentalRatio]) -> F
                 ratio.operating_income_growth,
                 ratio.net_income_growth,
                 ratio.roe,
+                ratio.roa,
+                ratio.operating_margin,
+                ratio.net_margin,
+                ratio.free_cash_flow,
+                ratio.dividends_paid,
+                ratio.current_ratio,
+                ratio.ebitda,
+                ratio.fcf_yield,
+                ratio.ev_ebitda,
+                ratio.dividend_yield,
+                ratio.payout_ratio,
+                ratio.dividend_growth,
+                ratio.dividend_streak_years,
+                ratio.dividend_stability_score,
                 ratio.debt_ratio,
             )
         )
     ]
     return non_empty_rows[0] if non_empty_rows else ordered[0]
+
+
+def _dividend_streak_years_from_ratios(ratios: list[FundamentalRatio]) -> int | None:
+    yearly_rows: dict[int, FundamentalRatio] = {}
+    for ratio in ratios:
+        if ratio.dividends_paid is None:
+            continue
+        try:
+            fiscal_year = int(str(ratio.fiscal_period)[:4])
+        except ValueError:
+            continue
+        existing = yearly_rows.get(fiscal_year)
+        if existing is None or str(ratio.fiscal_period) > str(existing.fiscal_period):
+            yearly_rows[fiscal_year] = ratio
+
+    if not yearly_rows:
+        return None
+
+    streak = 0
+    expected_year: int | None = None
+    for fiscal_year in sorted(yearly_rows, reverse=True):
+        if expected_year is not None and fiscal_year != expected_year:
+            break
+        dividends_paid = _decimal_or_none(yearly_rows[fiscal_year].dividends_paid)
+        if dividends_paid is None or dividends_paid <= 0:
+            break
+        streak += 1
+        expected_year = fiscal_year - 1
+
+    return streak
 
 
 def _load_risk_indicator_metrics_by_symbol(
@@ -3627,6 +3885,7 @@ def _strategy_execution_contract(strategy_code: str) -> StrategyExecutionContrac
         summary=summary,
         formula=formula,
         provider_priority=_daily_price_provider_priority(),
+        backtest_policy=backtest_policy_for_strategy(strategy_code),
         safety_controls=[
             "PAPER_TRADING_ENABLED",
             "EMERGENCY_STOP_ENABLED",
@@ -4302,6 +4561,56 @@ async def open_dart_financial_statements(
         count=len(items),
         summary=OpenDartFinancialSummaryResponse(**summarize_open_dart_financial_statements(items)),
         items=[OpenDartFinancialStatementItem(**item) for item in items],
+    )
+
+
+@app.post("/api/data/opendart/financial-statements/import")
+async def import_open_dart_financial_statements(
+    symbol: str,
+    business_year: int,
+    report_code: str = "11011",
+    fs_div: str = "CFS",
+    exchange: str = "KOSPI",
+    force_refresh_corp_codes: bool = False,
+) -> OpenDartFinancialStatementImportResponse:
+    try:
+        items = fetch_open_dart_financial_statements(
+            symbol=symbol,
+            business_year=business_year,
+            report_code=report_code,
+            fs_div=fs_div,
+            force_refresh_corp_codes=force_refresh_corp_codes,
+        )
+        summary = summarize_open_dart_financial_statements(items)
+        fallback_name = str(items[0].get("corp_name") or symbol.strip().upper()) if items else symbol.strip().upper()
+        with SessionLocal() as session:
+            saved_count = _save_open_dart_fundamental_summary(
+                session=session,
+                symbol=symbol,
+                name=fallback_name,
+                exchange=exchange,
+                business_year=business_year,
+                summary=summary,
+            )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"OpenDART 재무요약 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return OpenDartFinancialStatementImportResponse(
+        provider=OPEN_DART_FUNDAMENTAL_PROVIDER,
+        symbol=symbol.strip().upper(),
+        business_year=business_year,
+        report_code=report_code.strip(),
+        fs_div=fs_div.strip().upper(),
+        count=len(items),
+        saved_count=saved_count,
+        summary=OpenDartFinancialSummaryResponse(**summary),
     )
 
 
@@ -5908,6 +6217,23 @@ def _save_kis_fundamental_ratios(
             "operating_income_growth": _decimal_or_none(row.get("operating_income_growth")),
             "net_income_growth": _decimal_or_none(row.get("net_income_growth")),
             "roe": _decimal_or_none(row.get("roe")),
+            "roa": _decimal_or_none(row.get("roa")),
+            "operating_margin": _decimal_or_none(row.get("operating_margin")),
+            "net_margin": _decimal_or_none(row.get("net_margin")),
+            "free_cash_flow": _decimal_or_none(row.get("free_cash_flow")),
+            "dividends_paid": _decimal_or_none(row.get("dividends_paid")),
+            "current_assets": _decimal_or_none(row.get("current_assets")),
+            "current_liabilities": _decimal_or_none(row.get("current_liabilities")),
+            "cash_and_cash_equivalents": _decimal_or_none(row.get("cash_and_cash_equivalents")),
+            "ebitda": _decimal_or_none(row.get("ebitda")),
+            "fcf_yield": _decimal_or_none(row.get("fcf_yield")),
+            "ev_ebitda": _decimal_or_none(row.get("ev_ebitda")),
+            "dividend_yield": _decimal_or_none(row.get("dividend_yield")),
+            "payout_ratio": _decimal_or_none(row.get("payout_ratio")),
+            "current_ratio": _decimal_or_none(row.get("current_ratio")),
+            "dividend_growth": _decimal_or_none(row.get("dividend_growth")),
+            "dividend_streak_years": _int_or_none(row.get("dividend_streak_years")),
+            "dividend_stability_score": _int_or_none(row.get("dividend_stability_score")),
             "eps": _decimal_or_none(row.get("eps")),
             "sps": _decimal_or_none(row.get("sps")),
             "bps": _decimal_or_none(row.get("bps")),
@@ -5942,6 +6268,172 @@ def _save_kis_fundamental_ratios(
 
     session.commit()
     return saved_count
+
+
+def _save_open_dart_fundamental_summary(
+    *,
+    session,
+    symbol: str,
+    name: str,
+    exchange: str,
+    business_year: int,
+    summary: dict[str, object],
+) -> int:
+    normalized_symbol = symbol.strip().upper()
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=normalized_symbol,
+        name=name or normalized_symbol,
+        exchange=exchange.strip().upper() or "KOSPI",
+    )
+    fiscal_period = f"{business_year}12"
+    market_cap = _latest_market_cap_for_instrument(session=session, instrument_id=instrument.id)
+    free_cash_flow = _decimal_or_none(summary.get("free_cash_flow"))
+    dividends_paid = _decimal_or_none(summary.get("dividends_paid"))
+    net_income = _decimal_or_none(summary.get("net_income"))
+    liabilities = _decimal_or_none(summary.get("liabilities"))
+    current_assets = _decimal_or_none(summary.get("current_assets"))
+    current_liabilities = _decimal_or_none(summary.get("current_liabilities"))
+    cash_and_cash_equivalents = _decimal_or_none(summary.get("cash_and_cash_equivalents"))
+    ebitda = _decimal_or_none(summary.get("ebitda"))
+    fcf_yield = _percent_from_amount(free_cash_flow, market_cap)
+    dividend_yield = _percent_from_amount(dividends_paid, market_cap)
+    payout_ratio = _percent_from_amount(dividends_paid, net_income)
+    ev_ebitda = _ev_ebitda_ratio(
+        market_cap=market_cap,
+        liabilities=liabilities,
+        cash_and_cash_equivalents=cash_and_cash_equivalents,
+        ebitda=ebitda,
+    )
+    dividend_growth = _decimal_or_none(summary.get("dividend_growth"))
+    dividend_stability_score = _dividend_stability_score_from_values(
+        dividend_yield=dividend_yield,
+        payout_ratio=payout_ratio,
+        fcf_yield=fcf_yield,
+        dividend_growth=dividend_growth,
+        debt_ratio=_decimal_or_none(summary.get("debt_ratio")),
+    )
+    values = {
+        "revenue_growth": _decimal_or_none(summary.get("revenue_growth")),
+        "operating_income_growth": _decimal_or_none(summary.get("operating_income_growth")),
+        "net_income_growth": _decimal_or_none(summary.get("net_income_growth")),
+        "roe": _decimal_or_none(summary.get("roe")),
+        "roa": _decimal_or_none(summary.get("roa")),
+        "operating_margin": _decimal_or_none(summary.get("operating_margin")),
+        "net_margin": _decimal_or_none(summary.get("net_margin")),
+        "free_cash_flow": free_cash_flow,
+        "dividends_paid": dividends_paid,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "cash_and_cash_equivalents": cash_and_cash_equivalents,
+        "ebitda": ebitda,
+        "fcf_yield": fcf_yield,
+        "ev_ebitda": ev_ebitda,
+        "dividend_yield": dividend_yield,
+        "payout_ratio": payout_ratio,
+        "current_ratio": _decimal_or_none(summary.get("current_ratio")),
+        "dividend_growth": dividend_growth,
+        "dividend_streak_years": 1 if dividends_paid is not None and dividends_paid > 0 else None,
+        "dividend_stability_score": dividend_stability_score,
+        "eps": None,
+        "sps": None,
+        "bps": None,
+        "reserve_ratio": None,
+        "debt_ratio": _decimal_or_none(summary.get("debt_ratio")),
+    }
+    if not any(value is not None for value in values.values()):
+        return 0
+
+    existing = session.scalar(
+        select(FundamentalRatio).where(
+            FundamentalRatio.instrument_id == instrument.id,
+            FundamentalRatio.fiscal_period == fiscal_period,
+            FundamentalRatio.period_type == "annual",
+            FundamentalRatio.provider == OPEN_DART_FUNDAMENTAL_PROVIDER,
+        )
+    )
+
+    if existing is None:
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period=fiscal_period,
+                period_type="annual",
+                provider=OPEN_DART_FUNDAMENTAL_PROVIDER,
+                **values,
+            )
+        )
+    else:
+        for key, value in values.items():
+            if value is not None:
+                setattr(existing, key, value)
+
+    session.commit()
+    return 1
+
+
+def _latest_market_cap_for_instrument(*, session, instrument_id: int) -> Decimal | None:
+    value = session.scalar(
+        select(QuoteSnapshot.market_cap)
+        .where(
+            QuoteSnapshot.instrument_id == instrument_id,
+            QuoteSnapshot.market_cap.is_not(None),
+        )
+        .order_by(QuoteSnapshot.snapshot_date.desc(), QuoteSnapshot.id.desc())
+    )
+    return _decimal_or_none(value)
+
+
+def _percent_from_amount(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    return (numerator / denominator * Decimal("100")).quantize(Decimal("0.0001"))
+
+
+def _ev_ebitda_ratio(
+    *,
+    market_cap: Decimal | None,
+    liabilities: Decimal | None,
+    cash_and_cash_equivalents: Decimal | None,
+    ebitda: Decimal | None,
+) -> Decimal | None:
+    if market_cap is None or ebitda is None or ebitda <= 0:
+        return None
+
+    enterprise_value = market_cap + max(liabilities or Decimal("0"), Decimal("0"))
+    enterprise_value -= max(cash_and_cash_equivalents or Decimal("0"), Decimal("0"))
+    if enterprise_value <= 0:
+        return None
+
+    return (enterprise_value / ebitda).quantize(Decimal("0.0001"))
+
+
+def _dividend_stability_score_from_values(
+    *,
+    dividend_yield: Decimal | None,
+    payout_ratio: Decimal | None,
+    fcf_yield: Decimal | None,
+    dividend_growth: Decimal | None,
+    debt_ratio: Decimal | None,
+) -> int | None:
+    if dividend_yield is None or dividend_yield <= 0:
+        return None
+
+    payout = float(payout_ratio or Decimal("25"))
+    growth = float(dividend_growth or Decimal("0"))
+    fcf = float(fcf_yield or Decimal("0"))
+    debt = float(debt_ratio or Decimal("85"))
+    score = (
+        50
+        + min(float(dividend_yield), 6) * 4
+        + max(min(growth, 12), 0) * 1.2
+        + max(min(fcf, 8), -4) * 2
+        - max(payout - 65, 0) * 0.7
+        - max(debt - 150, 0) * 0.12
+    )
+    return max(0, min(100, round(score)))
 
 
 def _get_or_create_kr_market(session) -> Market:
@@ -6028,6 +6520,14 @@ def _decimal_or_none(value: object) -> Decimal | None:
     if isinstance(value, str) and not value.strip():
         return None
     return Decimal(str(value))
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return int(float(str(value)))
 
 
 def _normalize_ohlcv_prices(

@@ -14,6 +14,7 @@ from quantmate_api.market_data import (
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
+    fetch_open_dart_financial_statements,
     fetch_yahoo_daily_prices,
     get_kis_ws_approval_status,
     get_open_dart_corp_code_cache_status,
@@ -21,7 +22,9 @@ from quantmate_api.market_data import (
     is_kis_open_api_ready,
     is_krx_open_api_ready,
     is_open_dart_ready,
+    summarize_open_dart_financial_statements,
 )
+from quantmate_api.time_utils import today_kst
 
 
 @dataclass(frozen=True)
@@ -317,6 +320,41 @@ class OpenDartProvider:
             ready=ready,
         )
 
+    def fetch_financial_ratios(
+        self,
+        *,
+        symbol: str,
+        period_type: str = "annual",
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        normalized_period_type = period_type.strip().lower()
+        if normalized_period_type not in {"annual", "year", "yearly"}:
+            return []
+
+        latest_year = today_kst().year - 1
+        earliest_year = max(2015, latest_year - max(1, min(limit, 8)) + 1)
+        rows: list[dict[str, Any]] = []
+        for business_year in range(latest_year, earliest_year - 1, -1):
+            items = fetch_open_dart_financial_statements(
+                symbol=symbol,
+                business_year=business_year,
+                report_code="11011",
+                fs_div="CFS",
+            )
+            if not items:
+                continue
+            summary = summarize_open_dart_financial_statements(items)
+            rows.append(
+                {
+                    "provider": self.name,
+                    "symbol": symbol.strip().upper(),
+                    "fiscal_period": f"{business_year}12",
+                    "period_type": "annual",
+                    **summary,
+                }
+            )
+        return rows
+
 
 @dataclass(frozen=True)
 class ProviderRegistry:
@@ -346,7 +384,7 @@ def build_provider_registry() -> ProviderRegistry:
     return ProviderRegistry(
         instrument_providers=(krx, kis),
         daily_price_providers=(krx, kis, yahoo),
-        fundamental_providers=(kis,),
+        fundamental_providers=(kis, open_dart),
         supply_flow_providers=(kis,),
         risk_indicator_providers=(kis,),
         broker_providers=(broker,),

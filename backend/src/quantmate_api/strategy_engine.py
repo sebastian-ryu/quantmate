@@ -564,12 +564,26 @@ def enrich_strategy_candidates_with_fundamentals(
             ("operating_income_growth", "operating_income_growth"),
             ("eps_growth", "net_income_growth"),
             ("roe", "roe"),
+            ("roa", "roa"),
+            ("operating_margin", "operating_margin"),
+            ("net_margin", "net_margin"),
+            ("fcf_yield", "fcf_yield"),
+            ("ev_ebitda", "ev_ebitda"),
+            ("dividend_yield", "dividend_yield"),
+            ("payout_ratio", "payout_ratio"),
+            ("dividend_growth", "dividend_growth"),
+            ("dividend_streak_years", "dividend_streak_years"),
+            ("dividend_stability_score", "dividend_stability_score"),
             ("debt_ratio", "debt_ratio"),
+            ("current_ratio", "current_ratio"),
         )
         for candidate_key, fundamental_key in numeric_fields:
             value = _float_or_none(fundamental.get(fundamental_key))
             if value is not None:
-                next_candidate[candidate_key] = round(value, 2)
+                if candidate_key in {"dividend_streak_years", "dividend_stability_score"}:
+                    next_candidate[candidate_key] = round(value)
+                else:
+                    next_candidate[candidate_key] = round(value, 2)
 
         price = _float_or_none(next_candidate.get("price")) or 0
         eps = _float_or_none(fundamental.get("eps"))
@@ -588,11 +602,17 @@ def enrich_strategy_candidates_with_fundamentals(
 
         roe = _float_or_none(next_candidate.get("roe"))
         debt_ratio = _float_or_none(next_candidate.get("debt_ratio"))
-        if roe is not None and debt_ratio is not None and debt_ratio > -100:
+        if _float_or_none(fundamental.get("roa")) is None and roe is not None and debt_ratio is not None and debt_ratio > -100:
             next_candidate["roa"] = round(roe * 100 / (100 + max(debt_ratio, 0)), 2)
 
         per = _float_or_none(next_candidate.get("per"))
-        if dividend_yield is not None and dividend_yield > 0 and per is not None and per > 0:
+        if (
+            _float_or_none(fundamental.get("payout_ratio")) is None
+            and dividend_yield is not None
+            and dividend_yield > 0
+            and per is not None
+            and per > 0
+        ):
             next_candidate["payout_ratio"] = round(max(0, min(100, dividend_yield * per)), 2)
             next_candidate["dividend_stability_score"] = _derived_dividend_stability_score(next_candidate)
 
@@ -601,9 +621,10 @@ def enrich_strategy_candidates_with_fundamentals(
         ]
         revenue_growth = _float_or_none(next_candidate.get("revenue_growth"))
         roe = _float_or_none(next_candidate.get("roe"))
+        provider_label = str(fundamental.get("provider_label") or "재무")
         if roe is not None and revenue_growth is not None:
-            rationale.append(f"KIS 재무 ROE {roe:.1f}%, 매출성장률 {revenue_growth:.1f}%")
-        rationale.append("KIS 재무비율로 성장성/수익성/밸류에이션을 보강")
+            rationale.append(f"{provider_label} ROE {roe:.1f}%, 매출성장률 {revenue_growth:.1f}%")
+        rationale.append(f"{provider_label} 지표로 성장성/수익성/밸류에이션을 보강")
         next_candidate["rationale"] = rationale
 
         risk_flags = [flag for flag in next_candidate.get("risk_flags", []) if flag != "재무지표 미연동"]

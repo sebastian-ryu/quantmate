@@ -54,6 +54,19 @@ export type StrategyExecutionModeContract = {
   note: string;
 };
 
+export type BacktestPolicy = {
+  rebalance_interval_months: number;
+  rebalance_label: string;
+  rebalance_timing: string;
+  return_price_basis: string;
+  holding_count: number;
+  weighting_method: string;
+  rebalance_amount_rule: string;
+  initial_rebalance_amount: number | null;
+  trading_cost_pct: number;
+  slippage_pct: number;
+};
+
 export type StrategyExecutionContract = {
   strategy_code: string;
   strategy_name: string;
@@ -61,6 +74,7 @@ export type StrategyExecutionContract = {
   summary: string;
   formula: string;
   provider_priority: string[];
+  backtest_policy: BacktestPolicy;
   safety_controls: string[];
   modes: StrategyExecutionModeContract[];
 };
@@ -138,16 +152,6 @@ export type StrategyCandidateResponse = {
   strategy_name: string;
   source: string;
   candidates: StrategyCandidateResult[];
-};
-
-export type StrategySelectionRunSummary = {
-  id: number;
-  strategy_code: string;
-  strategy_name: string;
-  source: string;
-  result_count: number;
-  top_candidates: string;
-  created_at: string;
 };
 
 export type ScreenerSearchRequest = {
@@ -252,6 +256,7 @@ export type BacktestRunResult = {
   benchmark_code: string;
   benchmark_name: string;
   benchmark_curve: BacktestBenchmarkPoint[];
+  backtest_policy: BacktestPolicy;
   metrics: BacktestPerformanceMetric[];
   annual_returns: BacktestAnnualReturn[];
   equity_curve: BacktestEquityPoint[];
@@ -874,28 +879,6 @@ export async function fetchStrategyExecutionContract(
   if (!response.ok) {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `전략 실행 계약을 불러오지 못했습니다. (${response.status})`);
-  }
-
-  return response.json();
-}
-
-export async function fetchStrategySelectionRuns(limit = 8): Promise<StrategySelectionRunSummary[]> {
-  const response = await fetch(`${API_BASE_URL}/api/strategy-runs?limit=${limit}`);
-
-  if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    throw new Error(detail || `최근 전략 실행 결과를 불러오지 못했습니다. (${response.status})`);
-  }
-
-  return response.json();
-}
-
-export async function fetchStrategySelectionRun(runId: number): Promise<StrategyCandidateResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/strategy-runs/${runId}`);
-
-  if (!response.ok) {
-    const detail = await readErrorDetail(response);
-    throw new Error(detail || `저장된 전략 실행 결과를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

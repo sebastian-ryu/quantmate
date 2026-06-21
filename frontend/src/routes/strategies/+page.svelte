@@ -8,6 +8,7 @@
     fetchUserStrategies,
     runBacktest as requestBacktest,
     type BacktestBenchmarkPoint,
+    type BacktestPolicy,
     type BacktestRunSummary,
     type BacktestRunResult,
     type Dashboard,
@@ -89,6 +90,12 @@
     metric: string;
     strategyValue: string;
     benchmarkValue: string;
+  };
+
+  type BacktestPolicyCard = {
+    label: string;
+    value: string;
+    description: string;
   };
 
   type ValueScale = {
@@ -208,6 +215,8 @@
     benchmarkValue: benchmarkMetrics[row.metric] ?? '-'
   }));
   $: initialAmountValue = initialAmount || 0;
+  $: activeBacktestPolicy = backtestResult?.backtest_policy ?? executionContract?.backtest_policy ?? null;
+  $: backtestPolicyCards = buildBacktestPolicyCards(activeBacktestPolicy, initialAmountValue);
   $: growthValues = [
     ...(growthRows.length ? growthRows.map((row) => row.portfolio) : [initialAmountValue]),
     ...benchmarkRows.map((row) => row.benchmark)
@@ -439,6 +448,49 @@
   function setInitialAmount(value: number) {
     initialAmount = Math.max(0, Math.floor(Number(value) || 0));
     initialAmountInput = formatCurrencyInput(initialAmount);
+  }
+
+  function buildBacktestPolicyCards(
+    policy: BacktestPolicy | null,
+    amount: number
+  ): BacktestPolicyCard[] {
+    if (!policy) return [];
+
+    const amountPerHolding =
+      policy.holding_count > 0 ? Math.floor(amount / policy.holding_count) : 0;
+
+    return [
+      {
+        label: '리밸런싱 기준일',
+        value: policy.rebalance_timing,
+        description: '후보를 다시 고르는 날짜와 진입 가격 기준입니다.'
+      },
+      {
+        label: '리밸런싱 주기',
+        value: policy.rebalance_label,
+        description: '전략별 고정 주기로 포트폴리오 후보를 다시 계산합니다.'
+      },
+      {
+        label: '보유 종목수',
+        value: `상위 ${policy.holding_count}개`,
+        description: '전략 점수 상위 후보만 편입 대상으로 사용합니다.'
+      },
+      {
+        label: '리밸런싱 금액',
+        value: `초기 약 ${formatWon(amountPerHolding)} / 종목`,
+        description: policy.rebalance_amount_rule
+      },
+      {
+        label: '비중 방식',
+        value: policy.weighting_method,
+        description: '선정된 종목을 같은 평가금 비중으로 보유한다고 가정합니다.'
+      },
+      {
+        label: '비용 가정',
+        value: `거래비용 ${formatPolicyPercent(policy.trading_cost_pct)} + 슬리피지 ${formatPolicyPercent(policy.slippage_pct)}`,
+        description: '리밸런싱 회전율에 비례해 수익률에서 차감합니다.'
+      }
+    ];
   }
 
   async function loadRecentBacktests() {
@@ -842,6 +894,10 @@
     }).format(value);
   }
 
+  function formatWon(value: number) {
+    return `${formatCurrencyInput(value)}원`;
+  }
+
   function parseCurrencyInput(value: string) {
     return Number(value.replace(/[^\d]/g, '')) || 0;
   }
@@ -872,6 +928,10 @@
 
   function formatPercent(value: number) {
     return `${value.toFixed(1)}%`;
+  }
+
+  function formatPolicyPercent(value: number) {
+    return `${value.toFixed(2)}%`;
   }
 
   function formatDateTime(value: string) {
@@ -1096,6 +1156,23 @@
           </select>
         </label>
       </div>
+      {#if backtestPolicyCards.length}
+        <div class="backtest-policy-panel">
+          <div class="backtest-policy-heading">
+            <strong>현재 백테스트 기준</strong>
+            <span>아래 기준은 실행 시 서버 백테스트 엔진이 실제로 사용하는 조건입니다.</span>
+          </div>
+          <div class="backtest-policy-grid">
+            {#each backtestPolicyCards as card}
+              <div class="backtest-policy-card">
+                <span>{card.label}</span>
+                <strong>{card.value}</strong>
+                <p>{card.description}</p>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
       {#if backtestError}
         <div class="empty-state error">
           <strong>백테스트 실행 불가</strong>

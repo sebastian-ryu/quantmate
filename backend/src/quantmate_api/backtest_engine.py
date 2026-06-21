@@ -93,6 +93,7 @@ def build_daily_price_backtest(
     previous_holdings: list[str] = []
     rebalance_history: list[dict[str, str]] = []
     turnover_values: list[float] = []
+    trade_returns: list[float] = []
     symbol_names = _symbol_names_from_price_rows(price_rows)
 
     for month_key in month_keys:
@@ -128,6 +129,7 @@ def build_daily_price_backtest(
         if not monthly_symbol_returns:
             continue
 
+        trade_returns.extend(monthly_symbol_returns)
         monthly_return = fmean(monthly_symbol_returns)
         year = int(month_key[:4])
         annual_start_balance.setdefault(year, balance)
@@ -179,6 +181,7 @@ def build_daily_price_backtest(
         annual_returns=annual_returns,
         equity_curve=equity_curve,
         monthly_turnover_pct=fmean(turnover_values) if turnover_values else 0.0,
+        trade_returns=trade_returns,
     )
 
     return {
@@ -238,6 +241,7 @@ def build_sample_backtest(
         annual_returns=annual_returns,
         equity_curve=equity_curve,
         monthly_turnover_pct=float(profile["monthly_turnover_pct"]),
+        trade_returns=[value / 100 for value in annual_returns],
     )
 
     return {
@@ -475,6 +479,7 @@ def _build_metrics(
     annual_returns: list[float],
     equity_curve: list[dict[str, Any]],
     monthly_turnover_pct: float,
+    trade_returns: list[float] | None = None,
 ) -> list[dict[str, str]]:
     year_count = max(len(years), 1)
     annual_return_decimals = [value / 100 for value in annual_returns]
@@ -490,6 +495,13 @@ def _build_metrics(
     sortino = cagr / downside_deviation if downside_deviation else 0
     best_index = max(range(len(annual_returns)), key=annual_returns.__getitem__)
     worst_index = min(range(len(annual_returns)), key=annual_returns.__getitem__)
+    effective_trade_returns = trade_returns or annual_return_decimals
+    trade_count = len(effective_trade_returns)
+    win_rate = (
+        sum(1 for value in effective_trade_returns if value > 0) / trade_count * 100
+        if trade_count
+        else 0.0
+    )
 
     return [
         {"metric": "시작금액", "value": _format_krw(initial_amount)},
@@ -505,6 +517,8 @@ def _build_metrics(
             "value": f"{years[worst_index]} · {_format_percent(annual_returns[worst_index])}",
         },
         {"metric": "최대 낙폭(MDD)", "value": _format_percent(_calculate_mdd(equity_curve))},
+        {"metric": "거래 승률", "value": _format_percent(win_rate)},
+        {"metric": "거래 수", "value": f"{trade_count}건"},
         {"metric": "샤프 비율", "value": f"{sharpe:.2f}"},
         {"metric": "소르티노 비율", "value": f"{sortino:.2f}"},
         {"metric": "월평균 회전율", "value": _format_percent(monthly_turnover_pct)},

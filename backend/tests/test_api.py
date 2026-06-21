@@ -593,6 +593,9 @@ def test_backtest_run_uses_daily_price_dynamic_rebalance(monkeypatch) -> None:
     assert data["final_amount"] != data["initial_amount"]
     assert len(data["rebalance_history"]) >= 2
     assert all("월말 동일비중" not in row["exits"] for row in data["rebalance_history"])
+    metrics = {item["metric"]: item["value"] for item in data["metrics"]}
+    assert "거래 승률" in metrics
+    assert metrics["거래 수"].endswith("건")
 
 
 def test_backtest_run_auto_imports_kis_before_yahoo(monkeypatch) -> None:

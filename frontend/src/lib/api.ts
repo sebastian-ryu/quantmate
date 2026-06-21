@@ -278,6 +278,21 @@ export type KisBrokerBalance = {
   holdings: KisBrokerHolding[];
 };
 
+export type KisBuyableCash = {
+  provider: string;
+  environment: string;
+  symbol: string;
+  orderable_cash: number;
+  orderable_substitute: number;
+  reusable_amount: number;
+  calculation_unit_price: number;
+  cash_buy_amount: number;
+  cash_buy_quantity: number;
+  max_buy_amount: number;
+  max_buy_quantity: number;
+  cma_evaluation_amount: number;
+};
+
 export type KisOrderExecutionItem = {
   order_date: string;
   order_time: string;
@@ -437,6 +452,26 @@ export async function fetchKisOrderExecutions(): Promise<KisOrderExecutions> {
   if (!response.ok) {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `KIS 주문체결 내역을 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchKisBuyableCash(params: {
+  symbol: string;
+  order_price?: number;
+  order_type?: 'market' | 'limit';
+}): Promise<KisBuyableCash> {
+  const search = new URLSearchParams();
+  search.set('symbol', params.symbol);
+  if (params.order_price !== undefined) search.set('order_price', String(params.order_price));
+  if (params.order_type) search.set('order_type', params.order_type);
+
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/buyable-cash?${search}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 매수가능금액을 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

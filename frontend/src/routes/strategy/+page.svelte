@@ -2,11 +2,13 @@
   import { onMount, tick } from 'svelte';
   import {
     fetchDashboard,
+    fetchKisBuyableCash,
     fetchKisBrokerAccountStatus,
     fetchKisBrokerBalance,
     fetchKisOrderExecutions,
     fetchStrategyCandidates,
     type Dashboard,
+    type KisBuyableCash,
     type KisBrokerAccountStatus,
     type KisBrokerBalance,
     type KisOrderExecutions,
@@ -77,6 +79,12 @@
   let brokerLoading = false;
   let brokerError = '';
   let brokerOrderError = '';
+  let buyableSymbol = '005930';
+  let buyableOrderType: 'market' | 'limit' = 'market';
+  let buyablePrice = 0;
+  let buyableLoading = false;
+  let buyableError = '';
+  let buyableResult: KisBuyableCash | null = null;
   let loading = true;
   let error = '';
 
@@ -431,6 +439,7 @@
       const response = await fetchStrategyCandidates(option.code);
       if (candidateRequestId !== requestId) return;
       candidateRows = response.candidates.map(toStrategyCandidate);
+      if (!buyableSymbol && candidateRows[0]?.symbol) buyableSymbol = candidateRows[0].symbol;
       candidateSource = response.source;
     } catch (err) {
       if (candidateRequestId !== requestId) return;
@@ -476,6 +485,30 @@
 
   function wait(ms: number) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function checkBuyableCash() {
+    const normalizedSymbol = buyableSymbol.trim();
+    if (!normalizedSymbol) {
+      buyableError = '종목코드를 입력해 주세요.';
+      return;
+    }
+
+    buyableLoading = true;
+    buyableError = '';
+    buyableResult = null;
+
+    try {
+      buyableResult = await fetchKisBuyableCash({
+        symbol: normalizedSymbol,
+        order_type: buyableOrderType,
+        order_price: buyableOrderType === 'limit' ? buyablePrice : 0
+      });
+    } catch (err) {
+      buyableError = err instanceof Error ? err.message : 'KIS 매수가능금액을 불러오지 못했습니다.';
+    } finally {
+      buyableLoading = false;
+    }
   }
 
   function toStrategyCandidate(candidate: StrategyCandidateResult): StrategyCandidate {
@@ -805,6 +838,61 @@
               <span>보유 종목</span>
               <strong>{formatNumber(brokerBalance.holdings.length)}개</strong>
             </div>
+          </div>
+          <div class="buyable-panel">
+            <div class="broker-subsection-heading">
+              <div>
+                <span>매수가능 조회</span>
+                <strong>종목별 주문 전 현금 확인</strong>
+              </div>
+            </div>
+            <div class="buyable-form">
+              <label>
+                <span>종목코드</span>
+                <input bind:value={buyableSymbol} placeholder="005930" />
+              </label>
+              <label>
+                <span>주문방식</span>
+                <select bind:value={buyableOrderType}>
+                  <option value="market">시장가</option>
+                  <option value="limit">지정가</option>
+                </select>
+              </label>
+              <label>
+                <span>지정가</span>
+                <input
+                  bind:value={buyablePrice}
+                  disabled={buyableOrderType === 'market'}
+                  min="0"
+                  type="number"
+                />
+              </label>
+              <button type="button" class="secondary" onclick={checkBuyableCash} disabled={buyableLoading}>
+                {buyableLoading ? '조회 중' : '조회'}
+              </button>
+            </div>
+            {#if buyableError}
+              <div class="empty-state error">{buyableError}</div>
+            {:else if buyableResult}
+              <div class="broker-summary-grid compact-summary-grid">
+                <div>
+                  <span>미수 없는 매수금액</span>
+                  <strong>{formatKrw(buyableResult.cash_buy_amount)}</strong>
+                </div>
+                <div>
+                  <span>미수 없는 매수수량</span>
+                  <strong>{formatNumber(buyableResult.cash_buy_quantity)}주</strong>
+                </div>
+                <div>
+                  <span>최대 매수금액</span>
+                  <strong>{formatKrw(buyableResult.max_buy_amount)}</strong>
+                </div>
+                <div>
+                  <span>최대 매수수량</span>
+                  <strong>{formatNumber(buyableResult.max_buy_quantity)}주</strong>
+                </div>
+              </div>
+            {/if}
           </div>
           {#if brokerBalance.holdings.length}
             <div class="table-wrap compact-table-wrap">

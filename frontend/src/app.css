@@ -416,6 +416,32 @@ textarea {
   font-size: 13px;
 }
 
+.buyable-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.buyable-form {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(120px, 1fr) minmax(110px, 140px) minmax(110px, 160px) auto;
+}
+
+.buyable-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.buyable-form span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.compact-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+}
+
 .compact-table-wrap {
   max-height: 320px;
   overflow: auto;
@@ -1533,6 +1559,11 @@ td b {
   }
 
   .recent-backtest-picker {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .buyable-form {
     align-items: stretch;
     grid-template-columns: 1fr;
   }

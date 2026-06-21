@@ -51,6 +51,7 @@ from quantmate_api.models import (
     Market,
     QuoteSnapshot,
     RiskIndicatorDaily,
+    StrategySelectionRun,
     SupplyFlowDaily,
     UserStrategy,
 )
@@ -163,10 +164,22 @@ class StrategyCandidate(BaseModel):
 
 
 class StrategyCandidateResponse(BaseModel):
+    run_id: int | None = None
+    run_at: datetime | None = None
     strategy_code: str
     strategy_name: str
     source: str
     candidates: list[StrategyCandidate]
+
+
+class StrategySelectionRunSummary(BaseModel):
+    id: int
+    strategy_code: str
+    strategy_name: str
+    source: str
+    result_count: int
+    top_candidates: str
+    created_at: datetime
 
 
 class ScreenerSearchRequest(BaseModel):
@@ -2965,23 +2978,7 @@ def _mixed_provider_label(providers: list[str]) -> str:
     return " + ".join(providers)
 
 
-@app.get("/api/health")
-async def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok",
-        app="QuantMate API",
-        mode=AppMode.RESEARCH,
-        live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED"),
-    )
-
-
-@app.get("/api/strategies")
-async def list_strategies() -> list[Strategy]:
-    return STRATEGIES
-
-
-@app.get("/api/strategies/{strategy_code}/candidates")
-async def strategy_candidates(strategy_code: str, limit: int = 12) -> StrategyCandidateResponse:
+def _resolve_strategy_candidate_response(strategy_code: str, limit: int = 12) -> StrategyCandidateResponse:
     safe_limit = max(1, min(limit, 100))
     strategy = _find_system_strategy(strategy_code)
     strategy_name = strategy.name if strategy else ""
@@ -3026,9 +3023,144 @@ async def strategy_candidates(strategy_code: str, limit: int = 12) -> StrategyCa
     )
 
 
+def _save_strategy_selection_run(response: StrategyCandidateResponse) -> tuple[int | None, datetime | None]:
+    payload = response.model_dump(mode="json")
+    payload.pop("run_id", None)
+    payload.pop("run_at", None)
+
+    try:
+        with SessionLocal() as session:
+            run = StrategySelectionRun(
+                strategy_code=response.strategy_code,
+                strategy_name=response.strategy_name,
+                source=response.source,
+                result_count=len(response.candidates),
+                result_json=json.dumps(payload, ensure_ascii=False),
+            )
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+            return run.id, run.created_at
+    except SQLAlchemyError:
+        return None, None
+
+
+def _strategy_selection_top_candidates(run: StrategySelectionRun) -> str:
+    try:
+        payload = json.loads(run.result_json)
+    except json.JSONDecodeError:
+        return ""
+
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return ""
+
+    names: list[str] = []
+    for item in candidates[:3]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("symbol") or "").strip()
+        if name:
+            names.append(name)
+
+    return ", ".join(names)
+
+
+def _strategy_selection_run_summary(run: StrategySelectionRun) -> StrategySelectionRunSummary:
+    return StrategySelectionRunSummary(
+        id=run.id,
+        strategy_code=run.strategy_code,
+        strategy_name=run.strategy_name,
+        source=run.source,
+        result_count=run.result_count,
+        top_candidates=_strategy_selection_top_candidates(run),
+        created_at=run.created_at,
+    )
+
+
+def _saved_strategy_selection_run_response(run: StrategySelectionRun) -> StrategyCandidateResponse:
+    try:
+        payload = json.loads(run.result_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="저장된 전략 실행 결과를 해석하지 못했습니다.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="저장된 전략 실행 결과 형식이 올바르지 않습니다.")
+
+    payload["run_id"] = run.id
+    payload["run_at"] = run.created_at
+    payload.setdefault("strategy_code", run.strategy_code)
+    payload.setdefault("strategy_name", run.strategy_name)
+    payload.setdefault("source", run.source)
+
+    return StrategyCandidateResponse(**payload)
+
+
+@app.get("/api/health")
+async def health() -> HealthResponse:
+    return HealthResponse(
+        status="ok",
+        app="QuantMate API",
+        mode=AppMode.RESEARCH,
+        live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED"),
+    )
+
+
+@app.get("/api/strategies")
+async def list_strategies() -> list[Strategy]:
+    return STRATEGIES
+
+
+@app.get("/api/strategies/{strategy_code}/candidates")
+async def strategy_candidates(strategy_code: str, limit: int = 12) -> StrategyCandidateResponse:
+    response = _resolve_strategy_candidate_response(strategy_code, limit=limit)
+    run_id, run_at = _save_strategy_selection_run(response)
+    response.run_id = run_id
+    response.run_at = run_at
+    return response
+
+
+@app.get("/api/strategy-runs")
+async def list_strategy_selection_runs(limit: int = 10) -> list[StrategySelectionRunSummary]:
+    safe_limit = max(1, min(limit, 50))
+
+    try:
+        with SessionLocal() as session:
+            runs = session.scalars(
+                select(StrategySelectionRun)
+                .order_by(StrategySelectionRun.created_at.desc(), StrategySelectionRun.id.desc())
+                .limit(safe_limit)
+            ).all()
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"전략 실행 결과 DB 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return [_strategy_selection_run_summary(run) for run in runs]
+
+
+@app.get("/api/strategy-runs/{run_id}")
+async def get_strategy_selection_run(run_id: int) -> StrategyCandidateResponse:
+    try:
+        with SessionLocal() as session:
+            run = session.get(StrategySelectionRun, run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="전략 실행 결과를 찾지 못했습니다.")
+
+            return _saved_strategy_selection_run_response(run)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"전략 실행 결과 DB 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+
 @app.post("/api/screener/search")
 async def search_screener(request: ScreenerSearchRequest) -> ScreenerSearchResponse:
-    base_response = await strategy_candidates(request.strategy_code, limit=request.limit)
+    base_response = _resolve_strategy_candidate_response(request.strategy_code, limit=request.limit)
     candidates = [candidate.model_dump() for candidate in base_response.candidates]
     unsupported_conditions: list[str] = []
     formula = request.formula.strip()
@@ -3263,6 +3395,8 @@ async def data_status() -> DataStatusResponse:
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
                 "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
                 "backtest_runs": session.scalar(select(func.count()).select_from(BacktestRun)) or 0,
+                "strategy_selection_runs": session.scalar(select(func.count()).select_from(StrategySelectionRun))
+                or 0,
             }
     except SQLAlchemyError as exc:
         return DataStatusResponse(

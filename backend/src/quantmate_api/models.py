@@ -295,3 +295,19 @@ class BacktestRun(TimestampMixin, Base):
     initial_amount: Mapped[int] = mapped_column(BigInteger)
     final_amount: Mapped[int] = mapped_column(BigInteger)
     result_json: Mapped[str] = mapped_column(Text)
+
+
+class StrategySelectionRun(TimestampMixin, Base):
+    __tablename__ = "strategy_selection_runs"
+    __table_args__ = (
+        Index("ix_strategy_selection_runs_strategy_code", "strategy_code"),
+        Index("ix_strategy_selection_runs_created_at", "created_at"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy_code: Mapped[str] = mapped_column(String(80))
+    strategy_name: Mapped[str] = mapped_column(String(120))
+    source: Mapped[str] = mapped_column(String(200))
+    result_count: Mapped[int] = mapped_column(Integer)
+    result_json: Mapped[str] = mapped_column(Text)

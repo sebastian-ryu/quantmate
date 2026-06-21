@@ -21,6 +21,7 @@ from quantmate_api.models import (
     Market,
     QuoteSnapshot,
     RiskIndicatorDaily,
+    StrategySelectionRun,
     SupplyFlowDaily,
 )
 from quantmate_api.strategy_engine import CANDIDATE_UNIVERSE
@@ -637,6 +638,47 @@ def test_strategy_candidates_use_daily_prices_when_available(monkeypatch) -> Non
         [item["strategy_score"] for item in data["candidates"]],
         reverse=True,
     )
+
+
+def test_strategy_candidate_run_is_saved_and_reloaded(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=date(2026, 1, 1),
+        days=40,
+    )
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["run_id"] is not None
+    assert data["run_at"] is not None
+
+    with session_factory() as session:
+        run = session.scalar(select(StrategySelectionRun))
+
+    assert run is not None
+    assert run.strategy_code == "relative-momentum-swing"
+    assert run.result_count == 10
+
+    list_response = client.get("/api/strategy-runs?limit=5")
+    runs = list_response.json()
+
+    assert list_response.status_code == 200
+    assert len(runs) == 1
+    assert runs[0]["id"] == data["run_id"]
+    assert runs[0]["top_candidates"]
+
+    saved_response = client.get(f"/api/strategy-runs/{data['run_id']}")
+    saved = saved_response.json()
+
+    assert saved_response.status_code == 200
+    assert saved["run_id"] == data["run_id"]
+    assert [item["symbol"] for item in saved["candidates"]] == [
+        item["symbol"] for item in data["candidates"]
+    ]
 
 
 def test_strategy_candidates_enrich_with_kis_quote_snapshot(monkeypatch) -> None:
@@ -1431,7 +1473,7 @@ def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.counts = [1, 3, 0, 0, 0, 0, 0, 5, 0, 2, 4]
+            self.counts = [1, 3, 0, 0, 0, 0, 0, 5, 0, 2, 4, 6]
 
         def __enter__(self) -> "FakeSession":
             return self
@@ -1463,6 +1505,7 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["table_counts"]["broker_audit_logs"] == 5
     assert data["table_counts"]["user_strategies"] == 2
     assert data["table_counts"]["backtest_runs"] == 4
+    assert data["table_counts"]["strategy_selection_runs"] == 6
     providers = {item["name"]: item for item in data["provider_status"]}
     assert providers["Yahoo Finance"]["ready"] is True
     assert providers["KIS Open API"]["status"] in {"App Key/Secret 필요", "인증정보 설정됨"}

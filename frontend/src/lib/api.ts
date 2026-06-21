@@ -86,10 +86,22 @@ export type StrategyCandidateResult = {
 };
 
 export type StrategyCandidateResponse = {
+  run_id: number | null;
+  run_at: string | null;
   strategy_code: string;
   strategy_name: string;
   source: string;
   candidates: StrategyCandidateResult[];
+};
+
+export type StrategySelectionRunSummary = {
+  id: number;
+  strategy_code: string;
+  strategy_name: string;
+  source: string;
+  result_count: number;
+  top_candidates: string;
+  created_at: string;
 };
 
 export type ScreenerSearchRequest = {
@@ -672,6 +684,28 @@ export async function fetchStrategyCandidates(
 
   if (!response.ok) {
     throw new Error(`전략 후보 종목을 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchStrategySelectionRuns(limit = 8): Promise<StrategySelectionRunSummary[]> {
+  const response = await fetch(`${API_BASE_URL}/api/strategy-runs?limit=${limit}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `최근 전략 실행 결과를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchStrategySelectionRun(runId: number): Promise<StrategyCandidateResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/strategy-runs/${runId}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `저장된 전략 실행 결과를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

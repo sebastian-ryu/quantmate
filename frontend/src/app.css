@@ -1387,22 +1387,38 @@ td:first-child span {
   grid-column: 2;
 }
 
-.recent-backtest-picker {
+.recent-backtest-picker,
+.recent-run-picker {
   align-items: end;
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.recent-backtest-picker label {
+.recent-backtest-picker label,
+.recent-run-picker label {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
 
-.recent-backtest-picker select {
+.recent-backtest-picker select,
+.recent-run-picker select {
   min-width: 0;
   width: 100%;
+}
+
+.recent-run-picker {
+  background: #f7fafa;
+  border: 1px solid #e2e9eb;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+}
+
+.compact-state {
+  margin-bottom: 10px;
+  padding: 10px 12px;
 }
 
 meter {
@@ -1680,7 +1696,8 @@ td b {
     flex-direction: column;
   }
 
-  .recent-backtest-picker {
+  .recent-backtest-picker,
+  .recent-run-picker {
     align-items: stretch;
     grid-template-columns: 1fr;
   }

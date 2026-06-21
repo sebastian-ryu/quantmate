@@ -132,7 +132,7 @@
 - [x] KIS 투자자별 매매동향 일별 수급을 `supply_flow_dailies`에 저장하고 후보 수급 필드에 반영
 - [x] KIS 공매도/신용잔고 일별 지표를 `risk_indicator_dailies`에 저장하고 후보 리스크 필드에 반영
 - [x] KIS 재무비율 데이터 후보 API 매핑
-- [ ] KRX 승인 후 백테스트용 일봉 공급원을 KRX로 교체할 수 있게 provider 전환 설정 추가
+- [x] KRX 승인 후 백테스트용 일봉 공급원을 KRX로 교체할 수 있게 provider 전환 설정 추가
 - [x] KRX 승인 지연 시 사용할 Yahoo/yfinance 일봉 미리보기 API 추가
 - [x] Yahoo/yfinance 일봉을 `daily_prices`에 저장하는 임시 적재 API 추가
 - [x] Yahoo/yfinance 일봉 수집 데이터를 MySQL `daily_prices`에 저장

@@ -199,6 +199,16 @@ def test_health_endpoint() -> None:
     assert response.json()["live_trading_enabled"] is False
 
 
+def test_daily_price_provider_priority_uses_env(monkeypatch) -> None:
+    monkeypatch.setenv("DAILY_PRICE_PROVIDER_PRIORITY", "Yahoo Finance,KIS Open API")
+
+    assert main_module._daily_price_provider_priority() == [
+        "Yahoo Finance",
+        "KIS Open API",
+        "KRX Open API",
+    ]
+
+
 def test_kis_broker_status_masks_account(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
     monkeypatch.setattr(main_module, "has_kis_account_credentials", lambda: True)

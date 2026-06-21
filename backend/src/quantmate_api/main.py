@@ -1384,6 +1384,23 @@ KIS_RISK_INDICATOR_PROVIDER = "KIS Risk Indicator"
 KIS_RISK_INDICATOR_COOLDOWN_UNTIL: datetime | None = None
 KIS_FUNDAMENTAL_PROVIDER = "KIS Financial Ratio"
 KIS_FUNDAMENTAL_COOLDOWN_UNTIL: datetime | None = None
+DEFAULT_DAILY_PRICE_PROVIDER_PRIORITY = ("KRX Open API", "KIS Open API", "Yahoo Finance")
+
+
+def _daily_price_provider_priority() -> list[str]:
+    configured = [
+        item.strip()
+        for item in os.getenv("DAILY_PRICE_PROVIDER_PRIORITY", "").split(",")
+        if item.strip()
+    ]
+    supported = set(DEFAULT_DAILY_PRICE_PROVIDER_PRIORITY)
+    priority = [provider for provider in configured if provider in supported]
+
+    for provider in DEFAULT_DAILY_PRICE_PROVIDER_PRIORITY:
+        if provider not in priority:
+            priority.append(provider)
+
+    return priority
 
 
 def _find_system_strategy(strategy_code: str) -> Strategy | None:
@@ -1818,13 +1835,14 @@ def _normalize_exchange(exchange: str) -> str:
 
 def _stored_price_seed_candidates(limit: int) -> list[dict[str, object]]:
     safe_limit = max(1, min(limit, 200))
+    provider_priority = _daily_price_provider_priority()
     latest_price_dates = (
         select(
             DailyPrice.instrument_id.label("instrument_id"),
             func.max(DailyPrice.trade_date).label("latest_trade_date"),
         )
         .where(
-            DailyPrice.provider.in_(("KRX Open API", "KIS Open API", "Yahoo Finance")),
+            DailyPrice.provider.in_(provider_priority),
             DailyPrice.is_adjusted.is_(False),
         )
         .group_by(DailyPrice.instrument_id)
@@ -1852,7 +1870,7 @@ def _stored_price_seed_candidates(limit: int) -> list[dict[str, object]]:
                     & (DailyPrice.trade_date == latest_price_dates.c.latest_trade_date)
                     & (DailyPrice.is_adjusted.is_(False)),
                 )
-                .where(DailyPrice.provider.in_(("KRX Open API", "KIS Open API", "Yahoo Finance")))
+                .where(DailyPrice.provider.in_(provider_priority))
                 .order_by(func.coalesce(DailyPrice.trading_value, DailyPrice.close_price * DailyPrice.volume, 0).desc())
                 .limit(safe_limit)
             ).all()
@@ -1949,7 +1967,7 @@ def _load_backtest_price_rows(
     start_date: date,
     end_date: date,
 ) -> tuple[list[dict[str, object]], str]:
-    provider_priority = ["KRX Open API", "KIS Open API", "Yahoo Finance"]
+    provider_priority = _daily_price_provider_priority()
     rows = session.execute(
         select(
             Instrument.symbol,
@@ -1982,7 +2000,7 @@ def _load_backtest_price_rows(
         )
 
     minimum_symbols = min(10, len(symbols))
-    for provider in ["KRX Open API", "KIS Open API"]:
+    for provider in provider_priority:
         provider_rows = _filter_backtest_price_rows_for_coverage(grouped_by_provider[provider])
         if _has_minimum_price_coverage(provider_rows, minimum_symbols=minimum_symbols):
             return provider_rows, provider
@@ -2476,11 +2494,24 @@ def _should_try_kis_candidate_import(
 ) -> bool:
     if not is_kis_open_api_ready():
         return False
+    provider_priority = _daily_price_provider_priority()
+    if "KIS Open API" not in provider_priority:
+        return False
     if daily_price_candidates is None:
         return True
 
     source, _candidates = daily_price_candidates
-    return source == "daily-price-candidates:Yahoo Finance"
+    current_provider = _source_primary_daily_price_provider(source)
+    if current_provider not in provider_priority:
+        return True
+    return provider_priority.index("KIS Open API") < provider_priority.index(current_provider)
+
+
+def _source_primary_daily_price_provider(source: str) -> str:
+    if not source.startswith("daily-price-candidates:"):
+        return ""
+    provider_label = source.removeprefix("daily-price-candidates:").split(":")[0]
+    return provider_label.split(" + ")[0].strip()
 
 
 def _candidate_result_count(
@@ -2574,7 +2605,7 @@ def _load_strategy_candidate_price_rows(
     start_date: date,
     end_date: date,
 ) -> tuple[list[dict[str, object]], str]:
-    provider_priority = ["KRX Open API", "KIS Open API", "Yahoo Finance"]
+    provider_priority = _daily_price_provider_priority()
     rows = session.execute(
         select(
             Instrument.symbol,
@@ -2623,7 +2654,7 @@ def _load_strategy_candidate_price_rows(
     best_provider = ""
     best_symbol_count = 0
 
-    for provider in ["KRX Open API", "KIS Open API"]:
+    for provider in provider_priority:
         provider_rows = _filter_candidate_price_rows_for_coverage(grouped_by_provider[provider])
         provider_symbol_count = _candidate_price_symbol_count(provider_rows)
         if (
@@ -3464,7 +3495,7 @@ async def data_status() -> DataStatusResponse:
 
 @app.get("/api/data/quality")
 async def data_quality() -> DataQualityResponse:
-    provider_priority = ("KRX Open API", "KIS Open API", "Yahoo Finance")
+    provider_priority = tuple(_daily_price_provider_priority())
 
     try:
         with SessionLocal() as session:

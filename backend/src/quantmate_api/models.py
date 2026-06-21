@@ -64,6 +64,7 @@ class Instrument(TimestampMixin, Base):
     daily_prices: Mapped[list[DailyPrice]] = relationship(back_populates="instrument")
     quote_snapshots: Mapped[list[QuoteSnapshot]] = relationship(back_populates="instrument")
     supply_flow_dailies: Mapped[list[SupplyFlowDaily]] = relationship(back_populates="instrument")
+    risk_indicator_dailies: Mapped[list[RiskIndicatorDaily]] = relationship(back_populates="instrument")
 
 
 class DailyPrice(TimestampMixin, Base):
@@ -160,6 +161,38 @@ class SupplyFlowDaily(TimestampMixin, Base):
     individual_net_buy_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
 
     instrument: Mapped[Instrument] = relationship(back_populates="supply_flow_dailies")
+
+
+class RiskIndicatorDaily(TimestampMixin, Base):
+    __tablename__ = "risk_indicator_dailies"
+    __table_args__ = (
+        Index("ix_risk_indicator_dailies_trade_date", "trade_date"),
+        Index("ix_risk_indicator_dailies_instrument_date", "instrument_id", "trade_date"),
+        UniqueConstraint(
+            "instrument_id",
+            "trade_date",
+            "provider",
+            name="uq_risk_indicator_dailies_identity",
+        ),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    trade_date: Mapped[date] = mapped_column(Date)
+    provider: Mapped[str] = mapped_column(String(40))
+    short_sale_volume: Mapped[int | None] = mapped_column(BigInteger)
+    short_sale_volume_ratio: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    short_sale_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    short_sale_value_ratio: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    margin_loan_balance: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    margin_loan_balance_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    margin_loan_new_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    margin_loan_redeem_amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    stock_loan_balance: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    stock_loan_balance_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+
+    instrument: Mapped[Instrument] = relationship(back_populates="risk_indicator_dailies")
 
 
 class DataImportJob(Base):

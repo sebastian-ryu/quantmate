@@ -19,7 +19,9 @@ from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
     fetch_kis_current_price,
+    fetch_kis_daily_credit_balance,
     fetch_kis_daily_prices,
+    fetch_kis_daily_short_sale,
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
@@ -37,6 +39,7 @@ from quantmate_api.models import (
     Instrument,
     Market,
     QuoteSnapshot,
+    RiskIndicatorDaily,
     SupplyFlowDaily,
     UserStrategy,
 )
@@ -45,6 +48,7 @@ from quantmate_api.strategy_engine import (
     build_strategy_candidates,
     build_strategy_candidates_from_daily_prices,
     enrich_strategy_candidates_with_quote_snapshots,
+    enrich_strategy_candidates_with_risk_indicators,
     enrich_strategy_candidates_with_supply_flows,
 )
 from quantmate_api.time_utils import now_kst_naive, today_kst
@@ -403,6 +407,42 @@ class KisInvestorTradeDailyResponse(BaseModel):
     symbol: str
     count: int
     items: list[KisInvestorTradeDailyItem]
+
+
+class KisDailyShortSaleItem(BaseModel):
+    provider: str
+    symbol: str
+    trade_date: date
+    short_sale_volume: int | None = None
+    short_sale_volume_ratio: float | None = None
+    short_sale_value: int | None = None
+    short_sale_value_ratio: float | None = None
+
+
+class KisDailyShortSaleResponse(BaseModel):
+    provider: str
+    symbol: str
+    count: int
+    items: list[KisDailyShortSaleItem]
+
+
+class KisDailyCreditBalanceItem(BaseModel):
+    provider: str
+    symbol: str
+    trade_date: date
+    margin_loan_balance: int | None = None
+    margin_loan_balance_rate: float | None = None
+    margin_loan_new_amount: int | None = None
+    margin_loan_redeem_amount: int | None = None
+    stock_loan_balance: int | None = None
+    stock_loan_balance_rate: float | None = None
+
+
+class KisDailyCreditBalanceResponse(BaseModel):
+    provider: str
+    symbol: str
+    count: int
+    items: list[KisDailyCreditBalanceItem]
 
 
 class YahooDailyPriceImportRequest(BaseModel):
@@ -764,6 +804,8 @@ BENCHMARKS: dict[str, dict[str, str]] = {
 KIS_QUOTE_SNAPSHOT_PROVIDER = "KIS Current Quote"
 KIS_SUPPLY_FLOW_PROVIDER = "KIS Investor Flow"
 KIS_SUPPLY_FLOW_COOLDOWN_UNTIL: datetime | None = None
+KIS_RISK_INDICATOR_PROVIDER = "KIS Risk Indicator"
+KIS_RISK_INDICATOR_COOLDOWN_UNTIL: datetime | None = None
 
 
 def _find_system_strategy(strategy_code: str) -> Strategy | None:
@@ -1464,6 +1506,7 @@ def _build_daily_price_strategy_candidates_if_available(
             )
             quote_snapshots = _load_latest_quote_snapshots_by_symbol(session=session, symbols=symbols)
             supply_flows = _load_supply_flow_metrics_by_symbol(session=session, symbols=symbols)
+            risk_indicators = _load_risk_indicator_metrics_by_symbol(session=session, symbols=symbols)
     except SQLAlchemyError:
         return None
 
@@ -1491,6 +1534,13 @@ def _build_daily_price_strategy_candidates_if_available(
             supply_flows=supply_flows,
         )
         provider = f"{provider} + KIS 수급"
+
+    if risk_indicators:
+        candidates = enrich_strategy_candidates_with_risk_indicators(
+            candidates=candidates,
+            risk_indicators=risk_indicators,
+        )
+        provider = f"{provider} + KIS 리스크"
 
     return f"daily-price-candidates:{provider}", candidates
 
@@ -1654,6 +1704,116 @@ def _pause_kis_supply_flow_import(*, minutes: int) -> None:
     KIS_SUPPLY_FLOW_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
 
 
+def _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 12,
+) -> None:
+    if not is_kis_open_api_ready():
+        return
+    if _is_kis_risk_indicator_in_cooldown():
+        return
+
+    safe_limit = max(1, min(max_symbols, 8))
+    candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
+    symbols = [str(item["symbol"]) for item in candidates]
+    if not symbols:
+        return
+
+    freshness_date = today_kst() - timedelta(days=7)
+    try:
+        with SessionLocal() as session:
+            fresh_symbols = set(
+                session.scalars(
+                    select(Instrument.symbol)
+                    .join(RiskIndicatorDaily, RiskIndicatorDaily.instrument_id == Instrument.id)
+                    .where(
+                        Instrument.symbol.in_(symbols),
+                        RiskIndicatorDaily.provider == KIS_RISK_INDICATOR_PROVIDER,
+                        RiskIndicatorDaily.trade_date >= freshness_date,
+                    )
+                    .distinct()
+                ).all()
+            )
+    except SQLAlchemyError:
+        return
+
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        if symbol in fresh_symbols:
+            continue
+
+        short_sale_rows: list[dict[str, object]] = []
+        credit_balance_rows: list[dict[str, object]] = []
+        should_pause = False
+        try:
+            short_sale_rows = fetch_kis_daily_short_sale(
+                symbol=symbol,
+                start=today_kst() - timedelta(days=45),
+                end=today_kst(),
+                limit=30,
+            )
+        except MarketDataProviderUnavailable as exc:
+            if _is_kis_temporary_limit_error(exc):
+                should_pause = True
+
+        if not should_pause:
+            try:
+                credit_balance_rows = fetch_kis_daily_credit_balance(
+                    symbol=symbol,
+                    base_date=today_kst(),
+                    limit=30,
+                )
+            except MarketDataProviderUnavailable as exc:
+                if _is_kis_temporary_limit_error(exc):
+                    should_pause = True
+
+        if not short_sale_rows and not credit_balance_rows:
+            if should_pause:
+                _pause_kis_risk_indicator_import(minutes=10)
+                break
+            continue
+
+        try:
+            with SessionLocal() as session:
+                _save_kis_risk_indicators(
+                    session=session,
+                    symbol=symbol,
+                    name=str(candidate["name"]),
+                    exchange=str(candidate["exchange"]),
+                    short_sale_rows=short_sale_rows,
+                    credit_balance_rows=credit_balance_rows,
+                )
+
+            if should_pause:
+                _pause_kis_risk_indicator_import(minutes=10)
+                break
+        except (SQLAlchemyError, ValueError):
+            continue
+
+
+def _is_kis_risk_indicator_in_cooldown() -> bool:
+    return KIS_RISK_INDICATOR_COOLDOWN_UNTIL is not None and KIS_RISK_INDICATOR_COOLDOWN_UNTIL > now_kst_naive()
+
+
+def _pause_kis_risk_indicator_import(*, minutes: int) -> None:
+    global KIS_RISK_INDICATOR_COOLDOWN_UNTIL
+    KIS_RISK_INDICATOR_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
+
+
+def _is_kis_temporary_limit_error(exc: MarketDataProviderUnavailable) -> bool:
+    message = str(exc)
+    temporary_fragments = (
+        "초당",
+        "거래건수",
+        "TIME LIMIT",
+        "time limit",
+        "temporarily",
+        "429",
+    )
+    return any(fragment in message for fragment in temporary_fragments)
+
+
 def _should_try_kis_candidate_import(
     daily_price_candidates: tuple[str, list[dict[str, object]]] | None,
 ) -> bool:
@@ -1722,6 +1882,10 @@ def _load_strategy_candidate_result(
         _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 12),
+        )
+        _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=min(target_count, 8),
         )
         _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
             strategy_code,
@@ -1985,6 +2149,81 @@ def _load_supply_flow_metrics_by_symbol(
         }
 
     return metrics
+
+
+def _load_risk_indicator_metrics_by_symbol(
+    *,
+    session,
+    symbols: list[str],
+) -> dict[str, dict[str, object]]:
+    if not symbols:
+        return {}
+
+    rows = session.execute(
+        select(Instrument.symbol, RiskIndicatorDaily)
+        .join(Instrument, Instrument.id == RiskIndicatorDaily.instrument_id)
+        .where(
+            Instrument.symbol.in_(symbols),
+            RiskIndicatorDaily.provider == KIS_RISK_INDICATOR_PROVIDER,
+            RiskIndicatorDaily.trade_date >= today_kst() - timedelta(days=90),
+        )
+        .order_by(Instrument.symbol, RiskIndicatorDaily.trade_date.desc())
+    ).all()
+
+    rows_by_symbol: dict[str, list[RiskIndicatorDaily]] = {}
+    for symbol, indicator in rows:
+        rows_by_symbol.setdefault(str(symbol), []).append(indicator)
+
+    metrics: dict[str, dict[str, object]] = {}
+    for symbol, indicators in rows_by_symbol.items():
+        ordered = sorted(indicators, key=lambda item: item.trade_date, reverse=True)
+        latest_short_sale_ratio = _latest_decimal_value(
+            ordered,
+            "short_sale_volume_ratio",
+            fallback_field="short_sale_value_ratio",
+        )
+        margin_debt_change_5d = _margin_debt_change_pct(ordered[:10])
+
+        metrics[symbol] = {
+            "short_sale_ratio": float(latest_short_sale_ratio) if latest_short_sale_ratio is not None else None,
+            "margin_debt_change_5d": margin_debt_change_5d,
+        }
+
+    return metrics
+
+
+def _latest_decimal_value(
+    rows: list[object],
+    field: str,
+    *,
+    fallback_field: str | None = None,
+) -> Decimal | None:
+    for row in rows:
+        value = _decimal_or_none(getattr(row, field))
+        if value is not None:
+            return value
+        if fallback_field:
+            fallback_value = _decimal_or_none(getattr(row, fallback_field))
+            if fallback_value is not None:
+                return fallback_value
+    return None
+
+
+def _margin_debt_change_pct(rows: list[RiskIndicatorDaily]) -> float:
+    balances = [
+        _decimal_or_none(row.margin_loan_balance)
+        for row in sorted(rows, key=lambda item: item.trade_date)
+        if _decimal_or_none(row.margin_loan_balance) is not None
+    ]
+    if len(balances) < 2:
+        return 0.0
+
+    start_balance = balances[0]
+    end_balance = balances[-1]
+    if start_balance is None or end_balance is None or start_balance <= 0:
+        return 0.0
+
+    return round(float((end_balance / start_balance - 1) * 100), 2)
 
 
 def _sum_decimal_value(rows: list[object], field: str) -> Decimal:
@@ -2311,6 +2550,7 @@ async def data_status() -> DataStatusResponse:
                 "daily_prices": session.scalar(select(func.count()).select_from(DailyPrice)) or 0,
                 "quote_snapshots": session.scalar(select(func.count()).select_from(QuoteSnapshot)) or 0,
                 "supply_flow_dailies": session.scalar(select(func.count()).select_from(SupplyFlowDaily)) or 0,
+                "risk_indicator_dailies": session.scalar(select(func.count()).select_from(RiskIndicatorDaily)) or 0,
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
                 "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
                 "backtest_runs": session.scalar(select(func.count()).select_from(BacktestRun)) or 0,
@@ -2421,6 +2661,62 @@ async def kis_investor_trade_daily(
         symbol=symbol.strip().upper(),
         count=len(items),
         items=[KisInvestorTradeDailyItem(**item) for item in items],
+    )
+
+
+@app.get("/api/data/kis/daily-short-sale")
+async def kis_daily_short_sale(
+    symbol: str,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 30,
+) -> KisDailyShortSaleResponse:
+    safe_limit = max(1, min(limit, 100))
+
+    try:
+        items = fetch_kis_daily_short_sale(
+            symbol=symbol,
+            start=start,
+            end=end,
+            limit=safe_limit,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisDailyShortSaleResponse(
+        provider="KIS Open API",
+        symbol=symbol.strip().upper(),
+        count=len(items),
+        items=[KisDailyShortSaleItem(**item) for item in items],
+    )
+
+
+@app.get("/api/data/kis/daily-credit-balance")
+async def kis_daily_credit_balance(
+    symbol: str,
+    base_date: date | None = None,
+    limit: int = 30,
+) -> KisDailyCreditBalanceResponse:
+    safe_limit = max(1, min(limit, 100))
+
+    try:
+        items = fetch_kis_daily_credit_balance(
+            symbol=symbol,
+            base_date=base_date,
+            limit=safe_limit,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisDailyCreditBalanceResponse(
+        provider="KIS Open API",
+        symbol=symbol.strip().upper(),
+        count=len(items),
+        items=[KisDailyCreditBalanceItem(**item) for item in items],
     )
 
 
@@ -3038,6 +3334,94 @@ def _save_kis_supply_flows(
         else:
             for key, value in values.items():
                 setattr(existing, key, value)
+
+        saved_count += 1
+
+    session.commit()
+    return saved_count
+
+
+def _save_kis_risk_indicators(
+    *,
+    session,
+    symbol: str,
+    name: str,
+    exchange: str,
+    short_sale_rows: list[dict[str, object]],
+    credit_balance_rows: list[dict[str, object]],
+) -> int:
+    normalized_symbol = symbol.strip().upper()
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=normalized_symbol,
+        name=name or normalized_symbol,
+        exchange=exchange.strip().upper() or "KOSPI",
+    )
+
+    rows_by_date: dict[date, dict[str, object]] = {}
+    for row in short_sale_rows:
+        trade_date = _row_trade_date(row)
+        rows_by_date.setdefault(trade_date, {}).update(
+            {
+                "short_sale_volume": row.get("short_sale_volume"),
+                "short_sale_volume_ratio": row.get("short_sale_volume_ratio"),
+                "short_sale_value": row.get("short_sale_value"),
+                "short_sale_value_ratio": row.get("short_sale_value_ratio"),
+            }
+        )
+
+    for row in credit_balance_rows:
+        trade_date = _row_trade_date(row)
+        rows_by_date.setdefault(trade_date, {}).update(
+            {
+                "margin_loan_balance": row.get("margin_loan_balance"),
+                "margin_loan_balance_rate": row.get("margin_loan_balance_rate"),
+                "margin_loan_new_amount": row.get("margin_loan_new_amount"),
+                "margin_loan_redeem_amount": row.get("margin_loan_redeem_amount"),
+                "stock_loan_balance": row.get("stock_loan_balance"),
+                "stock_loan_balance_rate": row.get("stock_loan_balance_rate"),
+            }
+        )
+
+    saved_count = 0
+    for trade_date, row in rows_by_date.items():
+        values = {
+            "short_sale_volume": int(row["short_sale_volume"])
+            if row.get("short_sale_volume") is not None
+            else None,
+            "short_sale_volume_ratio": _decimal_or_none(row.get("short_sale_volume_ratio")),
+            "short_sale_value": _decimal_or_none(row.get("short_sale_value")),
+            "short_sale_value_ratio": _decimal_or_none(row.get("short_sale_value_ratio")),
+            "margin_loan_balance": _decimal_or_none(row.get("margin_loan_balance")),
+            "margin_loan_balance_rate": _decimal_or_none(row.get("margin_loan_balance_rate")),
+            "margin_loan_new_amount": _decimal_or_none(row.get("margin_loan_new_amount")),
+            "margin_loan_redeem_amount": _decimal_or_none(row.get("margin_loan_redeem_amount")),
+            "stock_loan_balance": _decimal_or_none(row.get("stock_loan_balance")),
+            "stock_loan_balance_rate": _decimal_or_none(row.get("stock_loan_balance_rate")),
+        }
+        existing = session.scalar(
+            select(RiskIndicatorDaily).where(
+                RiskIndicatorDaily.instrument_id == instrument.id,
+                RiskIndicatorDaily.trade_date == trade_date,
+                RiskIndicatorDaily.provider == KIS_RISK_INDICATOR_PROVIDER,
+            )
+        )
+
+        if existing is None:
+            session.add(
+                RiskIndicatorDaily(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    provider=KIS_RISK_INDICATOR_PROVIDER,
+                    **values,
+                )
+            )
+        else:
+            for key, value in values.items():
+                if value is not None:
+                    setattr(existing, key, value)
 
         saved_count += 1
 

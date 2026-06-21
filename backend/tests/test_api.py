@@ -10,7 +10,16 @@ from sqlalchemy.pool import StaticPool
 import quantmate_api.main as main_module
 
 from quantmate_api.main import app
-from quantmate_api.models import BacktestRun, Base, DailyPrice, Instrument, Market, QuoteSnapshot, SupplyFlowDaily
+from quantmate_api.models import (
+    BacktestRun,
+    Base,
+    DailyPrice,
+    Instrument,
+    Market,
+    QuoteSnapshot,
+    RiskIndicatorDaily,
+    SupplyFlowDaily,
+)
 from quantmate_api.strategy_engine import CANDIDATE_UNIVERSE
 
 
@@ -34,9 +43,26 @@ def disable_kis_auto_import_by_default(monkeypatch) -> None:
     ) -> list[dict[str, object]]:
         raise main_module.MarketDataProviderUnavailable(f"KIS 수급 테스트 차단: {symbol}")
 
+    def unavailable_kis_daily_short_sale(
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        raise main_module.MarketDataProviderUnavailable(f"KIS 공매도 테스트 차단: {symbol}")
+
+    def unavailable_kis_daily_credit_balance(
+        symbol: str,
+        base_date: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        raise main_module.MarketDataProviderUnavailable(f"KIS 신용잔고 테스트 차단: {symbol}")
+
     monkeypatch.setattr(main_module, "fetch_kis_current_price", unavailable_kis_current_price)
     monkeypatch.setattr(main_module, "fetch_kis_market_cap_ranking", unavailable_kis_market_cap_ranking)
     monkeypatch.setattr(main_module, "fetch_kis_investor_trade_daily", unavailable_kis_investor_trade_daily)
+    monkeypatch.setattr(main_module, "fetch_kis_daily_short_sale", unavailable_kis_daily_short_sale)
+    monkeypatch.setattr(main_module, "fetch_kis_daily_credit_balance", unavailable_kis_daily_credit_balance)
 
 
 def disable_kis_auto_import(monkeypatch) -> None:
@@ -263,6 +289,102 @@ def test_strategy_candidates_enrich_with_kis_supply_flow(monkeypatch) -> None:
     assert samsung["pension_net_buy_20d"] == 500
     assert samsung["consecutive_foreign_buy_days"] == 5
     assert "KIS 투자자별 매매동향으로 수급 보강" in samsung["rationale"]
+
+
+def test_strategy_candidates_enrich_with_kis_risk_indicators(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=date(2026, 1, 1),
+        days=40,
+    )
+
+    with session_factory() as session:
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == "005930"))
+        for index in range(6):
+            session.add(
+                RiskIndicatorDaily(
+                    instrument_id=instrument.id,
+                    trade_date=main_module.today_kst() - timedelta(days=5 - index),
+                    provider=main_module.KIS_RISK_INDICATOR_PROVIDER,
+                    short_sale_volume=1000 + index,
+                    short_sale_volume_ratio=3.5 + index,
+                    short_sale_value=100_000_000,
+                    short_sale_value_ratio=4.0 + index,
+                    margin_loan_balance=100_000_000_000 + index * 10_000_000_000,
+                    margin_loan_balance_rate=1.2,
+                    margin_loan_new_amount=12_000_000_000,
+                    margin_loan_redeem_amount=8_000_000_000,
+                    stock_loan_balance=1_000_000_000,
+                    stock_loan_balance_rate=0.1,
+                )
+            )
+        session.commit()
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+    samsung = next(item for item in data["candidates"] if item["symbol"] == "005930")
+
+    assert response.status_code == 200
+    assert "KIS 리스크" in data["source"]
+    assert samsung["short_sale_ratio"] == 8.5
+    assert samsung["margin_debt_change_5d"] == 50.0
+    assert "KIS 공매도/신용잔고 지표로 리스크 보강" in samsung["rationale"]
+    assert "공매도 비중 높음" in samsung["risk_flags"]
+    assert "신용잔고 단기 증가" in samsung["risk_flags"]
+
+
+def test_strategy_candidates_auto_import_partial_kis_risk_indicators(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=date(2026, 1, 1),
+        days=40,
+    )
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+
+    def fake_fetch_kis_daily_short_sale(
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": symbol,
+                "trade_date": main_module.today_kst().isoformat(),
+                "short_sale_volume": 1000,
+                "short_sale_volume_ratio": 9.2,
+                "short_sale_value": 300_000_000,
+                "short_sale_value_ratio": 9.1,
+            }
+        ]
+
+    def rate_limited_kis_daily_credit_balance(
+        symbol: str,
+        base_date: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        raise main_module.MarketDataProviderUnavailable("KIS Open API 호출 실패: HTTP 500 초당 거래건수를 초과하였습니다.")
+
+    monkeypatch.setattr(main_module, "fetch_kis_daily_short_sale", fake_fetch_kis_daily_short_sale)
+    monkeypatch.setattr(main_module, "fetch_kis_daily_credit_balance", rate_limited_kis_daily_credit_balance)
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+    risk_enriched = next(item for item in data["candidates"] if item["short_sale_ratio"] == 9.2)
+
+    assert response.status_code == 200
+    assert "KIS 리스크" in data["source"]
+    assert "공매도 비중 높음" in risk_enriched["risk_flags"]
+
+    with session_factory() as session:
+        saved_count = session.scalar(select(func.count()).select_from(RiskIndicatorDaily))
+
+    assert saved_count == 1
 
 
 def test_strategy_candidates_auto_import_kis_before_yahoo(monkeypatch) -> None:
@@ -809,7 +931,7 @@ def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.counts = [1, 3, 0, 0, 0, 0, 2, 4]
+            self.counts = [1, 3, 0, 0, 0, 0, 0, 2, 4]
 
         def __enter__(self) -> "FakeSession":
             return self
@@ -836,6 +958,7 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["table_counts"]["instruments"] == 3
     assert data["table_counts"]["quote_snapshots"] == 0
     assert data["table_counts"]["supply_flow_dailies"] == 0
+    assert data["table_counts"]["risk_indicator_dailies"] == 0
     assert data["table_counts"]["user_strategies"] == 2
     assert data["table_counts"]["backtest_runs"] == 4
     providers = {item["name"]: item for item in data["provider_status"]}
@@ -1011,6 +1134,76 @@ def test_kis_investor_trade_daily_uses_market_data_provider(monkeypatch) -> None
     assert data["symbol"] == "005930"
     assert data["count"] == 1
     assert data["items"][0]["foreign_net_buy_value"] == 1000000000
+
+
+def test_kis_daily_short_sale_uses_market_data_provider(monkeypatch) -> None:
+    def fake_fetch_kis_daily_short_sale(
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert start == date(2026, 6, 1)
+        assert end == date(2026, 6, 19)
+        assert limit == 2
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "trade_date": "2026-06-19",
+                "short_sale_volume": 1000,
+                "short_sale_volume_ratio": 3.2,
+                "short_sale_value": 800000000,
+                "short_sale_value_ratio": 2.8,
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_kis_daily_short_sale", fake_fetch_kis_daily_short_sale)
+
+    response = client.get(
+        "/api/data/kis/daily-short-sale?symbol=005930&start=2026-06-01&end=2026-06-19&limit=2"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "KIS Open API"
+    assert data["count"] == 1
+    assert data["items"][0]["short_sale_volume_ratio"] == 3.2
+
+
+def test_kis_daily_credit_balance_uses_market_data_provider(monkeypatch) -> None:
+    def fake_fetch_kis_daily_credit_balance(
+        symbol: str,
+        base_date: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert base_date == date(2026, 6, 19)
+        assert limit == 2
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "trade_date": "2026-06-19",
+                "margin_loan_balance": 100000000000,
+                "margin_loan_balance_rate": 1.2,
+                "margin_loan_new_amount": 12000000000,
+                "margin_loan_redeem_amount": 8000000000,
+                "stock_loan_balance": 1000000000,
+                "stock_loan_balance_rate": 0.1,
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_kis_daily_credit_balance", fake_fetch_kis_daily_credit_balance)
+
+    response = client.get("/api/data/kis/daily-credit-balance?symbol=005930&base_date=2026-06-19&limit=2")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "KIS Open API"
+    assert data["count"] == 1
+    assert data["items"][0]["margin_loan_balance"] == 100000000000
 
 
 def test_kis_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:

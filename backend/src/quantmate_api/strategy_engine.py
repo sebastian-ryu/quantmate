@@ -426,6 +426,43 @@ def enrich_strategy_candidates_with_supply_flows(
     return sorted(enriched, key=lambda item: item["strategy_score"], reverse=True)
 
 
+def enrich_strategy_candidates_with_risk_indicators(
+    *,
+    candidates: list[dict[str, Any]],
+    risk_indicators: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+
+    for candidate in candidates:
+        indicator = risk_indicators.get(str(candidate.get("symbol") or ""))
+        if not indicator:
+            enriched.append(candidate)
+            continue
+
+        next_candidate = {**candidate}
+        short_sale_ratio = _float_or_none(indicator.get("short_sale_ratio"))
+        margin_debt_change_5d = _float_or_none(indicator.get("margin_debt_change_5d"))
+
+        if short_sale_ratio is not None:
+            next_candidate["short_sale_ratio"] = round(short_sale_ratio, 2)
+        if margin_debt_change_5d is not None:
+            next_candidate["margin_debt_change_5d"] = round(margin_debt_change_5d, 2)
+
+        next_candidate["rationale"] = [
+            *next_candidate.get("rationale", []),
+            "KIS 공매도/신용잔고 지표로 리스크 보강",
+        ]
+        risk_flags = [*next_candidate.get("risk_flags", [])]
+        if short_sale_ratio is not None and short_sale_ratio >= 8:
+            risk_flags.append("공매도 비중 높음")
+        if margin_debt_change_5d is not None and margin_debt_change_5d >= 15:
+            risk_flags.append("신용잔고 단기 증가")
+        next_candidate["risk_flags"] = risk_flags
+        enriched.append(next_candidate)
+
+    return sorted(enriched, key=lambda item: item["strategy_score"], reverse=True)
+
+
 def _with_candidate_defaults(item: dict[str, Any]) -> dict[str, Any]:
     item.setdefault("psr", _derived_psr(item))
     item.setdefault("ev_ebitda", _derived_ev_ebitda(item))

@@ -39,6 +39,8 @@ KIS_DOMESTIC_CURRENT_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-pr
 KIS_DOMESTIC_DAILY_PRICE_PATH = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 KIS_DOMESTIC_MARKET_CAP_RANKING_PATH = "/uapi/domestic-stock/v1/ranking/market-cap"
 KIS_DOMESTIC_INVESTOR_TRADE_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
+KIS_DOMESTIC_DAILY_SHORT_SALE_PATH = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
+KIS_DOMESTIC_DAILY_CREDIT_BALANCE_PATH = "/uapi/domestic-stock/v1/quotations/daily-credit-balance"
 KIS_MARKET_CAP_RANKING_MARKET_CODES = {
     "ALL": "0000",
     "KOSPI": "0001",
@@ -452,6 +454,75 @@ def fetch_kis_investor_trade_daily(
     return [row for row in normalized_rows if row is not None]
 
 
+def fetch_kis_daily_short_sale(
+    symbol: str,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    today = today_kst()
+    start_date = start or (today - timedelta(days=45))
+    end_date = end or today
+
+    if end_date < start_date:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+
+    normalized_symbol = normalize_kis_symbol(symbol)
+    safe_limit = max(1, min(limit, 100))
+    payload = call_kis_open_api(
+        path=KIS_DOMESTIC_DAILY_SHORT_SALE_PATH,
+        tr_id="FHPST04830000",
+        params={
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": normalized_symbol,
+            "FID_INPUT_DATE_1": start_date.strftime("%Y%m%d"),
+            "FID_INPUT_DATE_2": end_date.strftime("%Y%m%d"),
+        },
+    )
+    rows = payload.get("output2") or payload.get("output")
+
+    if not isinstance(rows, list):
+        raise MarketDataProviderUnavailable("KIS 공매도 일별추이 응답 형식이 예상과 다릅니다.")
+
+    normalized_rows = [
+        normalize_kis_daily_short_sale(row=row, symbol=normalized_symbol)
+        for row in rows[:safe_limit]
+        if isinstance(row, dict)
+    ]
+    return [row for row in normalized_rows if row is not None]
+
+
+def fetch_kis_daily_credit_balance(
+    symbol: str,
+    base_date: date | None = None,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    normalized_symbol = normalize_kis_symbol(symbol)
+    safe_limit = max(1, min(limit, 100))
+    input_date = base_date or today_kst()
+    payload = call_kis_open_api(
+        path=KIS_DOMESTIC_DAILY_CREDIT_BALANCE_PATH,
+        tr_id="FHPST04760000",
+        params={
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20476",
+            "FID_INPUT_ISCD": normalized_symbol,
+            "FID_INPUT_DATE_1": input_date.strftime("%Y%m%d"),
+        },
+    )
+    rows = payload.get("output")
+
+    if not isinstance(rows, list):
+        raise MarketDataProviderUnavailable("KIS 신용잔고 일별추이 응답 형식이 예상과 다릅니다.")
+
+    normalized_rows = [
+        normalize_kis_daily_credit_balance(row=row, symbol=normalized_symbol)
+        for row in rows[:safe_limit]
+        if isinstance(row, dict)
+    ]
+    return [row for row in normalized_rows if row is not None]
+
+
 def call_kis_open_api(
     *,
     path: str,
@@ -724,6 +795,48 @@ def normalize_kis_investor_trade_daily(
         "institution_net_buy_value": int_from_kis(row.get("orgn_ntby_tr_pbmn")),
         "pension_net_buy_value": int_from_kis(row.get("fund_ntby_tr_pbmn")),
         "individual_net_buy_value": int_from_kis(row.get("prsn_ntby_tr_pbmn")),
+    }
+
+
+def normalize_kis_daily_short_sale(
+    *,
+    row: dict[str, Any],
+    symbol: str,
+) -> dict[str, Any] | None:
+    trade_date = str(row.get("stck_bsop_date") or "").strip()
+    if not trade_date:
+        return None
+
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "symbol": symbol,
+        "trade_date": f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}",
+        "short_sale_volume": int_from_kis(row.get("ssts_cntg_qty")),
+        "short_sale_volume_ratio": float_from_kis(row.get("ssts_vol_rlim")),
+        "short_sale_value": int_from_kis(row.get("ssts_tr_pbmn")),
+        "short_sale_value_ratio": float_from_kis(row.get("ssts_tr_pbmn_rlim")),
+    }
+
+
+def normalize_kis_daily_credit_balance(
+    *,
+    row: dict[str, Any],
+    symbol: str,
+) -> dict[str, Any] | None:
+    trade_date = str(row.get("deal_date") or row.get("stlm_date") or "").strip()
+    if not trade_date:
+        return None
+
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "symbol": symbol,
+        "trade_date": f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}",
+        "margin_loan_balance": int_from_kis(row.get("whol_loan_rmnd_amt")),
+        "margin_loan_balance_rate": float_from_kis(row.get("whol_loan_rmnd_rate")),
+        "margin_loan_new_amount": int_from_kis(row.get("whol_loan_new_amt")),
+        "margin_loan_redeem_amount": int_from_kis(row.get("whol_loan_rdmp_amt")),
+        "stock_loan_balance": int_from_kis(row.get("whol_stln_rmnd_amt")),
+        "stock_loan_balance_rate": float_from_kis(row.get("whol_stln_rmnd_rate")),
     }
 
 

@@ -65,6 +65,52 @@ STRATEGY_PROFILES = {
     },
 }
 
+DEFAULT_BACKTEST_PARAMETERS = {
+    "rebalance_interval_months": 1,
+    "holding_count": 10,
+    "trading_cost_pct": 0.25,
+    "slippage_pct": 0.10,
+}
+
+STRATEGY_BACKTEST_PARAMETERS = {
+    "relative-momentum-swing": {
+        "rebalance_interval_months": 1,
+        "holding_count": 10,
+        "trading_cost_pct": 0.25,
+        "slippage_pct": 0.10,
+    },
+    "value-quality-factor": {
+        "rebalance_interval_months": 3,
+        "holding_count": 20,
+        "trading_cost_pct": 0.20,
+        "slippage_pct": 0.05,
+    },
+    "growth-breakout-leader": {
+        "rebalance_interval_months": 1,
+        "holding_count": 10,
+        "trading_cost_pct": 0.30,
+        "slippage_pct": 0.15,
+    },
+    "trend-breakout": {
+        "rebalance_interval_months": 1,
+        "holding_count": 10,
+        "trading_cost_pct": 0.35,
+        "slippage_pct": 0.15,
+    },
+    "supply-demand-accumulation": {
+        "rebalance_interval_months": 1,
+        "holding_count": 10,
+        "trading_cost_pct": 0.25,
+        "slippage_pct": 0.10,
+    },
+    "low-volatility-defensive": {
+        "rebalance_interval_months": 1,
+        "holding_count": 20,
+        "trading_cost_pct": 0.15,
+        "slippage_pct": 0.05,
+    },
+}
+
 
 def build_daily_price_backtest(
     *,
@@ -86,43 +132,69 @@ def build_daily_price_backtest(
     if len(month_keys) < 2:
         return None
 
+    parameters = _backtest_parameters(strategy_code)
+    holding_count = int(parameters["holding_count"])
+    rebalance_interval_months = int(parameters["rebalance_interval_months"])
+    trading_cost_pct = float(parameters["trading_cost_pct"])
+    slippage_pct = float(parameters["slippage_pct"])
     balance = float(initial_amount)
     equity_curve: list[dict[str, Any]] = []
     annual_start_balance: dict[int, float] = {}
     annual_end_balance: dict[int, float] = {}
     previous_holdings: list[str] = []
+    current_holdings: list[str] = []
     rebalance_history: list[dict[str, str]] = []
     turnover_values: list[float] = []
     trade_returns: list[float] = []
     symbol_names = _symbol_names_from_price_rows(price_rows)
 
-    for month_key in month_keys:
-        month_start = _month_start_date(month_key)
-        ranking_rows = [
-            row
-            for rows in symbol_rows.values()
-            for row in rows
-            if _coerce_date(row["trade_date"]) < month_start
-        ]
-        ranked_candidates = build_strategy_candidates_from_daily_prices(
-            strategy_code=strategy_code,
-            price_rows=ranking_rows,
-            limit=10,
-        )
-        if candidate_formula:
-            ranked_candidates, _unsupported_conditions = apply_user_strategy_formula(
-                candidates=ranked_candidates,
-                formula=candidate_formula,
-            )
-            ranked_candidates = ranked_candidates[:10]
-        holdings = [str(candidate["symbol"]) for candidate in ranked_candidates]
+    for month_index, month_key in enumerate(month_keys):
+        should_rebalance = not current_holdings or month_index % rebalance_interval_months == 0
+        turnover = 0.0
 
-        if not holdings:
+        if should_rebalance:
+            month_start = _month_start_date(month_key)
+            ranking_rows = [
+                row
+                for rows in symbol_rows.values()
+                for row in rows
+                if _coerce_date(row["trade_date"]) < month_start
+            ]
+            ranked_candidates = build_strategy_candidates_from_daily_prices(
+                strategy_code=strategy_code,
+                price_rows=ranking_rows,
+                limit=holding_count,
+            )
+            if candidate_formula:
+                ranked_candidates, _unsupported_conditions = apply_user_strategy_formula(
+                    candidates=ranked_candidates,
+                    formula=candidate_formula,
+                )
+                ranked_candidates = ranked_candidates[:holding_count]
+            current_holdings = [str(candidate["symbol"]) for candidate in ranked_candidates]
+
+            if not current_holdings:
+                continue
+
+            turnover = _calculate_turnover(previous_holdings=previous_holdings, holdings=current_holdings)
+            turnover_values.append(turnover)
+            rebalance_history.append(
+                _build_dynamic_rebalance_row(
+                    month_key=month_key,
+                    previous_holdings=previous_holdings,
+                    holdings=current_holdings,
+                    symbol_names=symbol_names,
+                    turnover=turnover,
+                )
+            )
+            previous_holdings = current_holdings
+
+        if not current_holdings:
             continue
 
         monthly_symbol_returns = [
             month_return
-            for symbol in holdings
+            for symbol in current_holdings
             if (month_return := _symbol_month_return(symbol_rows.get(symbol, []), month_key)) is not None
         ]
 
@@ -133,21 +205,15 @@ def build_daily_price_backtest(
         monthly_return = fmean(monthly_symbol_returns)
         year = int(month_key[:4])
         annual_start_balance.setdefault(year, balance)
-        balance *= 1 + monthly_return
+        transaction_cost_rate = _transaction_cost_rate(
+            turnover_pct=turnover if should_rebalance else 0.0,
+            trading_cost_pct=trading_cost_pct,
+            slippage_pct=slippage_pct,
+        )
+        net_monthly_return = monthly_return - transaction_cost_rate
+        balance *= 1 + net_monthly_return
         annual_end_balance[year] = balance
         equity_curve.append({"label": month_key.replace("-", "."), "portfolio": round(balance)})
-        turnover = _calculate_turnover(previous_holdings=previous_holdings, holdings=holdings)
-        turnover_values.append(turnover)
-        rebalance_history.append(
-            _build_dynamic_rebalance_row(
-                month_key=month_key,
-                previous_holdings=previous_holdings,
-                holdings=holdings,
-                symbol_names=symbol_names,
-                turnover=turnover,
-            )
-        )
-        previous_holdings = holdings
 
     annual_rows: list[dict[str, Any]] = []
     annual_returns: list[float] = []
@@ -195,7 +261,9 @@ def build_daily_price_backtest(
         "notice": (
             f"{provider} 일봉 데이터로 계산했습니다. "
             "매월 직전까지의 가격 데이터로 후보를 다시 선정하고, "
-            "상위 후보 동일비중 월별 리밸런싱으로 계산합니다."
+            f"상위 {holding_count}개 후보 동일비중, "
+            f"{_rebalance_label(rebalance_interval_months)} 리밸런싱, "
+            f"거래비용 {trading_cost_pct:.2f}%와 슬리피지 {slippage_pct:.2f}%를 반영합니다."
         ),
         "metrics": metrics,
         "annual_returns": annual_rows,
@@ -261,6 +329,35 @@ def build_sample_backtest(
         "equity_curve": equity_curve,
         "rebalance_history": _build_rebalance_history(strategy_code),
     }
+
+
+def _backtest_parameters(strategy_code: str) -> dict[str, float]:
+    parameters = {
+        **DEFAULT_BACKTEST_PARAMETERS,
+        **STRATEGY_BACKTEST_PARAMETERS.get(strategy_code, {}),
+    }
+    return {key: float(value) for key, value in parameters.items()}
+
+
+def _transaction_cost_rate(
+    *,
+    turnover_pct: float,
+    trading_cost_pct: float,
+    slippage_pct: float,
+) -> float:
+    if turnover_pct <= 0:
+        return 0.0
+    return (turnover_pct / 100) * ((trading_cost_pct + slippage_pct) / 100)
+
+
+def _rebalance_label(interval_months: int) -> str:
+    if interval_months <= 1:
+        return "월 1회"
+    if interval_months == 3:
+        return "분기 1회"
+    if interval_months == 6:
+        return "반기 1회"
+    return f"{interval_months}개월마다"
 
 
 def _build_monthly_returns(price_rows: list[dict[str, Any]]) -> list[tuple[str, float]]:

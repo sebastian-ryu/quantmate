@@ -24,6 +24,7 @@ from quantmate_api.models import (
     StrategySelectionRun,
     SupplyFlowDaily,
 )
+from quantmate_api.backtest_engine import build_daily_price_backtest
 from quantmate_api.strategy_engine import CANDIDATE_UNIVERSE, build_strategy_candidates_from_daily_prices
 
 
@@ -168,6 +169,7 @@ def make_price_rows(
     start_price: int,
     daily_step: int,
     volume: int,
+    start: date = date(2026, 1, 1),
     days: int = 40,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
@@ -178,7 +180,7 @@ def make_price_rows(
                 "symbol": symbol,
                 "name": name,
                 "exchange": "KOSPI",
-                "trade_date": date(2026, 1, 1) + timedelta(days=index),
+                "trade_date": start + timedelta(days=index),
                 "open_price": close_price - 10,
                 "high_price": close_price + 20,
                 "low_price": close_price - 20,
@@ -1155,6 +1157,40 @@ def test_backtest_run_uses_daily_price_dynamic_rebalance(monkeypatch) -> None:
     metrics = {item["metric"]: item["value"] for item in data["metrics"]}
     assert "거래 승률" in metrics
     assert metrics["거래 수"].endswith("건")
+
+
+def test_daily_price_backtest_uses_strategy_parameters() -> None:
+    price_rows: list[dict[str, object]] = []
+    for index in range(25):
+        price_rows.extend(
+            make_price_rows(
+                f"T{index:05d}",
+                name=f"테스트후보{index}",
+                start_price=10000 + index * 100,
+                daily_step=8 + index,
+                volume=200000 + index * 1000,
+                start=date(2025, 1, 1),
+                days=470,
+            )
+        )
+
+    result = build_daily_price_backtest(
+        strategy_code="value-quality-factor",
+        strategy_name="가치/퀄리티 팩터",
+        start_year=2026,
+        end_year=2026,
+        initial_amount=10_000_000,
+        price_rows=price_rows,
+        provider="테스트 제공처",
+    )
+
+    assert result is not None
+    assert "상위 20개" in result["notice"]
+    assert "분기 1회" in result["notice"]
+    assert "거래비용 0.20%" in result["notice"]
+    assert result["rebalance_history"]
+    assert len(result["rebalance_history"]) < len(result["equity_curve"])
+    assert {row["holdings"] for row in result["rebalance_history"]} == {"20종목"}
 
 
 def test_backtest_run_auto_imports_kis_before_yahoo(monkeypatch) -> None:
@@ -2311,7 +2347,9 @@ def test_backtest_run_uses_daily_prices_when_available(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert data["source"] == "daily-price-backtest:Yahoo Finance"
-    assert data["final_amount"] == 1100000
+    assert data["final_amount"] == 1096500
+    assert "거래비용 0.25%" in data["notice"]
+    assert "슬리피지 0.10%" in data["notice"]
     assert len(data["equity_curve"]) == 1
 
 
@@ -2387,7 +2425,9 @@ def test_backtest_run_auto_imports_yahoo_prices_when_db_is_empty(monkeypatch) ->
 
     assert response.status_code == 200
     assert data["source"] == "daily-price-backtest:Yahoo Finance"
-    assert data["final_amount"] == 1100000
+    assert data["final_amount"] == 1096500
+    assert "거래비용 0.25%" in data["notice"]
+    assert "슬리피지 0.10%" in data["notice"]
 
 
 def test_backtest_run_ignores_incomplete_daily_price_symbols(monkeypatch) -> None:
@@ -2499,7 +2539,9 @@ def test_backtest_run_ignores_incomplete_daily_price_symbols(monkeypatch) -> Non
 
     assert response.status_code == 200
     assert data["source"] == "daily-price-backtest:Yahoo Finance"
-    assert data["final_amount"] == 1100000
+    assert data["final_amount"] == 1096500
+    assert "거래비용 0.25%" in data["notice"]
+    assert "슬리피지 0.10%" in data["notice"]
     assert data["rebalance_history"][0]["holdings"] == "1종목"
     assert "한화에어로스페이스" in data["rebalance_history"][0]["entries"]
     assert "에코프로비엠" not in data["rebalance_history"][0]["entries"]

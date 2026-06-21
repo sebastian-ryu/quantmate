@@ -300,7 +300,7 @@ def build_strategy_candidates(strategy_code: str, limit: int = 12) -> list[dict[
         candidate["risk_flags"] = build_risk_flags(candidate)
         rows.append(candidate)
 
-    return sorted(rows, key=lambda item: item["strategy_score"], reverse=True)[:limit]
+    return apply_candidate_quality_filters(strategy_code, rows, limit=limit)
 
 
 def build_strategy_candidates_from_daily_prices(
@@ -328,7 +328,33 @@ def build_strategy_candidates_from_daily_prices(
         )
         candidates.append(candidate)
 
-    return sorted(candidates, key=lambda item: item["strategy_score"], reverse=True)[:limit]
+    return apply_candidate_quality_filters(strategy_code, candidates, limit=limit)
+
+
+def apply_candidate_quality_filters(
+    strategy_code: str,
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not candidates:
+        return []
+
+    safe_limit = max(1, min(limit, 100))
+    marked_candidates = [_with_quality_filter_flags(strategy_code, candidate) for candidate in candidates]
+    sorted_candidates = sorted(marked_candidates, key=lambda item: item["strategy_score"], reverse=True)
+    hard_allowed = [candidate for candidate in sorted_candidates if not _fails_hard_exclusion(candidate)]
+    preferred = [
+        candidate
+        for candidate in hard_allowed
+        if not _fails_liquidity_filter(candidate) and not _fails_risk_exclusion_filter(candidate)
+    ]
+
+    minimum_preferred_count = min(safe_limit, 10)
+    if len(preferred) >= minimum_preferred_count:
+        return preferred[:safe_limit]
+
+    return hard_allowed[:safe_limit]
 
 
 def enrich_strategy_candidates_with_quote_snapshots(
@@ -547,6 +573,81 @@ def _with_candidate_defaults(item: dict[str, Any]) -> dict[str, Any]:
     item.setdefault("consecutive_foreign_buy_days", 0)
     item.setdefault("margin_debt_change_5d", 0.0)
     return item
+
+
+def _with_quality_filter_flags(strategy_code: str, candidate: dict[str, Any]) -> dict[str, Any]:
+    next_candidate = _with_candidate_defaults({**candidate})
+    risk_flags = list(dict.fromkeys(str(flag) for flag in next_candidate.get("risk_flags", [])))
+
+    if _fails_hard_exclusion(next_candidate):
+        risk_flags.append("기본 제외 대상")
+    if _fails_liquidity_filter(next_candidate):
+        risk_flags.append("유동성 부족")
+    if _fails_risk_exclusion_filter(next_candidate):
+        risk_flags.append("리스크 제외 기준")
+    if strategy_code in {"trend-breakout", "growth-breakout-leader"} and _numeric_value(
+        next_candidate,
+        "change_pct",
+    ) >= 8:
+        risk_flags.append("돌파 추격 위험")
+
+    next_candidate["risk_flags"] = list(dict.fromkeys(risk_flags))
+    return next_candidate
+
+
+def _fails_hard_exclusion(candidate: dict[str, Any]) -> bool:
+    name = str(candidate.get("name") or "")
+    price = _numeric_value(candidate, "price")
+
+    if price <= 0:
+        return True
+    if any(keyword in name.upper() for keyword in ("SPAC", "스팩", "ETN")):
+        return True
+
+    return False
+
+
+def _fails_liquidity_filter(candidate: dict[str, Any]) -> bool:
+    trading_value_100m = _numeric_value(candidate, "trading_value_krw_100m")
+    avg_volume_10k = _numeric_value(candidate, "avg_volume_20d_10k")
+    turnover_pct = _numeric_value(candidate, "turnover_pct")
+
+    has_trading_value = trading_value_100m > 0
+    has_avg_volume = avg_volume_10k > 0
+    has_turnover = turnover_pct > 0
+
+    if has_trading_value and trading_value_100m < 5:
+        return True
+    if has_avg_volume and avg_volume_10k < 1:
+        return True
+    if has_turnover and turnover_pct < 0.03:
+        return True
+
+    return False
+
+
+def _fails_risk_exclusion_filter(candidate: dict[str, Any]) -> bool:
+    short_sale_ratio = _numeric_value(candidate, "short_sale_ratio")
+    margin_debt_change_5d = _numeric_value(candidate, "margin_debt_change_5d")
+    volatility_20d = _numeric_value(candidate, "volatility_20d")
+    drawdown_52w = _numeric_value(candidate, "drawdown_52w")
+    debt_ratio = _numeric_value(candidate, "debt_ratio")
+    roe = _numeric_value(candidate, "roe")
+
+    if short_sale_ratio >= 15:
+        return True
+    if margin_debt_change_5d >= 40:
+        return True
+    if volatility_20d >= 90:
+        return True
+    if drawdown_52w <= -60:
+        return True
+    if debt_ratio >= 300:
+        return True
+    if roe <= -25:
+        return True
+
+    return False
 
 
 def apply_user_strategy_formula(

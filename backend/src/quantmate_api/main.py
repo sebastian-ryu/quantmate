@@ -56,6 +56,7 @@ from quantmate_api.models import (
     UserStrategy,
 )
 from quantmate_api.strategy_engine import (
+    apply_candidate_quality_filters,
     apply_user_strategy_formula,
     build_strategy_candidates,
     build_strategy_candidates_from_daily_prices,
@@ -2113,6 +2114,8 @@ def _build_daily_price_strategy_candidates_if_available(
             risk_indicators=risk_indicators,
         )
         provider = f"{provider} + KIS 리스크"
+
+    candidates = apply_candidate_quality_filters(strategy_code, candidates, limit=safe_limit)
 
     return f"daily-price-candidates:{provider}", candidates
 

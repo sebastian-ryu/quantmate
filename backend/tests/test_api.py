@@ -24,7 +24,7 @@ from quantmate_api.models import (
     StrategySelectionRun,
     SupplyFlowDaily,
 )
-from quantmate_api.strategy_engine import CANDIDATE_UNIVERSE
+from quantmate_api.strategy_engine import CANDIDATE_UNIVERSE, build_strategy_candidates_from_daily_prices
 
 
 client = TestClient(app)
@@ -159,6 +159,36 @@ def seed_daily_prices(
                 )
 
         session.commit()
+
+
+def make_price_rows(
+    symbol: str,
+    *,
+    name: str,
+    start_price: int,
+    daily_step: int,
+    volume: int,
+    days: int = 40,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for index in range(days):
+        close_price = start_price + index * daily_step
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name,
+                "exchange": "KOSPI",
+                "trade_date": date(2026, 1, 1) + timedelta(days=index),
+                "open_price": close_price - 10,
+                "high_price": close_price + 20,
+                "low_price": close_price - 20,
+                "close_price": close_price,
+                "volume": volume,
+                "trading_value": close_price * volume,
+                "provider": "Yahoo Finance",
+            }
+        )
+    return rows
 
 
 def test_health_endpoint() -> None:
@@ -679,6 +709,57 @@ def test_strategy_candidate_run_is_saved_and_reloaded(monkeypatch) -> None:
     assert [item["symbol"] for item in saved["candidates"]] == [
         item["symbol"] for item in data["candidates"]
     ]
+
+
+def test_strategy_candidates_filter_low_liquidity_when_enough_alternatives() -> None:
+    price_rows: list[dict[str, object]] = []
+    price_rows.extend(
+        make_price_rows(
+            "LOW001",
+            name="저유동성급등",
+            start_price=1000,
+            daily_step=80,
+            volume=100,
+        )
+    )
+    for index in range(10):
+        price_rows.extend(
+            make_price_rows(
+                f"LIQ{index:03d}",
+                name=f"유동성후보{index}",
+                start_price=10000 + index * 100,
+                daily_step=25 + index,
+                volume=200000 + index * 10000,
+            )
+        )
+
+    candidates = build_strategy_candidates_from_daily_prices(
+        strategy_code="relative-momentum-swing",
+        price_rows=price_rows,
+        limit=10,
+    )
+
+    assert len(candidates) == 10
+    assert "LOW001" not in {item["symbol"] for item in candidates}
+
+
+def test_strategy_candidates_keep_low_liquidity_with_warning_when_pool_is_small() -> None:
+    price_rows = make_price_rows(
+        "LOW001",
+        name="저유동성급등",
+        start_price=1000,
+        daily_step=80,
+        volume=100,
+    )
+
+    candidates = build_strategy_candidates_from_daily_prices(
+        strategy_code="relative-momentum-swing",
+        price_rows=price_rows,
+        limit=10,
+    )
+
+    assert [item["symbol"] for item in candidates] == ["LOW001"]
+    assert "유동성 부족" in candidates[0]["risk_flags"]
 
 
 def test_strategy_candidates_enrich_with_kis_quote_snapshot(monkeypatch) -> None:

@@ -22,6 +22,7 @@ from quantmate_api.market_data import (
     fetch_kis_daily_credit_balance,
     fetch_kis_daily_prices,
     fetch_kis_daily_short_sale,
+    fetch_kis_financial_ratios,
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
@@ -36,6 +37,7 @@ from quantmate_api.models import (
     BacktestRun,
     DailyPrice,
     DataImportJob,
+    FundamentalRatio,
     Instrument,
     Market,
     QuoteSnapshot,
@@ -47,6 +49,7 @@ from quantmate_api.strategy_engine import (
     apply_user_strategy_formula,
     build_strategy_candidates,
     build_strategy_candidates_from_daily_prices,
+    enrich_strategy_candidates_with_fundamentals,
     enrich_strategy_candidates_with_quote_snapshots,
     enrich_strategy_candidates_with_risk_indicators,
     enrich_strategy_candidates_with_supply_flows,
@@ -445,6 +448,30 @@ class KisDailyCreditBalanceResponse(BaseModel):
     items: list[KisDailyCreditBalanceItem]
 
 
+class KisFinancialRatioItem(BaseModel):
+    provider: str
+    symbol: str
+    fiscal_period: str
+    period_type: str
+    revenue_growth: float | None = None
+    operating_income_growth: float | None = None
+    net_income_growth: float | None = None
+    roe: float | None = None
+    eps: float | None = None
+    sps: float | None = None
+    bps: float | None = None
+    reserve_ratio: float | None = None
+    debt_ratio: float | None = None
+
+
+class KisFinancialRatioResponse(BaseModel):
+    provider: str
+    symbol: str
+    period_type: str
+    count: int
+    items: list[KisFinancialRatioItem]
+
+
 class YahooDailyPriceImportRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     name: str | None = Field(default=None, max_length=200)
@@ -806,6 +833,8 @@ KIS_SUPPLY_FLOW_PROVIDER = "KIS Investor Flow"
 KIS_SUPPLY_FLOW_COOLDOWN_UNTIL: datetime | None = None
 KIS_RISK_INDICATOR_PROVIDER = "KIS Risk Indicator"
 KIS_RISK_INDICATOR_COOLDOWN_UNTIL: datetime | None = None
+KIS_FUNDAMENTAL_PROVIDER = "KIS Financial Ratio"
+KIS_FUNDAMENTAL_COOLDOWN_UNTIL: datetime | None = None
 
 
 def _find_system_strategy(strategy_code: str) -> Strategy | None:
@@ -1505,6 +1534,7 @@ def _build_daily_price_strategy_candidates_if_available(
                 end_date=today_kst(),
             )
             quote_snapshots = _load_latest_quote_snapshots_by_symbol(session=session, symbols=symbols)
+            fundamentals = _load_fundamental_metrics_by_symbol(session=session, symbols=symbols)
             supply_flows = _load_supply_flow_metrics_by_symbol(session=session, symbols=symbols)
             risk_indicators = _load_risk_indicator_metrics_by_symbol(session=session, symbols=symbols)
     except SQLAlchemyError:
@@ -1527,6 +1557,13 @@ def _build_daily_price_strategy_candidates_if_available(
             quote_snapshots=quote_snapshots,
         )
         provider = f"{provider} + KIS 현재가"
+
+    if fundamentals:
+        candidates = enrich_strategy_candidates_with_fundamentals(
+            candidates=candidates,
+            fundamentals=fundamentals,
+        )
+        provider = f"{provider} + KIS 재무"
 
     if supply_flows:
         candidates = enrich_strategy_candidates_with_supply_flows(
@@ -1801,6 +1838,74 @@ def _pause_kis_risk_indicator_import(*, minutes: int) -> None:
     KIS_RISK_INDICATOR_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
 
 
+def _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 6,
+) -> None:
+    if not is_kis_open_api_ready():
+        return
+    if _is_kis_fundamental_in_cooldown():
+        return
+
+    safe_limit = max(1, min(max_symbols, 4))
+    candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
+    symbols = [str(item["symbol"]) for item in candidates]
+    if not symbols:
+        return
+
+    try:
+        with SessionLocal() as session:
+            fresh_symbols = set(
+                session.scalars(
+                    select(Instrument.symbol)
+                    .join(FundamentalRatio, FundamentalRatio.instrument_id == Instrument.id)
+                    .where(
+                        Instrument.symbol.in_(symbols),
+                        FundamentalRatio.provider == KIS_FUNDAMENTAL_PROVIDER,
+                        FundamentalRatio.period_type == "annual",
+                    )
+                    .distinct()
+                ).all()
+            )
+    except SQLAlchemyError:
+        return
+
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        if symbol in fresh_symbols:
+            continue
+
+        try:
+            rows = fetch_kis_financial_ratios(symbol=symbol, period_type="annual", limit=8)
+            if not rows:
+                continue
+            with SessionLocal() as session:
+                _save_kis_fundamental_ratios(
+                    session=session,
+                    symbol=symbol,
+                    name=str(candidate["name"]),
+                    exchange=str(candidate["exchange"]),
+                    ratios=rows,
+                )
+        except MarketDataProviderUnavailable as exc:
+            if _is_kis_temporary_limit_error(exc):
+                _pause_kis_fundamental_import(minutes=10)
+                break
+            continue
+        except (SQLAlchemyError, ValueError):
+            continue
+
+
+def _is_kis_fundamental_in_cooldown() -> bool:
+    return KIS_FUNDAMENTAL_COOLDOWN_UNTIL is not None and KIS_FUNDAMENTAL_COOLDOWN_UNTIL > now_kst_naive()
+
+
+def _pause_kis_fundamental_import(*, minutes: int) -> None:
+    global KIS_FUNDAMENTAL_COOLDOWN_UNTIL
+    KIS_FUNDAMENTAL_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
+
+
 def _is_kis_temporary_limit_error(exc: MarketDataProviderUnavailable) -> bool:
     message = str(exc)
     temporary_fragments = (
@@ -1879,6 +1984,10 @@ def _load_strategy_candidate_result(
             daily_price_candidates = refreshed_yahoo_candidates
 
     if daily_price_candidates is not None:
+        _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=min(target_count, 4),
+        )
         _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 12),
@@ -2149,6 +2258,76 @@ def _load_supply_flow_metrics_by_symbol(
         }
 
     return metrics
+
+
+def _load_fundamental_metrics_by_symbol(
+    *,
+    session,
+    symbols: list[str],
+) -> dict[str, dict[str, object]]:
+    if not symbols:
+        return {}
+
+    rows = session.execute(
+        select(Instrument.symbol, FundamentalRatio)
+        .join(Instrument, Instrument.id == FundamentalRatio.instrument_id)
+        .where(
+            Instrument.symbol.in_(symbols),
+            FundamentalRatio.provider == KIS_FUNDAMENTAL_PROVIDER,
+            FundamentalRatio.period_type == "annual",
+        )
+        .order_by(Instrument.symbol, FundamentalRatio.fiscal_period.desc())
+    ).all()
+
+    rows_by_symbol: dict[str, list[FundamentalRatio]] = {}
+    for symbol, ratio in rows:
+        rows_by_symbol.setdefault(str(symbol), []).append(ratio)
+
+    metrics: dict[str, dict[str, object]] = {}
+    for normalized_symbol, ratios in rows_by_symbol.items():
+        ratio = _select_fundamental_ratio_for_candidate(ratios)
+        if ratio is None:
+            continue
+        metrics[normalized_symbol] = {
+            "fiscal_period": ratio.fiscal_period,
+            "revenue_growth": _decimal_or_float(ratio.revenue_growth),
+            "operating_income_growth": _decimal_or_float(ratio.operating_income_growth),
+            "net_income_growth": _decimal_or_float(ratio.net_income_growth),
+            "roe": _decimal_or_float(ratio.roe),
+            "eps": _decimal_or_float(ratio.eps),
+            "sps": _decimal_or_float(ratio.sps),
+            "bps": _decimal_or_float(ratio.bps),
+            "reserve_ratio": _decimal_or_float(ratio.reserve_ratio),
+            "debt_ratio": _decimal_or_float(ratio.debt_ratio),
+        }
+
+    return metrics
+
+
+def _select_fundamental_ratio_for_candidate(ratios: list[FundamentalRatio]) -> FundamentalRatio | None:
+    if not ratios:
+        return None
+
+    ordered = sorted(ratios, key=lambda item: item.fiscal_period, reverse=True)
+    annual_closing_rows = [ratio for ratio in ordered if ratio.fiscal_period.endswith("12")]
+    if annual_closing_rows:
+        return annual_closing_rows[0]
+
+    non_empty_rows = [
+        ratio
+        for ratio in ordered
+        if any(
+            value is not None
+            for value in (
+                ratio.revenue_growth,
+                ratio.operating_income_growth,
+                ratio.net_income_growth,
+                ratio.roe,
+                ratio.debt_ratio,
+            )
+        )
+    ]
+    return non_empty_rows[0] if non_empty_rows else ordered[0]
 
 
 def _load_risk_indicator_metrics_by_symbol(
@@ -2551,6 +2730,7 @@ async def data_status() -> DataStatusResponse:
                 "quote_snapshots": session.scalar(select(func.count()).select_from(QuoteSnapshot)) or 0,
                 "supply_flow_dailies": session.scalar(select(func.count()).select_from(SupplyFlowDaily)) or 0,
                 "risk_indicator_dailies": session.scalar(select(func.count()).select_from(RiskIndicatorDaily)) or 0,
+                "fundamental_ratios": session.scalar(select(func.count()).select_from(FundamentalRatio)) or 0,
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
                 "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
                 "backtest_runs": session.scalar(select(func.count()).select_from(BacktestRun)) or 0,
@@ -2717,6 +2897,35 @@ async def kis_daily_credit_balance(
         symbol=symbol.strip().upper(),
         count=len(items),
         items=[KisDailyCreditBalanceItem(**item) for item in items],
+    )
+
+
+@app.get("/api/data/kis/financial-ratios")
+async def kis_financial_ratios(
+    symbol: str,
+    period_type: str = "annual",
+    limit: int = 8,
+) -> KisFinancialRatioResponse:
+    safe_limit = max(1, min(limit, 20))
+
+    try:
+        items = fetch_kis_financial_ratios(
+            symbol=symbol,
+            period_type=period_type,
+            limit=safe_limit,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    normalized_period_type = "quarter" if period_type.strip().lower() in {"quarter", "quarterly"} else "annual"
+    return KisFinancialRatioResponse(
+        provider="KIS Open API",
+        symbol=symbol.strip().upper(),
+        period_type=normalized_period_type,
+        count=len(items),
+        items=[KisFinancialRatioItem(**item) for item in items],
     )
 
 
@@ -3429,6 +3638,72 @@ def _save_kis_risk_indicators(
     return saved_count
 
 
+def _save_kis_fundamental_ratios(
+    *,
+    session,
+    symbol: str,
+    name: str,
+    exchange: str,
+    ratios: list[dict[str, object]],
+) -> int:
+    normalized_symbol = symbol.strip().upper()
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=normalized_symbol,
+        name=name or normalized_symbol,
+        exchange=exchange.strip().upper() or "KOSPI",
+    )
+
+    saved_count = 0
+    for row in ratios:
+        fiscal_period = str(row.get("fiscal_period") or "").strip()
+        period_type = str(row.get("period_type") or "annual").strip().lower()
+        if not fiscal_period:
+            continue
+
+        values = {
+            "revenue_growth": _decimal_or_none(row.get("revenue_growth")),
+            "operating_income_growth": _decimal_or_none(row.get("operating_income_growth")),
+            "net_income_growth": _decimal_or_none(row.get("net_income_growth")),
+            "roe": _decimal_or_none(row.get("roe")),
+            "eps": _decimal_or_none(row.get("eps")),
+            "sps": _decimal_or_none(row.get("sps")),
+            "bps": _decimal_or_none(row.get("bps")),
+            "reserve_ratio": _decimal_or_none(row.get("reserve_ratio")),
+            "debt_ratio": _decimal_or_none(row.get("debt_ratio")),
+        }
+        existing = session.scalar(
+            select(FundamentalRatio).where(
+                FundamentalRatio.instrument_id == instrument.id,
+                FundamentalRatio.fiscal_period == fiscal_period,
+                FundamentalRatio.period_type == period_type,
+                FundamentalRatio.provider == KIS_FUNDAMENTAL_PROVIDER,
+            )
+        )
+
+        if existing is None:
+            session.add(
+                FundamentalRatio(
+                    instrument_id=instrument.id,
+                    fiscal_period=fiscal_period,
+                    period_type=period_type,
+                    provider=KIS_FUNDAMENTAL_PROVIDER,
+                    **values,
+                )
+            )
+        else:
+            for key, value in values.items():
+                if value is not None:
+                    setattr(existing, key, value)
+
+        saved_count += 1
+
+    session.commit()
+    return saved_count
+
+
 def _get_or_create_kr_market(session) -> Market:
     market = session.scalar(select(Market).where(Market.code == "KR"))
     if market is not None:
@@ -3491,4 +3766,11 @@ def _row_trade_date(row: dict[str, object]) -> date:
 def _decimal_or_none(value: object) -> Decimal | None:
     if value is None:
         return None
+    if isinstance(value, str) and not value.strip():
+        return None
     return Decimal(str(value))
+
+
+def _decimal_or_float(value: object) -> float | None:
+    decimal_value = _decimal_or_none(value)
+    return float(decimal_value) if decimal_value is not None else None

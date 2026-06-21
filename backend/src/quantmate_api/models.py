@@ -65,6 +65,7 @@ class Instrument(TimestampMixin, Base):
     quote_snapshots: Mapped[list[QuoteSnapshot]] = relationship(back_populates="instrument")
     supply_flow_dailies: Mapped[list[SupplyFlowDaily]] = relationship(back_populates="instrument")
     risk_indicator_dailies: Mapped[list[RiskIndicatorDaily]] = relationship(back_populates="instrument")
+    fundamental_ratios: Mapped[list[FundamentalRatio]] = relationship(back_populates="instrument")
 
 
 class DailyPrice(TimestampMixin, Base):
@@ -193,6 +194,39 @@ class RiskIndicatorDaily(TimestampMixin, Base):
     stock_loan_balance_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
 
     instrument: Mapped[Instrument] = relationship(back_populates="risk_indicator_dailies")
+
+
+class FundamentalRatio(TimestampMixin, Base):
+    __tablename__ = "fundamental_ratios"
+    __table_args__ = (
+        Index("ix_fundamental_ratios_period", "fiscal_period"),
+        Index("ix_fundamental_ratios_instrument_period", "instrument_id", "fiscal_period"),
+        UniqueConstraint(
+            "instrument_id",
+            "fiscal_period",
+            "period_type",
+            "provider",
+            name="uq_fundamental_ratios_identity",
+        ),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    fiscal_period: Mapped[str] = mapped_column(String(10))
+    period_type: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[str] = mapped_column(String(40))
+    revenue_growth: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    operating_income_growth: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    net_income_growth: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    roe: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    eps: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sps: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    reserve_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    debt_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+
+    instrument: Mapped[Instrument] = relationship(back_populates="fundamental_ratios")
 
 
 class DataImportJob(Base):

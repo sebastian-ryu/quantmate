@@ -14,6 +14,7 @@ from quantmate_api.models import (
     BacktestRun,
     Base,
     DailyPrice,
+    FundamentalRatio,
     Instrument,
     Market,
     QuoteSnapshot,
@@ -58,11 +59,19 @@ def disable_kis_auto_import_by_default(monkeypatch) -> None:
     ) -> list[dict[str, object]]:
         raise main_module.MarketDataProviderUnavailable(f"KIS 신용잔고 테스트 차단: {symbol}")
 
+    def unavailable_kis_financial_ratios(
+        symbol: str,
+        period_type: str = "annual",
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        raise main_module.MarketDataProviderUnavailable(f"KIS 재무비율 테스트 차단: {symbol}")
+
     monkeypatch.setattr(main_module, "fetch_kis_current_price", unavailable_kis_current_price)
     monkeypatch.setattr(main_module, "fetch_kis_market_cap_ranking", unavailable_kis_market_cap_ranking)
     monkeypatch.setattr(main_module, "fetch_kis_investor_trade_daily", unavailable_kis_investor_trade_daily)
     monkeypatch.setattr(main_module, "fetch_kis_daily_short_sale", unavailable_kis_daily_short_sale)
     monkeypatch.setattr(main_module, "fetch_kis_daily_credit_balance", unavailable_kis_daily_credit_balance)
+    monkeypatch.setattr(main_module, "fetch_kis_financial_ratios", unavailable_kis_financial_ratios)
 
 
 def disable_kis_auto_import(monkeypatch) -> None:
@@ -289,6 +298,67 @@ def test_strategy_candidates_enrich_with_kis_supply_flow(monkeypatch) -> None:
     assert samsung["pension_net_buy_20d"] == 500
     assert samsung["consecutive_foreign_buy_days"] == 5
     assert "KIS 투자자별 매매동향으로 수급 보강" in samsung["rationale"]
+
+
+def test_strategy_candidates_enrich_with_kis_fundamentals(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=date(2026, 1, 1),
+        days=40,
+    )
+
+    with session_factory() as session:
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == "005930"))
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period="202603",
+                period_type="annual",
+                provider=main_module.KIS_FUNDAMENTAL_PROVIDER,
+                revenue_growth=99.9,
+                operating_income_growth=88.8,
+                net_income_growth=77.7,
+                roe=0,
+                eps=4300,
+                sps=130000,
+                bps=90000,
+                reserve_ratio=1300,
+                debt_ratio=55.5,
+            )
+        )
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period="202512",
+                period_type="annual",
+                provider=main_module.KIS_FUNDAMENTAL_PROVIDER,
+                revenue_growth=12.4,
+                operating_income_growth=23.5,
+                net_income_growth=34.6,
+                roe=15.7,
+                eps=4200,
+                sps=120000,
+                bps=80000,
+                reserve_ratio=1200,
+                debt_ratio=42.1,
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+    samsung = next(item for item in data["candidates"] if item["symbol"] == "005930")
+
+    assert response.status_code == 200
+    assert "KIS 재무" in data["source"]
+    assert samsung["revenue_growth"] == 12.4
+    assert samsung["operating_income_growth"] == 23.5
+    assert samsung["eps_growth"] == 34.6
+    assert samsung["roe"] == 15.7
+    assert samsung["debt_ratio"] == 42.1
+    assert "KIS 재무비율로 성장성/수익성/부채비율 보강" in samsung["rationale"]
 
 
 def test_strategy_candidates_enrich_with_kis_risk_indicators(monkeypatch) -> None:
@@ -931,7 +1001,7 @@ def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.counts = [1, 3, 0, 0, 0, 0, 0, 2, 4]
+            self.counts = [1, 3, 0, 0, 0, 0, 0, 0, 2, 4]
 
         def __enter__(self) -> "FakeSession":
             return self
@@ -959,6 +1029,7 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["table_counts"]["quote_snapshots"] == 0
     assert data["table_counts"]["supply_flow_dailies"] == 0
     assert data["table_counts"]["risk_indicator_dailies"] == 0
+    assert data["table_counts"]["fundamental_ratios"] == 0
     assert data["table_counts"]["user_strategies"] == 2
     assert data["table_counts"]["backtest_runs"] == 4
     providers = {item["name"]: item for item in data["provider_status"]}
@@ -1204,6 +1275,45 @@ def test_kis_daily_credit_balance_uses_market_data_provider(monkeypatch) -> None
     assert data["provider"] == "KIS Open API"
     assert data["count"] == 1
     assert data["items"][0]["margin_loan_balance"] == 100000000000
+
+
+def test_kis_financial_ratios_uses_market_data_provider(monkeypatch) -> None:
+    def fake_fetch_kis_financial_ratios(
+        symbol: str,
+        period_type: str = "annual",
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert period_type == "annual"
+        assert limit == 2
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "fiscal_period": "202512",
+                "period_type": "annual",
+                "revenue_growth": 12.4,
+                "operating_income_growth": 23.5,
+                "net_income_growth": 34.6,
+                "roe": 15.7,
+                "eps": 4200,
+                "sps": 120000,
+                "bps": 80000,
+                "reserve_ratio": 1200,
+                "debt_ratio": 42.1,
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_kis_financial_ratios", fake_fetch_kis_financial_ratios)
+
+    response = client.get("/api/data/kis/financial-ratios?symbol=005930&period_type=annual&limit=2")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "KIS Open API"
+    assert data["period_type"] == "annual"
+    assert data["count"] == 1
+    assert data["items"][0]["roe"] == 15.7
 
 
 def test_kis_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:

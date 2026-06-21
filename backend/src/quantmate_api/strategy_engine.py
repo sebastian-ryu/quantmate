@@ -421,6 +421,9 @@ def enrich_strategy_candidates_with_supply_flows(
             *next_candidate.get("rationale", []),
             "KIS 투자자별 매매동향으로 수급 보강",
         ]
+        next_candidate["risk_flags"] = [
+            flag for flag in next_candidate.get("risk_flags", []) if flag != "투자자별 실제 수급 미반영"
+        ]
         enriched.append(next_candidate)
 
     return sorted(enriched, key=lambda item: item["strategy_score"], reverse=True)
@@ -457,6 +460,54 @@ def enrich_strategy_candidates_with_risk_indicators(
             risk_flags.append("공매도 비중 높음")
         if margin_debt_change_5d is not None and margin_debt_change_5d >= 15:
             risk_flags.append("신용잔고 단기 증가")
+        next_candidate["risk_flags"] = risk_flags
+        enriched.append(next_candidate)
+
+    return sorted(enriched, key=lambda item: item["strategy_score"], reverse=True)
+
+
+def enrich_strategy_candidates_with_fundamentals(
+    *,
+    candidates: list[dict[str, Any]],
+    fundamentals: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+
+    for candidate in candidates:
+        fundamental = fundamentals.get(str(candidate.get("symbol") or ""))
+        if not fundamental:
+            enriched.append(candidate)
+            continue
+
+        next_candidate = {**candidate}
+        numeric_fields = (
+            ("revenue_growth", "revenue_growth"),
+            ("operating_income_growth", "operating_income_growth"),
+            ("eps_growth", "net_income_growth"),
+            ("roe", "roe"),
+            ("debt_ratio", "debt_ratio"),
+        )
+        for candidate_key, fundamental_key in numeric_fields:
+            value = _float_or_none(fundamental.get(fundamental_key))
+            if value is not None:
+                next_candidate[candidate_key] = round(value, 2)
+
+        rationale = [
+            str(reason) for reason in next_candidate.get("rationale", []) if not str(reason).startswith("ROE ")
+        ]
+        revenue_growth = _float_or_none(next_candidate.get("revenue_growth"))
+        roe = _float_or_none(next_candidate.get("roe"))
+        if roe is not None and revenue_growth is not None:
+            rationale.append(f"KIS 재무 ROE {roe:.1f}%, 매출성장률 {revenue_growth:.1f}%")
+        rationale.append("KIS 재무비율로 성장성/수익성/부채비율 보강")
+        next_candidate["rationale"] = rationale
+
+        risk_flags = [flag for flag in next_candidate.get("risk_flags", []) if flag != "재무지표 미연동"]
+        debt_ratio = _float_or_none(next_candidate.get("debt_ratio"))
+        if debt_ratio is not None and debt_ratio >= 200:
+            risk_flags.append("부채비율 높음")
+        if roe is not None and roe < 0:
+            risk_flags.append("ROE 음수")
         next_candidate["risk_flags"] = risk_flags
         enriched.append(next_candidate)
 

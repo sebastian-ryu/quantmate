@@ -41,6 +41,7 @@ KIS_DOMESTIC_MARKET_CAP_RANKING_PATH = "/uapi/domestic-stock/v1/ranking/market-c
 KIS_DOMESTIC_INVESTOR_TRADE_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 KIS_DOMESTIC_DAILY_SHORT_SALE_PATH = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
 KIS_DOMESTIC_DAILY_CREDIT_BALANCE_PATH = "/uapi/domestic-stock/v1/quotations/daily-credit-balance"
+KIS_DOMESTIC_FINANCIAL_RATIO_PATH = "/uapi/domestic-stock/v1/finance/financial-ratio"
 KIS_MARKET_CAP_RANKING_MARKET_CODES = {
     "ALL": "0000",
     "KOSPI": "0001",
@@ -89,6 +90,10 @@ def get_kis_access_token(force_refresh: bool = False) -> str:
 
     if not app_key or not app_secret:
         raise MarketDataProviderUnavailable("KIS_APP_KEY와 KIS_APP_SECRET을 설정하세요.")
+
+    configured_token = os.getenv("KIS_ACCESS_TOKEN", "").strip()
+    if configured_token and not force_refresh:
+        return configured_token
 
     base_url = get_kis_base_url()
     cache_key = f"{base_url}:{app_key}"
@@ -148,6 +153,7 @@ def issue_kis_access_token(*, app_key: str, app_secret: str, base_url: str) -> d
 def get_kis_token_status() -> dict[str, Any]:
     base_url = get_kis_base_url()
     app_key = os.getenv("KIS_APP_KEY", "").strip()
+    configured_token = os.getenv("KIS_ACCESS_TOKEN", "").strip()
     cache_key = f"{base_url}:{app_key}"
     cached = KIS_TOKEN_CACHE.get(cache_key)
     expires_at = float(cached.get("expires_at_epoch", 0)) if isinstance(cached, dict) else 0
@@ -157,7 +163,7 @@ def get_kis_token_status() -> dict[str, Any]:
         "ready": is_kis_open_api_ready(),
         "environment": get_kis_environment_name(),
         "base_url": base_url,
-        "token_cached": bool(expires_at > time.time()),
+        "token_cached": bool(configured_token or expires_at > time.time()),
         "expires_in_seconds": max(0, int(expires_at - time.time())) if expires_at else 0,
     }
 
@@ -523,6 +529,51 @@ def fetch_kis_daily_credit_balance(
     return [row for row in normalized_rows if row is not None]
 
 
+def fetch_kis_financial_ratios(
+    symbol: str,
+    period_type: str = "annual",
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    normalized_symbol = normalize_kis_symbol(symbol)
+    normalized_period_type = period_type.strip().lower()
+    period_code_by_type = {
+        "annual": "0",
+        "year": "0",
+        "yearly": "0",
+        "quarter": "1",
+        "quarterly": "1",
+    }
+    period_code = period_code_by_type.get(normalized_period_type)
+    if period_code is None:
+        raise ValueError("재무비율 기간은 annual 또는 quarter만 사용할 수 있습니다.")
+
+    safe_limit = max(1, min(limit, 20))
+    payload = call_kis_open_api(
+        path=KIS_DOMESTIC_FINANCIAL_RATIO_PATH,
+        tr_id="FHKST66430300",
+        params={
+            "FID_DIV_CLS_CODE": period_code,
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd": normalized_symbol,
+        },
+    )
+    rows = payload.get("output")
+
+    if not isinstance(rows, list):
+        rows = [rows] if isinstance(rows, dict) else []
+
+    normalized_rows = [
+        normalize_kis_financial_ratio(
+            row=row,
+            symbol=normalized_symbol,
+            period_type="annual" if period_code == "0" else "quarter",
+        )
+        for row in rows[:safe_limit]
+        if isinstance(row, dict)
+    ]
+    return [row for row in normalized_rows if row is not None]
+
+
 def call_kis_open_api(
     *,
     path: str,
@@ -837,6 +888,33 @@ def normalize_kis_daily_credit_balance(
         "margin_loan_redeem_amount": int_from_kis(row.get("whol_loan_rdmp_amt")),
         "stock_loan_balance": int_from_kis(row.get("whol_stln_rmnd_amt")),
         "stock_loan_balance_rate": float_from_kis(row.get("whol_stln_rmnd_rate")),
+    }
+
+
+def normalize_kis_financial_ratio(
+    *,
+    row: dict[str, Any],
+    symbol: str,
+    period_type: str,
+) -> dict[str, Any] | None:
+    fiscal_period = str(row.get("stac_yymm") or "").strip()
+    if not fiscal_period:
+        return None
+
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "symbol": symbol,
+        "fiscal_period": fiscal_period,
+        "period_type": period_type,
+        "revenue_growth": float_from_kis(row.get("grs")),
+        "operating_income_growth": float_from_kis(row.get("bsop_prfi_inrt")),
+        "net_income_growth": float_from_kis(row.get("ntin_inrt")),
+        "roe": float_from_kis(row.get("roe_val")),
+        "eps": float_from_kis(row.get("eps")),
+        "sps": float_from_kis(row.get("sps")),
+        "bps": float_from_kis(row.get("bps")),
+        "reserve_ratio": float_from_kis(row.get("rsrv_rate")),
+        "debt_ratio": float_from_kis(row.get("lblt_rate")),
     }
 
 

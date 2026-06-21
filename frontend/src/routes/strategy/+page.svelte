@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import {
+    createKisOrderProposal,
     fetchDashboard,
     fetchKisBuyableCash,
     fetchKisBrokerAccountStatus,
@@ -11,9 +12,12 @@
     type KisBuyableCash,
     type KisBrokerAccountStatus,
     type KisBrokerBalance,
+    type KisOrderProposal,
+    type KisPaperBatchOrderResponse,
     type KisOrderExecutions,
     type Strategy,
     type StrategyCandidateResult,
+    submitKisPaperBatchOrders,
     fetchUserStrategies,
     type UserStrategy
   } from '$lib/api';
@@ -85,6 +89,18 @@
   let buyableLoading = false;
   let buyableError = '';
   let buyableResult: KisBuyableCash | null = null;
+  let proposalMaxPositions = 10;
+  let proposalAmountPerSymbol = 5000000;
+  let proposalOrderType: 'market' | 'limit' = 'market';
+  let proposalCashBufferRate = 0;
+  let orderProposal: KisOrderProposal | null = null;
+  let selectedProposalSymbols: string[] = [];
+  let batchConfirmPhrase = '';
+  let batchSubmitting = false;
+  let batchSubmitError = '';
+  let batchSubmitResult: KisPaperBatchOrderResponse | null = null;
+  let proposalLoading = false;
+  let proposalError = '';
   let loading = true;
   let error = '';
 
@@ -350,6 +366,19 @@
   $: averageScore = candidateRows.length
     ? Math.round(candidateRows.reduce((total, item) => total + item.strategyScore, 0) / candidateRows.length)
     : 0;
+  $: executableProposalLines = (orderProposal?.lines ?? []).filter((line) => line.status === '주문 가능');
+  $: selectedProposalLines = executableProposalLines.filter((line) =>
+    selectedProposalSymbols.includes(line.symbol)
+  );
+  $: selectedProposalAmount = selectedProposalLines.reduce(
+    (total, line) => total + line.estimated_amount,
+    0
+  );
+  $: canSubmitBatchOrders =
+    Boolean(brokerStatus?.paper_trading_enabled) &&
+    selectedProposalLines.length > 0 &&
+    batchConfirmPhrase.trim() === '모의주문 실행' &&
+    !batchSubmitting;
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
     return {
@@ -414,6 +443,12 @@
   }
 
   async function handleStrategyChange() {
+    orderProposal = null;
+    selectedProposalSymbols = [];
+    batchConfirmPhrase = '';
+    batchSubmitError = '';
+    batchSubmitResult = null;
+    proposalError = '';
     await loadCandidateRowsForSelectedStrategy();
   }
 
@@ -508,6 +543,79 @@
       buyableError = err instanceof Error ? err.message : 'KIS 매수가능금액을 불러오지 못했습니다.';
     } finally {
       buyableLoading = false;
+    }
+  }
+
+  async function createOrderProposal() {
+    if (!selectedOption) {
+      proposalError = '전략을 먼저 선택해 주세요.';
+      return;
+    }
+
+    proposalLoading = true;
+    proposalError = '';
+    orderProposal = null;
+    selectedProposalSymbols = [];
+    batchConfirmPhrase = '';
+    batchSubmitError = '';
+    batchSubmitResult = null;
+
+    try {
+      orderProposal = await createKisOrderProposal({
+        strategy_code: selectedOption.code,
+        max_positions: Math.max(1, Math.min(30, Number(proposalMaxPositions) || 10)),
+        amount_per_symbol: Math.max(1000, Number(proposalAmountPerSymbol) || 5000000),
+        order_type: proposalOrderType,
+        cash_buffer_rate: Math.max(0, Math.min(50, Number(proposalCashBufferRate) || 0))
+      });
+      selectedProposalSymbols = orderProposal.lines
+        .filter((line) => line.status === '주문 가능')
+        .map((line) => line.symbol);
+    } catch (err) {
+      proposalError = err instanceof Error ? err.message : 'KIS 주문 제안을 생성하지 못했습니다.';
+    } finally {
+      proposalLoading = false;
+    }
+  }
+
+  function toggleProposalLine(symbol: string, checked: boolean) {
+    if (checked) {
+      selectedProposalSymbols = Array.from(new Set([...selectedProposalSymbols, symbol]));
+      return;
+    }
+    selectedProposalSymbols = selectedProposalSymbols.filter((item) => item !== symbol);
+  }
+
+  function handleProposalSelectionChange(symbol: string, event: Event) {
+    toggleProposalLine(symbol, (event.currentTarget as HTMLInputElement).checked);
+  }
+
+  async function submitBatchOrders() {
+    if (!orderProposal || !canSubmitBatchOrders) return;
+
+    batchSubmitting = true;
+    batchSubmitError = '';
+    batchSubmitResult = null;
+
+    try {
+      batchSubmitResult = await submitKisPaperBatchOrders({
+        confirm_submit: true,
+        confirm_phrase: batchConfirmPhrase,
+        orders: selectedProposalLines.map((line) => ({
+          side: 'buy',
+          symbol: line.symbol,
+          name: line.name,
+          quantity: line.quantity,
+          order_type: line.order_type,
+          price: line.order_type === 'limit' ? line.reference_price : 0,
+          exchange_id: 'KRX'
+        }))
+      });
+      await loadBrokerAccount();
+    } catch (err) {
+      batchSubmitError = err instanceof Error ? err.message : 'KIS 모의 일괄 주문을 제출하지 못했습니다.';
+    } finally {
+      batchSubmitting = false;
     }
   }
 
@@ -666,6 +774,10 @@
 
   function formatSigned(value: number) {
     return `${value > 0 ? '+' : ''}${value.toLocaleString('ko-KR')}`;
+  }
+
+  function orderTypeLabel(value: 'market' | 'limit') {
+    return value === 'market' ? '시장가' : '지정가';
   }
 </script>
 
@@ -1000,6 +1112,176 @@
             {/if}
           {/if}
         {/if}
+      {/if}
+    </section>
+
+    <section class="panel order-proposal-panel">
+      <div class="panel-heading inline">
+        <div>
+          <span>전략 주문 제안</span>
+          <strong>{selectedOption?.name ?? '전략 선택 필요'}</strong>
+        </div>
+        {#if orderProposal}
+          <span class="muted">{orderProposal.generated_at.replace('T', ' ')} · {orderProposal.proposal_id}</span>
+        {/if}
+      </div>
+      <div class="order-proposal-form">
+        <label>
+          <span>종목 수</span>
+          <input bind:value={proposalMaxPositions} min="1" max="30" type="number" />
+        </label>
+        <label>
+          <span>종목당 금액</span>
+          <input bind:value={proposalAmountPerSymbol} min="100000" step="100000" type="number" />
+        </label>
+        <label>
+          <span>주문 방식</span>
+          <select bind:value={proposalOrderType}>
+            <option value="market">시장가</option>
+            <option value="limit">지정가 기준</option>
+          </select>
+        </label>
+        <label>
+          <span>현금 버퍼</span>
+          <input bind:value={proposalCashBufferRate} min="0" max="50" step="1" type="number" />
+        </label>
+        <button type="button" onclick={createOrderProposal} disabled={proposalLoading || !selectedOption}>
+          {proposalLoading ? '계산 중' : '제안 생성'}
+        </button>
+      </div>
+      {#if proposalError}
+        <div class="empty-state error">{proposalError}</div>
+      {:else if proposalLoading}
+        <div class="empty-state">전략 후보를 주문 제안으로 계산하는 중입니다.</div>
+      {:else if orderProposal}
+        <div class="broker-summary-grid compact-summary-grid">
+          <div>
+            <span>주문 가능 후보</span>
+            <strong>{formatNumber(orderProposal.executable_count)}개</strong>
+          </div>
+          <div>
+            <span>예상 주문금액</span>
+            <strong>{formatKrw(orderProposal.total_estimated_amount)}</strong>
+          </div>
+          <div>
+            <span>예수금</span>
+            <strong>{formatKrw(orderProposal.available_cash)}</strong>
+          </div>
+          <div>
+            <span>현금 버퍼</span>
+            <strong>{formatKrw(orderProposal.cash_buffer_amount)}</strong>
+          </div>
+          <div>
+            <span>주문 방식</span>
+            <strong>{orderTypeLabel(orderProposal.order_type)}</strong>
+          </div>
+          <div>
+            <span>후보 출처</span>
+            <strong>{candidateSourceLabel(orderProposal.source)}</strong>
+          </div>
+        </div>
+        {#if orderProposal.warnings.length}
+          <div class="proposal-warnings">
+            {#each orderProposal.warnings as warning}
+              <span>{warning}</span>
+            {/each}
+          </div>
+        {/if}
+        <div class="batch-order-controls">
+          <div>
+            <span>선택 주문</span>
+            <strong>{formatNumber(selectedProposalLines.length)}개 · {formatKrw(selectedProposalAmount)}</strong>
+          </div>
+          <label>
+            <span>확인 문구</span>
+            <input
+              bind:value={batchConfirmPhrase}
+              disabled={!brokerStatus?.paper_trading_enabled || batchSubmitting}
+              placeholder="모의주문 실행"
+            />
+          </label>
+          <button type="button" onclick={submitBatchOrders} disabled={!canSubmitBatchOrders}>
+            {batchSubmitting ? '제출 중' : '모의 일괄 주문'}
+          </button>
+        </div>
+        {#if batchSubmitError}
+          <div class="empty-state error">{batchSubmitError}</div>
+        {:else if batchSubmitResult}
+          <div class="broker-summary-grid compact-summary-grid">
+            <div>
+              <span>일괄 주문 상태</span>
+              <strong>{batchSubmitResult.status === 'success' ? '제출 완료' : '부분 실패'}</strong>
+            </div>
+            <div>
+              <span>제출 성공</span>
+              <strong>{formatNumber(batchSubmitResult.submitted_count)}건</strong>
+            </div>
+            <div>
+              <span>제출 실패</span>
+              <strong>{formatNumber(batchSubmitResult.failed_count)}건</strong>
+            </div>
+            <div>
+              <span>예상 주문금액</span>
+              <strong>{formatKrw(batchSubmitResult.total_estimated_amount)}</strong>
+            </div>
+          </div>
+        {/if}
+        <div class="table-wrap compact-table-wrap">
+          <table class="wide-table broker-holdings-table">
+            <thead>
+              <tr>
+                <th>선택</th>
+                <th>종목</th>
+                <th>점수</th>
+                <th>방식</th>
+                <th>기준가</th>
+                <th>수량</th>
+                <th>예상금액</th>
+                <th>상태</th>
+                <th>선정 사유</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each orderProposal.lines as line}
+                <tr>
+                  <td>
+                    <input
+                      checked={selectedProposalSymbols.includes(line.symbol)}
+                      disabled={line.status !== '주문 가능' || batchSubmitting}
+                      type="checkbox"
+                      onchange={(event) => handleProposalSelectionChange(line.symbol, event)}
+                    />
+                  </td>
+                  <td>
+                    <strong>{line.name || line.symbol}</strong>
+                    <span>{line.symbol}</span>
+                  </td>
+                  <td class="rank-cell">{line.strategy_score}</td>
+                  <td>{orderTypeLabel(line.order_type)}</td>
+                  <td>{formatKrw(line.reference_price)}</td>
+                  <td>{formatNumber(line.quantity)}주</td>
+                  <td>{formatKrw(line.estimated_amount)}</td>
+                  <td
+                    class:tone-positive={line.status === '주문 가능'}
+                    class:tone-caution={line.status !== '주문 가능'}
+                  >
+                    <strong>{line.status}</strong>
+                    {#if line.warnings.length}
+                      <span>{line.warnings.join(' / ')}</span>
+                    {/if}
+                  </td>
+                  <td>
+                    <ul class="compact-list">
+                      {#each line.rationale as reason}
+                        <li>{reason}</li>
+                      {/each}
+                    </ul>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
 

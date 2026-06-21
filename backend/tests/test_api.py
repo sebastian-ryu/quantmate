@@ -411,6 +411,188 @@ def test_kis_paper_order_rejects_order_amount_limit(monkeypatch) -> None:
         assert log.status == "failed"
 
 
+def test_kis_order_proposal_builds_strategy_batch(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("MAX_ORDER_AMOUNT_KRW", "1000000")
+    monkeypatch.setenv("MAX_DAILY_ORDER_COUNT", "10")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    def fake_balance() -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "account_label": "******78-01",
+            "fetched_at": "2026-06-21T10:00:00",
+            "summary": {"deposit_amount": 5000000},
+            "holdings": [],
+        }
+
+    monkeypatch.setattr(main_module, "fetch_kis_domestic_balance", fake_balance)
+
+    response = client.post(
+        "/api/broker/kis/order-proposals",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "max_positions": 3,
+            "amount_per_symbol": 500000,
+            "order_type": "market",
+            "cash_buffer_rate": 10,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["strategy_code"] == "relative-momentum-swing"
+    assert data["executable_count"] == 3
+    assert data["total_estimated_amount"] > 0
+    assert data["cash_buffer_amount"] == 500000
+    assert len(data["lines"]) == 3
+    assert all(line["status"] == "주문 가능" for line in data["lines"])
+    assert all(line["quantity"] >= 1 for line in data["lines"])
+
+    with session_factory() as session:
+        log = session.scalar(select(BrokerAuditLog))
+        assert log is not None
+        assert log.action == "order_proposal.create"
+        assert "12345678" not in log.request_json
+
+
+def test_kis_order_proposal_marks_amount_too_small(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("MAX_ORDER_AMOUNT_KRW", "1000000")
+
+    def fake_balance() -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "account_label": "",
+            "fetched_at": "2026-06-21T10:00:00",
+            "summary": {"deposit_amount": 5000000},
+            "holdings": [],
+        }
+
+    monkeypatch.setattr(main_module, "fetch_kis_domestic_balance", fake_balance)
+
+    response = client.post(
+        "/api/broker/kis/order-proposals",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "max_positions": 1,
+            "amount_per_symbol": 1000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["executable_count"] == 0
+    assert data["lines"][0]["status"] == "금액 부족"
+    assert data["lines"][0]["estimated_amount"] == 0
+
+
+def test_kis_paper_batch_order_requires_confirm_phrase(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+
+    response = client.post(
+        "/api/broker/kis/paper/orders/batch",
+        json={
+            "confirm_submit": True,
+            "confirm_phrase": "실행",
+            "orders": [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quantity": 1,
+                    "order_type": "limit",
+                    "price": 70000,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "확인 문구" in response.json()["detail"]
+
+
+def test_kis_paper_batch_order_logs_before_and_after(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("MAX_ORDER_AMOUNT_KRW", "1000000")
+    monkeypatch.setenv("MAX_DAILY_ORDER_COUNT", "10")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    submitted_symbols: list[str] = []
+
+    def fake_submit_order(**kwargs) -> dict[str, object]:
+        submitted_symbols.append(kwargs["symbol"])
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "order_type": kwargs["order_type"],
+            "quantity": kwargs["quantity"],
+            "price": kwargs["price"],
+            "order_no": f"000000000{len(submitted_symbols)}",
+            "order_time": "101010",
+            "exchange_order_org_no": "001",
+            "message": "모의주문 접수",
+        }
+
+    monkeypatch.setattr(main_module, "submit_kis_domestic_cash_order", fake_submit_order)
+
+    response = client.post(
+        "/api/broker/kis/paper/orders/batch",
+        json={
+            "confirm_submit": True,
+            "confirm_phrase": "모의주문 실행",
+            "orders": [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quantity": 1,
+                    "order_type": "limit",
+                    "price": 70000,
+                },
+                {
+                    "symbol": "000660",
+                    "name": "SK하이닉스",
+                    "quantity": 1,
+                    "order_type": "limit",
+                    "price": 120000,
+                },
+            ],
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 202
+    assert submitted_symbols == ["005930", "000660"]
+    assert data["submitted_count"] == 2
+    assert data["failed_count"] == 0
+    assert data["status"] == "success"
+    assert data["total_estimated_amount"] == 190000
+
+    with session_factory() as session:
+        logs = session.scalars(select(BrokerAuditLog).order_by(BrokerAuditLog.id)).all()
+        assert [log.action for log in logs] == [
+            "paper_batch_order.submit.before",
+            "paper_batch_order.submit.after",
+        ]
+        assert all("12345678" not in log.request_json for log in logs)
+        assert main_module._count_today_successful_paper_orders() == 2
+
+
 def test_dashboard_contains_initial_mvp_data() -> None:
     response = client.get("/api/dashboard")
     data = response.json()

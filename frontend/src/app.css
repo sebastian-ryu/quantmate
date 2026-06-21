@@ -438,6 +438,80 @@ textarea {
   font-size: 11px;
 }
 
+.order-proposal-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.order-proposal-form {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns:
+    minmax(92px, 110px)
+    minmax(150px, 1fr)
+    minmax(120px, 150px)
+    minmax(100px, 125px)
+    auto;
+}
+
+.order-proposal-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.order-proposal-form span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.proposal-warnings {
+  align-items: center;
+  background: #fff8e8;
+  border: 1px solid #ead8a8;
+  border-radius: 6px;
+  color: #715518;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.proposal-warnings span {
+  background: #fffdf5;
+  border: 1px solid #f0dfb5;
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.batch-order-controls {
+  align-items: end;
+  background: #f7fafa;
+  border: 1px solid #e2e9eb;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 240px) auto;
+  padding: 10px;
+}
+
+.batch-order-controls div,
+.batch-order-controls label {
+  display: grid;
+  gap: 4px;
+}
+
+.batch-order-controls span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.batch-order-controls strong {
+  font-size: 13px;
+}
+
 .compact-summary-grid {
   grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
 }
@@ -1563,7 +1637,9 @@ td b {
     grid-template-columns: 1fr;
   }
 
-  .buyable-form {
+  .buyable-form,
+  .batch-order-controls,
+  .order-proposal-form {
     align-items: stretch;
     grid-template-columns: 1fr;
   }

@@ -336,6 +336,94 @@ export type KisOrderExecutions = {
   orders: KisOrderExecutionItem[];
 };
 
+export type KisOrderProposalLine = {
+  symbol: string;
+  name: string;
+  side: 'buy' | 'sell';
+  order_type: 'market' | 'limit';
+  reference_price: number;
+  quantity: number;
+  estimated_amount: number;
+  strategy_score: number;
+  status: string;
+  warnings: string[];
+  rationale: string[];
+};
+
+export type KisOrderProposal = {
+  provider: string;
+  environment: string;
+  account_label: string;
+  proposal_id: string;
+  generated_at: string;
+  strategy_code: string;
+  strategy_name: string;
+  source: string;
+  max_positions: number;
+  amount_per_symbol: number;
+  order_type: 'market' | 'limit';
+  cash_buffer_rate: number;
+  available_cash: number;
+  cash_buffer_amount: number;
+  total_estimated_amount: number;
+  executable_count: number;
+  warnings: string[];
+  lines: KisOrderProposalLine[];
+  audit_log_id: number | null;
+};
+
+export type KisOrderProposalRequest = {
+  strategy_code: string;
+  max_positions: number;
+  amount_per_symbol: number;
+  order_type?: 'market' | 'limit';
+  cash_buffer_rate?: number;
+};
+
+export type KisPaperBatchOrderItem = {
+  side?: 'buy' | 'sell';
+  symbol: string;
+  name?: string;
+  quantity: number;
+  order_type?: 'market' | 'limit';
+  price?: number;
+  exchange_id?: string;
+};
+
+export type KisPaperBatchOrderRequest = {
+  orders: KisPaperBatchOrderItem[];
+  confirm_submit: boolean;
+  confirm_phrase: string;
+};
+
+export type KisPaperBatchOrderResult = {
+  symbol: string;
+  name: string;
+  side: 'buy' | 'sell';
+  order_type: 'market' | 'limit';
+  quantity: number;
+  price: number;
+  estimated_amount: number;
+  status: string;
+  order_no: string;
+  order_time: string;
+  message: string;
+};
+
+export type KisPaperBatchOrderResponse = {
+  provider: string;
+  environment: string;
+  account_label: string;
+  batch_id: string;
+  submitted_count: number;
+  failed_count: number;
+  total_estimated_amount: number;
+  status: string;
+  results: KisPaperBatchOrderResult[];
+  before_audit_log_id: number | null;
+  after_audit_log_id: number | null;
+};
+
 export type YahooDailyPrice = {
   symbol: string;
   trade_date: string;
@@ -472,6 +560,44 @@ export async function fetchKisBuyableCash(params: {
   if (!response.ok) {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `KIS 매수가능금액을 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function createKisOrderProposal(
+  request: KisOrderProposalRequest
+): Promise<KisOrderProposal> {
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/order-proposals`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 주문 제안을 생성하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function submitKisPaperBatchOrders(
+  request: KisPaperBatchOrderRequest
+): Promise<KisPaperBatchOrderResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/paper/orders/batch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 모의 일괄 주문을 제출하지 못했습니다. (${response.status})`);
   }
 
   return response.json();

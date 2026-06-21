@@ -474,6 +474,94 @@ class KisPaperOrderResponse(BaseModel):
     audit_log_id: int | None = None
 
 
+class KisOrderProposalRequest(BaseModel):
+    strategy_code: str = Field(min_length=1, max_length=120)
+    max_positions: int = Field(default=10, ge=1, le=30)
+    amount_per_symbol: int = Field(default=5_000_000, ge=1_000, le=1_000_000_000)
+    order_type: str = Field(default="market", pattern="^(market|limit)$")
+    cash_buffer_rate: float = Field(default=0, ge=0, le=50)
+
+
+class KisOrderProposalLine(BaseModel):
+    symbol: str
+    name: str
+    side: str = "buy"
+    order_type: str
+    reference_price: int
+    quantity: int
+    estimated_amount: int
+    strategy_score: int
+    status: str
+    warnings: list[str]
+    rationale: list[str]
+
+
+class KisOrderProposalResponse(BaseModel):
+    provider: str
+    environment: str
+    account_label: str
+    proposal_id: str
+    generated_at: str
+    strategy_code: str
+    strategy_name: str
+    source: str
+    max_positions: int
+    amount_per_symbol: int
+    order_type: str
+    cash_buffer_rate: float
+    available_cash: int
+    cash_buffer_amount: int
+    total_estimated_amount: int
+    executable_count: int
+    warnings: list[str]
+    lines: list[KisOrderProposalLine]
+    audit_log_id: int | None = None
+
+
+class KisPaperBatchOrderItem(BaseModel):
+    side: str = Field(default="buy", pattern="^(buy|sell)$")
+    symbol: str = Field(min_length=1, max_length=20)
+    name: str = Field(default="", max_length=120)
+    quantity: int = Field(ge=1)
+    order_type: str = Field(default="market", pattern="^(market|limit)$")
+    price: int = Field(default=0, ge=0)
+    exchange_id: str = Field(default="KRX", max_length=10)
+
+
+class KisPaperBatchOrderRequest(BaseModel):
+    orders: list[KisPaperBatchOrderItem] = Field(min_length=1, max_length=20)
+    confirm_submit: bool = False
+    confirm_phrase: str = ""
+
+
+class KisPaperBatchOrderResult(BaseModel):
+    symbol: str
+    name: str
+    side: str
+    order_type: str
+    quantity: int
+    price: int
+    estimated_amount: int
+    status: str
+    order_no: str = ""
+    order_time: str = ""
+    message: str
+
+
+class KisPaperBatchOrderResponse(BaseModel):
+    provider: str
+    environment: str
+    account_label: str
+    batch_id: str
+    submitted_count: int
+    failed_count: int
+    total_estimated_amount: int
+    status: str
+    results: list[KisPaperBatchOrderResult]
+    before_audit_log_id: int | None = None
+    after_audit_log_id: int | None = None
+
+
 class KisCurrentPriceResponse(BaseModel):
     provider: str
     symbol: str
@@ -735,7 +823,7 @@ def _paper_trading_enabled() -> bool:
 
 
 def _max_order_amount_krw() -> int:
-    return _env_int("MAX_ORDER_AMOUNT_KRW", 100_000)
+    return _env_int("MAX_ORDER_AMOUNT_KRW", 5_000_000)
 
 
 def _max_daily_order_count() -> int:
@@ -797,7 +885,7 @@ def _try_create_broker_audit_log(
 def _count_today_successful_paper_orders() -> int:
     today_start = datetime.combine(today_kst(), datetime.min.time())
     with SessionLocal() as session:
-        return (
+        single_order_count = (
             session.scalar(
                 select(func.count())
                 .select_from(BrokerAuditLog)
@@ -810,6 +898,23 @@ def _count_today_successful_paper_orders() -> int:
             )
             or 0
         )
+        batch_logs = session.scalars(
+            select(BrokerAuditLog).where(
+                BrokerAuditLog.environment == "paper",
+                BrokerAuditLog.action == "paper_batch_order.submit.after",
+                BrokerAuditLog.status.in_(["success", "partial_failed"]),
+                BrokerAuditLog.created_at >= today_start,
+            )
+        ).all()
+        batch_count = 0
+        for log in batch_logs:
+            try:
+                payload = json.loads(log.response_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            batch_count += int(payload.get("submitted_count") or 0)
+
+        return single_order_count + batch_count
 
 
 def _estimate_order_amount(request: KisPaperOrderRequest) -> int:
@@ -843,6 +948,149 @@ def _validate_paper_order_risk_limits(request: KisPaperOrderRequest) -> int:
         )
 
     return estimated_amount
+
+
+def _validate_paper_batch_order_risk_limits(
+    orders: list[KisPaperBatchOrderItem],
+) -> list[tuple[KisPaperBatchOrderItem, int]]:
+    max_order_amount = _max_order_amount_krw()
+    estimated_orders: list[tuple[KisPaperBatchOrderItem, int]] = []
+
+    for order in orders:
+        single_request = KisPaperOrderRequest(
+            side=order.side,
+            symbol=order.symbol,
+            quantity=order.quantity,
+            order_type=order.order_type,
+            price=order.price,
+            exchange_id=order.exchange_id,
+            confirm_submit=True,
+        )
+        estimated_amount = _estimate_order_amount(single_request)
+        if max_order_amount > 0 and estimated_amount > max_order_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{order.symbol} 주문 예상금액 {estimated_amount:,}원이 1회 주문 한도 "
+                    f"{max_order_amount:,}원을 초과합니다."
+                ),
+            )
+        estimated_orders.append((order, estimated_amount))
+
+    max_daily_count = _max_daily_order_count()
+    if max_daily_count > 0:
+        current_count = _count_today_successful_paper_orders()
+        if current_count + len(orders) > max_daily_count:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"일괄 주문 {len(orders)}건을 제출하면 오늘 모의주문 횟수가 "
+                    f"일일 한도 {max_daily_count}회를 초과합니다."
+                ),
+            )
+
+    return estimated_orders
+
+
+def _proposal_available_cash() -> tuple[int, bool, list[str]]:
+    try:
+        balance = fetch_kis_domestic_balance()
+    except MarketDataProviderUnavailable as exc:
+        return 0, False, [f"KIS 계좌 현금 조회 실패: {exc}"]
+    except ValueError as exc:
+        return 0, False, [f"KIS 계좌 설정 확인 필요: {exc}"]
+
+    summary = balance.get("summary", {})
+    if not isinstance(summary, dict):
+        return 0, False, ["KIS 잔고 응답에서 예수금을 확인하지 못했습니다."]
+    try:
+        return int(summary.get("deposit_amount") or 0), True, []
+    except (TypeError, ValueError):
+        return 0, False, ["KIS 예수금 값을 숫자로 해석하지 못했습니다."]
+
+
+def _remaining_daily_paper_order_slots() -> tuple[int | None, list[str]]:
+    max_daily_count = _max_daily_order_count()
+    if max_daily_count <= 0:
+        return None, []
+
+    try:
+        used_count = _count_today_successful_paper_orders()
+    except SQLAlchemyError as exc:
+        return None, [f"일일 주문 횟수 조회 실패: {exc.__class__.__name__}"]
+
+    return max(0, max_daily_count - used_count), []
+
+
+def _build_kis_order_proposal_lines(
+    *,
+    candidates: list[StrategyCandidate],
+    request: KisOrderProposalRequest,
+    available_cash: int,
+    cash_verified: bool,
+    remaining_daily_slots: int | None,
+) -> tuple[list[KisOrderProposalLine], int, int, list[str]]:
+    lines: list[KisOrderProposalLine] = []
+    total_estimated_amount = 0
+    executable_count = 0
+    warnings: list[str] = []
+    max_order_amount = _max_order_amount_krw()
+    cash_budget = max(0, int(available_cash * (1 - request.cash_buffer_rate / 100))) if cash_verified else None
+    remaining_cash = cash_budget
+
+    for candidate in candidates[: request.max_positions]:
+        line_warnings: list[str] = []
+        reference_price = max(0, int(candidate.price or 0))
+        quantity = request.amount_per_symbol // reference_price if reference_price > 0 else 0
+        estimated_amount = quantity * reference_price
+        status = "주문 가능"
+
+        if reference_price <= 0:
+            status = "현재가 없음"
+            line_warnings.append("수량 계산에 필요한 현재가가 없습니다.")
+        elif quantity <= 0:
+            status = "금액 부족"
+            line_warnings.append("종목당 금액이 현재가보다 작습니다.")
+
+        if status == "주문 가능" and max_order_amount > 0 and estimated_amount > max_order_amount:
+            status = "1회 한도 초과"
+            line_warnings.append(f"예상금액이 1회 주문 한도 {max_order_amount:,}원을 초과합니다.")
+
+        if status == "주문 가능" and remaining_daily_slots is not None and executable_count >= remaining_daily_slots:
+            status = "일일 한도 초과"
+            line_warnings.append("오늘 남은 모의주문 가능 횟수를 초과합니다.")
+
+        if status == "주문 가능" and remaining_cash is not None and estimated_amount > remaining_cash:
+            status = "현금 부족"
+            line_warnings.append("예수금과 현금 버퍼를 반영하면 주문 가능 금액을 초과합니다.")
+
+        if status == "주문 가능":
+            executable_count += 1
+            total_estimated_amount += estimated_amount
+            if remaining_cash is not None:
+                remaining_cash -= estimated_amount
+
+        lines.append(
+            KisOrderProposalLine(
+                symbol=candidate.symbol,
+                name=candidate.name,
+                order_type=request.order_type,
+                reference_price=reference_price,
+                quantity=quantity,
+                estimated_amount=estimated_amount,
+                strategy_score=candidate.strategy_score,
+                status=status,
+                warnings=line_warnings,
+                rationale=candidate.rationale[:2],
+            )
+        )
+
+    if cash_verified and cash_budget is not None and total_estimated_amount > cash_budget:
+        warnings.append("예상 주문금액이 현금 버퍼 반영 후 주문 가능 예수금을 초과합니다.")
+    if any(line.status != "주문 가능" for line in lines):
+        warnings.append("일부 종목은 금액, 현금, 주문 한도 조건 때문에 바로 주문할 수 없습니다.")
+
+    return lines, total_estimated_amount, executable_count, warnings
 
 
 def _allowed_origins() -> list[str]:
@@ -3216,6 +3464,218 @@ async def kis_broker_orders(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return KisOrderExecutionResponse(**result)
+
+
+@app.post("/api/broker/kis/order-proposals")
+async def kis_order_proposal(request: KisOrderProposalRequest) -> KisOrderProposalResponse:
+    strategy_response = await strategy_candidates(request.strategy_code, limit=request.max_positions)
+    available_cash, cash_verified, warnings = _proposal_available_cash()
+    remaining_slots, slot_warnings = _remaining_daily_paper_order_slots()
+    warnings.extend(slot_warnings)
+
+    if not is_kis_paper_trading():
+        warnings.append("현재 KIS 실전 계좌 설정입니다. 이 화면에서는 주문 제안만 생성합니다.")
+    elif not _paper_trading_enabled():
+        warnings.append("PAPER_TRADING_ENABLED=false 상태라 모의주문 제출은 잠겨 있습니다.")
+    if remaining_slots == 0:
+        warnings.append("오늘 남은 모의주문 가능 횟수가 없습니다.")
+    if not strategy_response.candidates:
+        warnings.append("선택한 전략의 후보 종목이 없습니다.")
+
+    lines, total_estimated_amount, executable_count, line_warnings = _build_kis_order_proposal_lines(
+        candidates=strategy_response.candidates,
+        request=request,
+        available_cash=available_cash,
+        cash_verified=cash_verified,
+        remaining_daily_slots=remaining_slots,
+    )
+    warnings.extend(line_warnings)
+
+    cash_buffer_amount = int(available_cash * request.cash_buffer_rate / 100) if cash_verified else 0
+    response = KisOrderProposalResponse(
+        provider="KIS Open API",
+        environment=get_kis_environment_name(),
+        account_label=_masked_kis_account_label(),
+        proposal_id=uuid4().hex[:12],
+        generated_at=now_kst_naive().isoformat(timespec="seconds"),
+        strategy_code=strategy_response.strategy_code,
+        strategy_name=strategy_response.strategy_name,
+        source=strategy_response.source,
+        max_positions=request.max_positions,
+        amount_per_symbol=request.amount_per_symbol,
+        order_type=request.order_type,
+        cash_buffer_rate=request.cash_buffer_rate,
+        available_cash=available_cash,
+        cash_buffer_amount=cash_buffer_amount,
+        total_estimated_amount=total_estimated_amount,
+        executable_count=executable_count,
+        warnings=warnings,
+        lines=lines,
+    )
+    audit_log_id = _try_create_broker_audit_log(
+        action="order_proposal.create",
+        status="success",
+        request_payload={
+            "account_label": _masked_kis_account_label(),
+            "environment": get_kis_environment_name(),
+            "strategy_code": request.strategy_code,
+            "max_positions": request.max_positions,
+            "amount_per_symbol": request.amount_per_symbol,
+            "order_type": request.order_type,
+            "cash_buffer_rate": request.cash_buffer_rate,
+        },
+        response_payload={
+            "proposal_id": response.proposal_id,
+            "strategy_code": response.strategy_code,
+            "line_count": len(response.lines),
+            "executable_count": response.executable_count,
+            "total_estimated_amount": response.total_estimated_amount,
+            "warning_count": len(response.warnings),
+        },
+        message="KIS 전략 주문 제안 생성",
+    )
+    response.audit_log_id = audit_log_id
+    return response
+
+
+@app.post("/api/broker/kis/paper/orders/batch", status_code=202)
+async def kis_paper_batch_order(request: KisPaperBatchOrderRequest) -> KisPaperBatchOrderResponse:
+    if not is_kis_paper_trading():
+        raise HTTPException(status_code=403, detail="현재 KIS_IS_PAPER=true인 모의투자 설정에서만 사용할 수 있습니다.")
+    if not _paper_trading_enabled():
+        raise HTTPException(status_code=403, detail="PAPER_TRADING_ENABLED=true 설정 후 사용할 수 있습니다.")
+    if not request.confirm_submit:
+        raise HTTPException(status_code=400, detail="confirm_submit=true가 있어야 모의주문을 제출합니다.")
+    if request.confirm_phrase.strip() != "모의주문 실행":
+        raise HTTPException(status_code=400, detail="확인 문구가 일치해야 모의 일괄 주문을 제출합니다.")
+
+    batch_id = uuid4().hex[:12]
+    request_payload = {
+        "account_label": _masked_kis_account_label(),
+        "environment": get_kis_environment_name(),
+        "batch_id": batch_id,
+        "order_count": len(request.orders),
+        "orders": [
+            {
+                "side": order.side,
+                "symbol": order.symbol,
+                "name": order.name,
+                "quantity": order.quantity,
+                "order_type": order.order_type,
+                "price": order.price,
+                "exchange_id": order.exchange_id,
+            }
+            for order in request.orders
+        ],
+    }
+    try:
+        estimated_orders = _validate_paper_batch_order_risk_limits(request.orders)
+    except HTTPException as exc:
+        _try_create_broker_audit_log(
+            action="paper_batch_order.risk_check",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={"detail": exc.detail},
+            message=str(exc.detail),
+        )
+        raise
+    except MarketDataProviderUnavailable as exc:
+        _try_create_broker_audit_log(
+            action="paper_batch_order.risk_check",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    total_estimated_amount = sum(amount for _order, amount in estimated_orders)
+    try:
+        before_log_id = _create_broker_audit_log(
+            action="paper_batch_order.submit.before",
+            status="pending",
+            request_payload={**request_payload, "total_estimated_amount": total_estimated_amount},
+            response_payload={},
+            message="KIS 모의 일괄 주문 제출 전 로그",
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"주문 감사 로그 저장 실패로 일괄 주문을 제출하지 않았습니다: {exc.__class__.__name__}",
+        ) from exc
+
+    results: list[KisPaperBatchOrderResult] = []
+    for order, estimated_amount in estimated_orders:
+        try:
+            result = submit_kis_domestic_cash_order(
+                side=order.side,
+                symbol=order.symbol,
+                quantity=order.quantity,
+                order_type=order.order_type,
+                price=order.price,
+                exchange_id=order.exchange_id,
+            )
+            results.append(
+                KisPaperBatchOrderResult(
+                    symbol=order.symbol,
+                    name=order.name,
+                    side=order.side,
+                    order_type=order.order_type,
+                    quantity=order.quantity,
+                    price=int(result.get("price") or order.price),
+                    estimated_amount=estimated_amount,
+                    status="success",
+                    order_no=str(result.get("order_no", "")),
+                    order_time=str(result.get("order_time", "")),
+                    message=str(result.get("message", "모의주문 접수")),
+                )
+            )
+        except (MarketDataProviderUnavailable, ValueError) as exc:
+            results.append(
+                KisPaperBatchOrderResult(
+                    symbol=order.symbol,
+                    name=order.name,
+                    side=order.side,
+                    order_type=order.order_type,
+                    quantity=order.quantity,
+                    price=order.price,
+                    estimated_amount=estimated_amount,
+                    status="failed",
+                    message=str(exc),
+                )
+            )
+            break
+
+    submitted_count = sum(1 for result in results if result.status == "success")
+    failed_count = len(results) - submitted_count
+    batch_status = "success" if failed_count == 0 and submitted_count == len(request.orders) else "partial_failed"
+    response = KisPaperBatchOrderResponse(
+        provider="KIS Open API",
+        environment=get_kis_environment_name(),
+        account_label=_masked_kis_account_label(),
+        batch_id=batch_id,
+        submitted_count=submitted_count,
+        failed_count=failed_count,
+        total_estimated_amount=total_estimated_amount,
+        status=batch_status,
+        results=results,
+        before_audit_log_id=before_log_id,
+    )
+    after_log_id = _try_create_broker_audit_log(
+        action="paper_batch_order.submit.after",
+        status=batch_status,
+        request_payload={**request_payload, "before_audit_log_id": before_log_id},
+        response_payload={
+            "batch_id": batch_id,
+            "submitted_count": submitted_count,
+            "failed_count": failed_count,
+            "total_estimated_amount": total_estimated_amount,
+            "results": [result.model_dump() for result in results],
+        },
+        message="KIS 모의 일괄 주문 제출 결과",
+    )
+    response.after_audit_log_id = after_log_id
+    return response
 
 
 @app.post("/api/broker/kis/paper/orders", status_code=202)

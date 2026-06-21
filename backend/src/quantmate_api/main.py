@@ -1560,6 +1560,7 @@ def _build_daily_price_strategy_candidates_if_available(
 
     if fundamentals:
         candidates = enrich_strategy_candidates_with_fundamentals(
+            strategy_code=strategy_code,
             candidates=candidates,
             fundamentals=fundamentals,
         )

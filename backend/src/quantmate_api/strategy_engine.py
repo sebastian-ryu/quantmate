@@ -468,6 +468,7 @@ def enrich_strategy_candidates_with_risk_indicators(
 
 def enrich_strategy_candidates_with_fundamentals(
     *,
+    strategy_code: str,
     candidates: list[dict[str, Any]],
     fundamentals: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -509,6 +510,7 @@ def enrich_strategy_candidates_with_fundamentals(
         if roe is not None and roe < 0:
             risk_flags.append("ROE 음수")
         next_candidate["risk_flags"] = risk_flags
+        next_candidate["strategy_score"] = calculate_strategy_score(strategy_code, next_candidate)
         enriched.append(next_candidate)
 
     return sorted(enriched, key=lambda item: item["strategy_score"], reverse=True)

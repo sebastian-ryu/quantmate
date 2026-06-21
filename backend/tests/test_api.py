@@ -2173,6 +2173,51 @@ def test_yahoo_strategy_batch_import_saves_daily_prices(monkeypatch) -> None:
         assert session.scalar(select(func.count()).select_from(DailyPrice)) == 4
 
 
+def test_yahoo_daily_price_import_normalizes_ohlcv_range(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-06-01",
+                "open": 100.0,
+                "high": 105.0,
+                "low": 99.0,
+                "close": 108.0,
+                "adjusted_close": 108.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+
+    response = client.post(
+        "/api/data/yahoo/daily-prices/import",
+        json={
+            "symbol": "005930",
+            "name": "삼성전자",
+            "exchange": "KOSPI",
+            "start": "2026-06-01",
+            "end": "2026-06-01",
+        },
+    )
+
+    assert response.status_code == 201
+
+    with session_factory() as session:
+        row = session.scalar(select(DailyPrice))
+        assert row is not None
+        assert row.high_price == row.close_price
+        assert row.low_price <= row.open_price <= row.high_price
+
+
 def test_backtest_run_uses_daily_prices_when_available(monkeypatch) -> None:
     use_sqlite_session(monkeypatch)
 

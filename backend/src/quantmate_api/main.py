@@ -4616,6 +4616,12 @@ def _save_yahoo_daily_prices(
         open_price = _decimal_or_none(row.get("open")) or raw_close_price
         high_price = _decimal_or_none(row.get("high")) or raw_close_price
         low_price = _decimal_or_none(row.get("low")) or raw_close_price
+        open_price, high_price, low_price, close_price = _normalize_ohlcv_prices(
+            open_price=open_price,
+            high_price=high_price,
+            low_price=low_price,
+            close_price=close_price,
+        )
         volume = int(row.get("volume") or 0)
 
         existing = session.scalar(
@@ -4705,6 +4711,12 @@ def _save_kis_daily_prices(
         open_price = _decimal_or_none(row.get("open")) or raw_close_price
         high_price = _decimal_or_none(row.get("high")) or raw_close_price
         low_price = _decimal_or_none(row.get("low")) or raw_close_price
+        open_price, high_price, low_price, close_price = _normalize_ohlcv_prices(
+            open_price=open_price,
+            high_price=high_price,
+            low_price=low_price,
+            close_price=close_price,
+        )
         volume = int(row.get("volume") or 0)
         trading_value = _decimal_or_none(row.get("trading_value"))
 
@@ -5105,6 +5117,18 @@ def _decimal_or_none(value: object) -> Decimal | None:
     if isinstance(value, str) and not value.strip():
         return None
     return Decimal(str(value))
+
+
+def _normalize_ohlcv_prices(
+    *,
+    open_price: Decimal,
+    high_price: Decimal,
+    low_price: Decimal,
+    close_price: Decimal,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    high = max(open_price, high_price, low_price, close_price)
+    low = min(open_price, high_price, low_price, close_price)
+    return open_price, high, low, close_price
 
 
 def _decimal_or_float(value: object) -> float | None:

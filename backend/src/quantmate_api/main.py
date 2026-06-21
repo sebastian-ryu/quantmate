@@ -18,23 +18,31 @@ from quantmate_api.db import SessionLocal
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
+    fetch_kis_buyable_cash,
     fetch_kis_current_price,
     fetch_kis_daily_credit_balance,
     fetch_kis_daily_prices,
     fetch_kis_daily_short_sale,
+    fetch_kis_domestic_balance,
     fetch_kis_financial_ratios,
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
     fetch_yahoo_daily_prices,
     fetch_yfinance_symbol_daily_prices,
+    get_kis_environment_name,
     get_kis_token_status,
+    has_kis_account_credentials,
     is_kis_open_api_ready,
+    is_kis_paper_trading,
     is_krx_open_api_ready,
+    mask_kis_account,
     normalize_yahoo_symbol,
+    submit_kis_domestic_cash_order,
 )
 from quantmate_api.models import (
     BacktestRun,
+    BrokerAuditLog,
     DailyPrice,
     DataImportJob,
     FundamentalRatio,
@@ -330,6 +338,98 @@ class KisTokenStatusResponse(BaseModel):
     expires_in_seconds: int
 
 
+class KisBrokerAccountStatusResponse(BaseModel):
+    provider: str
+    ready: bool
+    environment: str
+    account_configured: bool
+    account_label: str
+    paper_trading_enabled: bool
+    live_trading_enabled: bool
+    message: str
+
+
+class KisBrokerBalanceSummary(BaseModel):
+    deposit_amount: int = 0
+    next_settlement_amount: int = 0
+    purchase_amount: int = 0
+    evaluation_amount: int = 0
+    profit_loss_amount: int = 0
+    profit_loss_rate: float = 0
+    securities_evaluation_amount: int = 0
+    total_evaluation_amount: int = 0
+    net_asset_amount: int = 0
+    total_loan_amount: int = 0
+    previous_total_asset_evaluation_amount: int = 0
+    asset_change_amount: int = 0
+    asset_change_rate: float = 0
+
+
+class KisBrokerHolding(BaseModel):
+    symbol: str
+    name: str
+    trade_type: str = ""
+    holding_quantity: int = 0
+    orderable_quantity: int = 0
+    average_price: int = 0
+    purchase_amount: int = 0
+    current_price: int = 0
+    evaluation_amount: int = 0
+    profit_loss_amount: int = 0
+    profit_loss_rate: float = 0
+    evaluation_earning_rate: float = 0
+    change_rate: float = 0
+
+
+class KisBrokerBalanceResponse(BaseModel):
+    provider: str
+    environment: str
+    account_label: str
+    fetched_at: str
+    summary: KisBrokerBalanceSummary
+    holdings: list[KisBrokerHolding]
+
+
+class KisBuyableCashResponse(BaseModel):
+    provider: str
+    environment: str
+    symbol: str
+    orderable_cash: int = 0
+    orderable_substitute: int = 0
+    reusable_amount: int = 0
+    calculation_unit_price: int = 0
+    cash_buy_amount: int = 0
+    cash_buy_quantity: int = 0
+    max_buy_amount: int = 0
+    max_buy_quantity: int = 0
+    cma_evaluation_amount: int = 0
+
+
+class KisPaperOrderRequest(BaseModel):
+    side: str = Field(pattern="^(buy|sell)$")
+    symbol: str = Field(min_length=1, max_length=20)
+    quantity: int = Field(ge=1)
+    order_type: str = Field(default="market", pattern="^(market|limit)$")
+    price: int = Field(default=0, ge=0)
+    exchange_id: str = Field(default="KRX", max_length=10)
+    confirm_submit: bool = False
+
+
+class KisPaperOrderResponse(BaseModel):
+    provider: str
+    environment: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: int
+    price: int
+    order_no: str
+    order_time: str
+    exchange_order_org_no: str
+    message: str
+    audit_log_id: int | None = None
+
+
 class KisCurrentPriceResponse(BaseModel):
     provider: str
     symbol: str
@@ -570,6 +670,66 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _json_dumps(payload: dict[str, object]) -> str:
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _paper_trading_enabled() -> bool:
+    return _env_bool("PAPER_TRADING_ENABLED", default=False)
+
+
+def _masked_kis_account_label() -> str:
+    account_no = os.getenv("KIS_ACCOUNT_NO", "").strip()
+    product_code = os.getenv("KIS_ACCOUNT_PRODUCT_CODE", "").strip()
+    if not account_no or not product_code:
+        return ""
+    return mask_kis_account(account_no=account_no, product_code=product_code)
+
+
+def _create_broker_audit_log(
+    *,
+    action: str,
+    status: str,
+    request_payload: dict[str, object],
+    response_payload: dict[str, object],
+    message: str | None = None,
+) -> int:
+    with SessionLocal() as session:
+        log = BrokerAuditLog(
+            provider="KIS Open API",
+            environment=get_kis_environment_name(),
+            action=action,
+            status=status,
+            request_json=_json_dumps(request_payload),
+            response_json=_json_dumps(response_payload),
+            message=message,
+        )
+        session.add(log)
+        session.commit()
+        session.refresh(log)
+        return log.id
+
+
+def _try_create_broker_audit_log(
+    *,
+    action: str,
+    status: str,
+    request_payload: dict[str, object],
+    response_payload: dict[str, object],
+    message: str | None = None,
+) -> int | None:
+    try:
+        return _create_broker_audit_log(
+            action=action,
+            status=status,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            message=message,
+        )
+    except SQLAlchemyError:
+        return None
 
 
 def _allowed_origins() -> list[str]:
@@ -2708,6 +2868,12 @@ async def data_status() -> DataStatusResponse:
             "ready": kis_ready,
         },
         {
+            "name": "KIS 계좌",
+            "scope": "모의투자/실계좌 잔고와 주문 준비 상태",
+            "status": "계좌 설정됨" if has_kis_account_credentials() else "계좌번호 설정 필요",
+            "ready": has_kis_account_credentials(),
+        },
+        {
             "name": "Yahoo Finance",
             "scope": "KR 일봉 임시 백테스트 데이터",
             "status": "임시 사용 가능",
@@ -2732,6 +2898,7 @@ async def data_status() -> DataStatusResponse:
                 "supply_flow_dailies": session.scalar(select(func.count()).select_from(SupplyFlowDaily)) or 0,
                 "risk_indicator_dailies": session.scalar(select(func.count()).select_from(RiskIndicatorDaily)) or 0,
                 "fundamental_ratios": session.scalar(select(func.count()).select_from(FundamentalRatio)) or 0,
+                "broker_audit_logs": session.scalar(select(func.count()).select_from(BrokerAuditLog)) or 0,
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
                 "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
                 "backtest_runs": session.scalar(select(func.count()).select_from(BacktestRun)) or 0,
@@ -2783,6 +2950,183 @@ async def krx_instruments(
 @app.get("/api/data/kis/token/status")
 async def kis_token_status() -> KisTokenStatusResponse:
     return KisTokenStatusResponse(**get_kis_token_status())
+
+
+@app.get("/api/broker/kis/account/status")
+async def kis_broker_account_status() -> KisBrokerAccountStatusResponse:
+    api_ready = is_kis_open_api_ready()
+    account_configured = has_kis_account_credentials()
+    paper_mode = is_kis_paper_trading()
+    ready = api_ready and account_configured
+    if not api_ready:
+        message = "KIS App Key/Secret 설정이 필요합니다."
+    elif not account_configured:
+        message = "KIS 계좌번호와 계좌상품코드 설정이 필요합니다."
+    elif paper_mode:
+        message = "KIS 모의투자 계좌 읽기 준비가 완료되었습니다."
+    else:
+        message = "KIS 실전 계좌 읽기 설정입니다. 실거래 주문은 기본 비활성화 상태입니다."
+
+    return KisBrokerAccountStatusResponse(
+        provider="KIS Open API",
+        ready=ready,
+        environment=get_kis_environment_name(),
+        account_configured=account_configured,
+        account_label=_masked_kis_account_label(),
+        paper_trading_enabled=_paper_trading_enabled(),
+        live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED"),
+        message=message,
+    )
+
+
+@app.get("/api/broker/kis/balance")
+async def kis_broker_balance() -> KisBrokerBalanceResponse:
+    request_payload = {
+        "account_label": _masked_kis_account_label(),
+        "environment": get_kis_environment_name(),
+        "mode": "read-only",
+    }
+    try:
+        result = fetch_kis_domestic_balance()
+        _try_create_broker_audit_log(
+            action="account_balance.read",
+            status="success",
+            request_payload=request_payload,
+            response_payload={
+                "holding_count": len(result.get("holdings", [])),
+                "summary": result.get("summary", {}),
+            },
+            message="KIS 잔고 조회 성공",
+        )
+    except MarketDataProviderUnavailable as exc:
+        _try_create_broker_audit_log(
+            action="account_balance.read",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisBrokerBalanceResponse(**result)
+
+
+@app.get("/api/broker/kis/buyable-cash")
+async def kis_broker_buyable_cash(
+    symbol: str,
+    order_price: int = 0,
+    order_type: str = "market",
+) -> KisBuyableCashResponse:
+    request_payload = {
+        "account_label": _masked_kis_account_label(),
+        "environment": get_kis_environment_name(),
+        "symbol": symbol,
+        "order_price": order_price,
+        "order_type": order_type,
+    }
+    try:
+        result = fetch_kis_buyable_cash(symbol=symbol, order_price=order_price, order_type=order_type)
+        _try_create_broker_audit_log(
+            action="buyable_cash.read",
+            status="success",
+            request_payload=request_payload,
+            response_payload={
+                "symbol": result.get("symbol", symbol),
+                "cash_buy_amount": result.get("cash_buy_amount", 0),
+                "cash_buy_quantity": result.get("cash_buy_quantity", 0),
+            },
+            message="KIS 매수가능금액 조회 성공",
+        )
+    except MarketDataProviderUnavailable as exc:
+        _try_create_broker_audit_log(
+            action="buyable_cash.read",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisBuyableCashResponse(**result)
+
+
+@app.post("/api/broker/kis/paper/orders", status_code=202)
+async def kis_paper_order(request: KisPaperOrderRequest) -> KisPaperOrderResponse:
+    if not is_kis_paper_trading():
+        raise HTTPException(status_code=403, detail="현재 KIS_IS_PAPER=true인 모의투자 설정에서만 사용할 수 있습니다.")
+    if not _paper_trading_enabled():
+        raise HTTPException(status_code=403, detail="PAPER_TRADING_ENABLED=true 설정 후 사용할 수 있습니다.")
+    if not request.confirm_submit:
+        raise HTTPException(status_code=400, detail="confirm_submit=true가 있어야 모의주문을 제출합니다.")
+
+    request_payload = {
+        "account_label": _masked_kis_account_label(),
+        "environment": get_kis_environment_name(),
+        "side": request.side,
+        "symbol": request.symbol,
+        "quantity": request.quantity,
+        "order_type": request.order_type,
+        "price": request.price,
+        "exchange_id": request.exchange_id,
+    }
+    try:
+        pre_log_id = _create_broker_audit_log(
+            action="paper_order.submit.before",
+            status="pending",
+            request_payload=request_payload,
+            response_payload={},
+            message="KIS 모의주문 제출 전 로그",
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"주문 감사 로그 저장 실패로 주문을 제출하지 않았습니다: {exc.__class__.__name__}",
+        ) from exc
+
+    try:
+        result = submit_kis_domestic_cash_order(
+            side=request.side,
+            symbol=request.symbol,
+            quantity=request.quantity,
+            order_type=request.order_type,
+            price=request.price,
+            exchange_id=request.exchange_id,
+        )
+        after_log_id = _create_broker_audit_log(
+            action="paper_order.submit.after",
+            status="success",
+            request_payload={**request_payload, "pre_audit_log_id": pre_log_id},
+            response_payload={
+                "order_no": result.get("order_no", ""),
+                "order_time": result.get("order_time", ""),
+                "message": result.get("message", ""),
+            },
+            message="KIS 모의주문 제출 성공",
+        )
+    except MarketDataProviderUnavailable as exc:
+        _try_create_broker_audit_log(
+            action="paper_order.submit.after",
+            status="failed",
+            request_payload={**request_payload, "pre_audit_log_id": pre_log_id},
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        _try_create_broker_audit_log(
+            action="paper_order.submit.after",
+            status="failed",
+            request_payload={**request_payload, "pre_audit_log_id": pre_log_id},
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisPaperOrderResponse(**result, audit_log_id=after_log_id)
 
 
 @app.get("/api/data/kis/current-price")

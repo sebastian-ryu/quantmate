@@ -10,7 +10,7 @@ from typing import Any
 import requests
 
 from quantmate_api.config import load_local_env
-from quantmate_api.time_utils import date_from_timestamp_kst, start_of_day_kst, today_kst
+from quantmate_api.time_utils import date_from_timestamp_kst, now_kst_naive, start_of_day_kst, today_kst
 
 
 load_local_env()
@@ -44,6 +44,9 @@ KIS_DOMESTIC_INVESTOR_TRADE_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/inv
 KIS_DOMESTIC_DAILY_SHORT_SALE_PATH = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
 KIS_DOMESTIC_DAILY_CREDIT_BALANCE_PATH = "/uapi/domestic-stock/v1/quotations/daily-credit-balance"
 KIS_DOMESTIC_FINANCIAL_RATIO_PATH = "/uapi/domestic-stock/v1/finance/financial-ratio"
+KIS_DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+KIS_DOMESTIC_BUYABLE_CASH_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+KIS_DOMESTIC_CASH_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 KIS_MARKET_CAP_RANKING_MARKET_CODES = {
     "ALL": "0000",
     "KOSPI": "0001",
@@ -66,6 +69,10 @@ def has_kis_open_api_credentials() -> bool:
     return bool(os.getenv("KIS_APP_KEY", "").strip() and os.getenv("KIS_APP_SECRET", "").strip())
 
 
+def has_kis_account_credentials() -> bool:
+    return bool(os.getenv("KIS_ACCOUNT_NO", "").strip() and os.getenv("KIS_ACCOUNT_PRODUCT_CODE", "").strip())
+
+
 def is_kis_open_api_ready() -> bool:
     return has_kis_open_api_credentials()
 
@@ -84,6 +91,34 @@ def get_kis_base_url() -> str:
 
 def get_kis_environment_name() -> str:
     return "paper" if is_kis_paper_trading() else "real"
+
+
+def get_kis_env_division() -> str:
+    return "demo" if is_kis_paper_trading() else "real"
+
+
+def get_kis_account_config() -> dict[str, str]:
+    account_no = os.getenv("KIS_ACCOUNT_NO", "").strip()
+    product_code = os.getenv("KIS_ACCOUNT_PRODUCT_CODE", "").strip()
+
+    if not account_no or not product_code:
+        raise MarketDataProviderUnavailable("KIS_ACCOUNT_NO와 KIS_ACCOUNT_PRODUCT_CODE를 설정하세요.")
+
+    return {
+        "account_no": account_no,
+        "product_code": product_code,
+        "account_label": mask_kis_account(account_no=account_no, product_code=product_code),
+    }
+
+
+def mask_kis_account(*, account_no: str, product_code: str = "") -> str:
+    normalized = account_no.strip()
+    product = product_code.strip()
+    if len(normalized) <= 2:
+        masked = "*" * len(normalized)
+    else:
+        masked = f"{'*' * max(len(normalized) - 2, 0)}{normalized[-2:]}"
+    return f"{masked}-{product}" if product else masked
 
 
 def get_kis_token_cache_path() -> Path:
@@ -629,32 +664,215 @@ def fetch_kis_financial_ratios(
     return [row for row in normalized_rows if row is not None]
 
 
+def fetch_kis_domestic_balance(max_pages: int = 5) -> dict[str, Any]:
+    account = get_kis_account_config()
+    tr_id = "VTTC8434R" if is_kis_paper_trading() else "TTTC8434R"
+    safe_max_pages = max(1, min(max_pages, 20))
+    holdings: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {}
+    ctx_area_fk100 = ""
+    ctx_area_nk100 = ""
+    tr_cont = ""
+
+    for _page in range(safe_max_pages):
+        payload, headers = request_kis_open_api(
+            method="GET",
+            path=KIS_DOMESTIC_BALANCE_PATH,
+            tr_id=tr_id,
+            tr_cont=tr_cont,
+            params={
+                "CANO": account["account_no"],
+                "ACNT_PRDT_CD": account["product_code"],
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "",
+                "INQR_DVSN": "02",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "00",
+                "CTX_AREA_FK100": ctx_area_fk100,
+                "CTX_AREA_NK100": ctx_area_nk100,
+            },
+        )
+        raw_holdings = payload.get("output1") or []
+        raw_summary = payload.get("output2") or []
+        if isinstance(raw_holdings, list):
+            holdings.extend(normalize_kis_balance_holding(row) for row in raw_holdings if isinstance(row, dict))
+        if isinstance(raw_summary, list) and raw_summary:
+            summary = normalize_kis_balance_summary(raw_summary[0])
+        elif isinstance(raw_summary, dict):
+            summary = normalize_kis_balance_summary(raw_summary)
+
+        ctx_area_fk100 = str(payload.get("ctx_area_fk100") or "")
+        ctx_area_nk100 = str(payload.get("ctx_area_nk100") or "")
+        response_tr_cont = str(headers.get("tr_cont") or "").strip()
+        if response_tr_cont not in {"M", "F"}:
+            break
+        tr_cont = "N"
+
+    visible_holdings = [
+        holding
+        for holding in holdings
+        if (holding.get("holding_quantity") or 0) > 0 or (holding.get("evaluation_amount") or 0) > 0
+    ]
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "environment": get_kis_environment_name(),
+        "account_label": account["account_label"],
+        "fetched_at": now_kst_naive().isoformat(timespec="seconds"),
+        "summary": summary,
+        "holdings": visible_holdings,
+    }
+
+
+def fetch_kis_buyable_cash(
+    *,
+    symbol: str,
+    order_price: int = 0,
+    order_type: str = "market",
+) -> dict[str, Any]:
+    account = get_kis_account_config()
+    normalized_symbol = normalize_kis_symbol(symbol)
+    normalized_order_type = order_type.strip().lower()
+    order_division = "01" if normalized_order_type == "market" else "00"
+    tr_id = "VTTC8908R" if is_kis_paper_trading() else "TTTC8908R"
+    payload = call_kis_open_api(
+        path=KIS_DOMESTIC_BUYABLE_CASH_PATH,
+        tr_id=tr_id,
+        params={
+            "CANO": account["account_no"],
+            "ACNT_PRDT_CD": account["product_code"],
+            "PDNO": normalized_symbol,
+            "ORD_UNPR": str(max(order_price, 0)),
+            "ORD_DVSN": order_division,
+            "CMA_EVLU_AMT_ICLD_YN": "N",
+            "OVRS_ICLD_YN": "N",
+        },
+    )
+    output = payload.get("output") or {}
+    if not isinstance(output, dict):
+        raise MarketDataProviderUnavailable("KIS 매수가능조회 응답 형식이 예상과 다릅니다.")
+
+    return normalize_kis_buyable_cash(output, symbol=normalized_symbol)
+
+
+def submit_kis_domestic_cash_order(
+    *,
+    side: str,
+    symbol: str,
+    quantity: int,
+    order_type: str = "market",
+    price: int = 0,
+    exchange_id: str = "KRX",
+) -> dict[str, Any]:
+    account = get_kis_account_config()
+    if quantity <= 0:
+        raise ValueError("주문 수량은 1주 이상이어야 합니다.")
+
+    normalized_side = side.strip().lower()
+    if normalized_side not in {"buy", "sell"}:
+        raise ValueError("주문 구분은 buy 또는 sell만 지원합니다.")
+
+    normalized_order_type = order_type.strip().lower()
+    if normalized_order_type not in {"market", "limit"}:
+        raise ValueError("주문 방식은 market 또는 limit만 지원합니다.")
+    if normalized_order_type == "limit" and price <= 0:
+        raise ValueError("지정가 주문은 주문 가격이 필요합니다.")
+
+    if is_kis_paper_trading():
+        tr_id = "VTTC0012U" if normalized_side == "buy" else "VTTC0011U"
+    else:
+        tr_id = "TTTC0012U" if normalized_side == "buy" else "TTTC0011U"
+
+    body = {
+        "CANO": account["account_no"],
+        "ACNT_PRDT_CD": account["product_code"],
+        "PDNO": normalize_kis_symbol(symbol),
+        "ORD_DVSN": "01" if normalized_order_type == "market" else "00",
+        "ORD_QTY": str(quantity),
+        "ORD_UNPR": "0" if normalized_order_type == "market" else str(price),
+        "EXCG_ID_DVSN_CD": exchange_id.strip().upper() or "KRX",
+    }
+    payload, _headers = request_kis_open_api(
+        method="POST",
+        path=KIS_DOMESTIC_CASH_ORDER_PATH,
+        tr_id=tr_id,
+        body=body,
+        include_hash_key=True,
+    )
+    output = payload.get("output") or {}
+    if not isinstance(output, dict):
+        raise MarketDataProviderUnavailable("KIS 현금주문 응답 형식이 예상과 다릅니다.")
+
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "environment": get_kis_environment_name(),
+        "symbol": body["PDNO"],
+        "side": normalized_side,
+        "order_type": normalized_order_type,
+        "quantity": quantity,
+        "price": 0 if normalized_order_type == "market" else price,
+        "order_no": str(output.get("ODNO") or ""),
+        "order_time": str(output.get("ORD_TMD") or ""),
+        "exchange_order_org_no": str(output.get("KRX_FWDG_ORD_ORGNO") or ""),
+        "message": payload.get("msg1") or "주문 요청이 접수되었습니다.",
+    }
+
+
 def call_kis_open_api(
     *,
     path: str,
     tr_id: str,
     params: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    payload, _headers = request_kis_open_api(method="GET", path=path, tr_id=tr_id, params=params)
+    return payload
+
+
+def request_kis_open_api(
+    *,
+    method: str,
+    path: str,
+    tr_id: str,
+    params: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+    tr_cont: str = "",
+    include_hash_key: bool = False,
+) -> tuple[dict[str, Any], dict[str, str]]:
     app_key = os.getenv("KIS_APP_KEY", "").strip()
     app_secret = os.getenv("KIS_APP_SECRET", "").strip()
 
     if not app_key or not app_secret:
         raise MarketDataProviderUnavailable("KIS_APP_KEY와 KIS_APP_SECRET을 설정하세요.")
 
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {get_kis_access_token()}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": tr_id,
+        "custtype": "P",
+    }
+    if tr_cont:
+        headers["tr_cont"] = tr_cont
+    if include_hash_key and body:
+        headers["hashkey"] = issue_kis_hash_key(body=body, app_key=app_key, app_secret=app_secret)
+
     try:
-        response = requests.get(
-            f"{get_kis_base_url().rstrip('/')}/{path.lstrip('/')}",
-            headers={
-                "content-type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {get_kis_access_token()}",
-                "appkey": app_key,
-                "appsecret": app_secret,
-                "tr_id": tr_id,
-                "custtype": "P",
-            },
-            params=params or {},
-            timeout=20,
-        )
+        if method.upper() == "POST":
+            response = requests.post(
+                f"{get_kis_base_url().rstrip('/')}/{path.lstrip('/')}",
+                headers=headers,
+                json=body or {},
+                timeout=20,
+            )
+        else:
+            response = requests.get(
+                f"{get_kis_base_url().rstrip('/')}/{path.lstrip('/')}",
+                headers=headers,
+                params=params or {},
+                timeout=20,
+            )
     except requests.RequestException as exc:
         raise MarketDataProviderUnavailable(f"KIS Open API 호출 실패: {exc}") from exc
 
@@ -672,7 +890,37 @@ def call_kis_open_api(
         code = payload.get("msg_cd") or payload.get("rt_cd")
         raise MarketDataProviderUnavailable(f"{message} ({code})")
 
-    return payload
+    return payload, {key.lower(): value for key, value in response.headers.items()}
+
+
+def issue_kis_hash_key(*, body: dict[str, Any], app_key: str, app_secret: str) -> str:
+    try:
+        response = requests.post(
+            f"{get_kis_base_url().rstrip('/')}/uapi/hashkey",
+            headers={
+                "content-type": "application/json; charset=utf-8",
+                "appkey": app_key,
+                "appsecret": app_secret,
+            },
+            json=body,
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        raise MarketDataProviderUnavailable(f"KIS hashkey 발급 실패: {exc}") from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise MarketDataProviderUnavailable("KIS hashkey JSON 응답을 해석하지 못했습니다.") from exc
+
+    if response.status_code != 200:
+        message = payload.get("msg1") or payload.get("error_description") or response.text
+        raise MarketDataProviderUnavailable(f"KIS hashkey 발급 실패: HTTP {response.status_code} {message}")
+
+    hash_key = str(payload.get("HASH") or "")
+    if not hash_key:
+        raise MarketDataProviderUnavailable("KIS hashkey 응답에 HASH가 없습니다.")
+    return hash_key
 
 
 def fetch_yahoo_chart_daily_prices(
@@ -970,6 +1218,63 @@ def normalize_kis_financial_ratio(
         "bps": float_from_kis(row.get("bps")),
         "reserve_ratio": float_from_kis(row.get("rsrv_rate")),
         "debt_ratio": float_from_kis(row.get("lblt_rate")),
+    }
+
+
+def normalize_kis_balance_holding(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": str(row.get("pdno") or "").strip(),
+        "name": str(row.get("prdt_name") or "").strip(),
+        "trade_type": str(row.get("trad_dvsn_name") or "").strip(),
+        "holding_quantity": int_from_kis(row.get("hldg_qty")) or 0,
+        "orderable_quantity": int_from_kis(row.get("ord_psbl_qty")) or 0,
+        "average_price": int_from_kis(row.get("pchs_avg_pric")) or 0,
+        "purchase_amount": int_from_kis(row.get("pchs_amt")) or 0,
+        "current_price": int_from_kis(row.get("prpr")) or 0,
+        "evaluation_amount": int_from_kis(row.get("evlu_amt")) or 0,
+        "profit_loss_amount": int_from_kis(row.get("evlu_pfls_amt")) or 0,
+        "profit_loss_rate": float_from_kis(row.get("evlu_pfls_rt")) or 0,
+        "evaluation_earning_rate": float_from_kis(row.get("evlu_erng_rt")) or 0,
+        "change_rate": float_from_kis(row.get("fltt_rt")) or 0,
+    }
+
+
+def normalize_kis_balance_summary(row: dict[str, Any]) -> dict[str, Any]:
+    purchase_amount = int_from_kis(row.get("pchs_amt_smtl_amt")) or 0
+    profit_loss_amount = int_from_kis(row.get("evlu_pfls_smtl_amt")) or 0
+    profit_loss_rate = round(profit_loss_amount / purchase_amount * 100, 2) if purchase_amount else 0
+
+    return {
+        "deposit_amount": int_from_kis(row.get("dnca_tot_amt")) or 0,
+        "next_settlement_amount": int_from_kis(row.get("nxdy_excc_amt")) or 0,
+        "purchase_amount": purchase_amount,
+        "evaluation_amount": int_from_kis(row.get("evlu_amt_smtl_amt")) or 0,
+        "profit_loss_amount": profit_loss_amount,
+        "profit_loss_rate": profit_loss_rate,
+        "securities_evaluation_amount": int_from_kis(row.get("scts_evlu_amt")) or 0,
+        "total_evaluation_amount": int_from_kis(row.get("tot_evlu_amt")) or 0,
+        "net_asset_amount": int_from_kis(row.get("nass_amt")) or 0,
+        "total_loan_amount": int_from_kis(row.get("tot_loan_amt")) or 0,
+        "previous_total_asset_evaluation_amount": int_from_kis(row.get("bfdy_tot_asst_evlu_amt")) or 0,
+        "asset_change_amount": int_from_kis(row.get("asst_icdc_amt")) or 0,
+        "asset_change_rate": float_from_kis(row.get("asst_icdc_erng_rt")) or 0,
+    }
+
+
+def normalize_kis_buyable_cash(row: dict[str, Any], *, symbol: str) -> dict[str, Any]:
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "environment": get_kis_environment_name(),
+        "symbol": symbol,
+        "orderable_cash": int_from_kis(row.get("ord_psbl_cash")) or 0,
+        "orderable_substitute": int_from_kis(row.get("ord_psbl_sbst")) or 0,
+        "reusable_amount": int_from_kis(row.get("ruse_psbl_amt")) or 0,
+        "calculation_unit_price": int_from_kis(row.get("psbl_qty_calc_unpr")) or 0,
+        "cash_buy_amount": int_from_kis(row.get("nrcvb_buy_amt")) or 0,
+        "cash_buy_quantity": int_from_kis(row.get("nrcvb_buy_qty")) or 0,
+        "max_buy_amount": int_from_kis(row.get("max_buy_amt")) or 0,
+        "max_buy_quantity": int_from_kis(row.get("max_buy_qty")) or 0,
+        "cma_evaluation_amount": int_from_kis(row.get("cma_evlu_amt")) or 0,
     }
 
 

@@ -2,8 +2,12 @@
   import { onMount, tick } from 'svelte';
   import {
     fetchDashboard,
+    fetchKisBrokerAccountStatus,
+    fetchKisBrokerBalance,
     fetchStrategyCandidates,
     type Dashboard,
+    type KisBrokerAccountStatus,
+    type KisBrokerBalance,
     type Strategy,
     type StrategyCandidateResult,
     fetchUserStrategies,
@@ -65,6 +69,10 @@
   let candidatesLoading = false;
   let candidatesError = '';
   let candidateRequestId = 0;
+  let brokerStatus: KisBrokerAccountStatus | null = null;
+  let brokerBalance: KisBrokerBalance | null = null;
+  let brokerLoading = false;
+  let brokerError = '';
   let loading = true;
   let error = '';
 
@@ -309,6 +317,7 @@
       registeredStrategies = userStrategies;
       selectedStrategy = dashboard.backtest.strategy_code;
       await tick();
+      void loadBrokerAccount();
       await loadCandidateRowsForSelectedStrategy();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략 데이터를 불러오지 못했습니다.';
@@ -428,6 +437,26 @@
       if (candidateRequestId === requestId) {
         candidatesLoading = false;
       }
+    }
+  }
+
+  async function loadBrokerAccount() {
+    brokerLoading = true;
+    brokerError = '';
+
+    try {
+      const status = await fetchKisBrokerAccountStatus();
+      brokerStatus = status;
+      if (status.ready) {
+        brokerBalance = await fetchKisBrokerBalance();
+      } else {
+        brokerBalance = null;
+      }
+    } catch (err) {
+      brokerError = err instanceof Error ? err.message : 'KIS 계좌 정보를 불러오지 못했습니다.';
+      brokerBalance = null;
+    } finally {
+      brokerLoading = false;
     }
   }
 
@@ -576,6 +605,14 @@
     }).format(value);
   }
 
+  function formatNumber(value: number) {
+    return value.toLocaleString('ko-KR');
+  }
+
+  function formatPercent(value: number) {
+    return `${value > 0 ? '+' : ''}${value.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}%`;
+  }
+
   function formatSigned(value: number) {
     return `${value > 0 ? '+' : ''}${value.toLocaleString('ko-KR')}`;
   }
@@ -686,6 +723,113 @@
             <code class="formula-box compact-formula">{selectedOption.formula}</code>
           {/if}
         </div>
+      {/if}
+    </section>
+
+    <section class="panel broker-panel">
+      <div class="panel-heading inline">
+        <div>
+          <span>KIS 모의 계좌</span>
+          <strong>{brokerStatus?.account_label || '계좌 확인 중'}</strong>
+        </div>
+        <button type="button" class="secondary" onclick={loadBrokerAccount} disabled={brokerLoading}>
+          {brokerLoading ? '갱신 중' : '새로고침'}
+        </button>
+      </div>
+      {#if brokerError}
+        <div class="empty-state error">{brokerError}</div>
+      {:else if brokerLoading && !brokerStatus}
+        <div class="empty-state">KIS 계좌 상태를 확인하는 중입니다.</div>
+      {:else if brokerStatus && !brokerStatus.ready}
+        <div class="broker-status-row">
+          <span class="source-badge custom">설정 필요</span>
+          <strong>{brokerStatus.message}</strong>
+        </div>
+      {:else if brokerStatus}
+        <div class="broker-status-row">
+          <span class="source-badge">{brokerStatus.environment === 'paper' ? '모의투자' : '실전 읽기'}</span>
+          <strong>{brokerStatus.message}</strong>
+          <span>{brokerStatus.paper_trading_enabled ? '모의주문 허용' : '모의주문 잠김'}</span>
+        </div>
+        {#if brokerBalance}
+          <div class="broker-summary-grid">
+            <div>
+              <span>순자산</span>
+              <strong>{formatKrw(brokerBalance.summary.net_asset_amount)}</strong>
+            </div>
+            <div>
+              <span>총평가금액</span>
+              <strong>{formatKrw(brokerBalance.summary.total_evaluation_amount)}</strong>
+            </div>
+            <div>
+              <span>평가손익</span>
+              <strong
+                class:tone-positive={brokerBalance.summary.profit_loss_amount > 0}
+                class:tone-caution={brokerBalance.summary.profit_loss_amount < 0}
+              >
+                {formatKrw(brokerBalance.summary.profit_loss_amount)}
+              </strong>
+            </div>
+            <div>
+              <span>평가손익률</span>
+              <strong
+                class:tone-positive={brokerBalance.summary.profit_loss_rate > 0}
+                class:tone-caution={brokerBalance.summary.profit_loss_rate < 0}
+              >
+                {formatPercent(brokerBalance.summary.profit_loss_rate)}
+              </strong>
+            </div>
+            <div>
+              <span>예수금</span>
+              <strong>{formatKrw(brokerBalance.summary.deposit_amount)}</strong>
+            </div>
+            <div>
+              <span>보유 종목</span>
+              <strong>{formatNumber(brokerBalance.holdings.length)}개</strong>
+            </div>
+          </div>
+          {#if brokerBalance.holdings.length}
+            <div class="table-wrap compact-table-wrap">
+              <table class="wide-table broker-holdings-table">
+                <thead>
+                  <tr>
+                    <th>종목</th>
+                    <th>보유</th>
+                    <th>주문가능</th>
+                    <th>평균단가</th>
+                    <th>현재가</th>
+                    <th>평가금액</th>
+                    <th>평가손익</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each brokerBalance.holdings.slice(0, 8) as holding}
+                    <tr>
+                      <td>
+                        <strong>{holding.name || holding.symbol}</strong>
+                        <span>{holding.symbol}</span>
+                      </td>
+                      <td>{formatNumber(holding.holding_quantity)}주</td>
+                      <td>{formatNumber(holding.orderable_quantity)}주</td>
+                      <td>{formatKrw(holding.average_price)}</td>
+                      <td>{formatKrw(holding.current_price)}</td>
+                      <td>{formatKrw(holding.evaluation_amount)}</td>
+                      <td
+                        class:tone-positive={holding.profit_loss_amount > 0}
+                        class:tone-caution={holding.profit_loss_amount < 0}
+                      >
+                        <strong>{formatKrw(holding.profit_loss_amount)}</strong>
+                        <span>{formatPercent(holding.profit_loss_rate)}</span>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {:else}
+            <div class="empty-state">현재 조회된 보유 종목이 없습니다.</div>
+          {/if}
+        {/if}
       {/if}
     </section>
 

@@ -14,6 +14,7 @@ from quantmate_api.main import app
 from quantmate_api.models import (
     BacktestRun,
     Base,
+    BrokerAuditLog,
     DailyPrice,
     FundamentalRatio,
     Instrument,
@@ -165,6 +166,138 @@ def test_health_endpoint() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["live_trading_enabled"] is False
+
+
+def test_kis_broker_status_masks_account(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+    monkeypatch.setattr(main_module, "has_kis_account_credentials", lambda: True)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    response = client.get("/api/broker/kis/account/status")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["ready"] is True
+    assert data["environment"] == "paper"
+    assert data["account_label"] == "******78-01"
+
+
+def test_kis_broker_balance_logs_audit(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    def fake_balance() -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "account_label": "******78-01",
+            "fetched_at": "2026-06-21T10:00:00",
+            "summary": {
+                "deposit_amount": 1000000,
+                "next_settlement_amount": 0,
+                "purchase_amount": 500000,
+                "evaluation_amount": 550000,
+                "profit_loss_amount": 50000,
+                "profit_loss_rate": 10.0,
+                "securities_evaluation_amount": 550000,
+                "total_evaluation_amount": 1550000,
+                "net_asset_amount": 1550000,
+                "total_loan_amount": 0,
+                "previous_total_asset_evaluation_amount": 1500000,
+                "asset_change_amount": 50000,
+                "asset_change_rate": 3.33,
+            },
+            "holdings": [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "trade_type": "",
+                    "holding_quantity": 10,
+                    "orderable_quantity": 10,
+                    "average_price": 50000,
+                    "purchase_amount": 500000,
+                    "current_price": 55000,
+                    "evaluation_amount": 550000,
+                    "profit_loss_amount": 50000,
+                    "profit_loss_rate": 10.0,
+                    "evaluation_earning_rate": 10.0,
+                    "change_rate": 1.2,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main_module, "fetch_kis_domestic_balance", fake_balance)
+
+    response = client.get("/api/broker/kis/balance")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["summary"]["net_asset_amount"] == 1550000
+    assert data["holdings"][0]["name"] == "삼성전자"
+
+    with session_factory() as session:
+        log = session.scalar(select(BrokerAuditLog))
+        assert log is not None
+        assert log.action == "account_balance.read"
+        assert "12345678" not in log.request_json
+
+
+def test_kis_paper_order_requires_enabled_flag(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.delenv("PAPER_TRADING_ENABLED", raising=False)
+
+    response = client.post(
+        "/api/broker/kis/paper/orders",
+        json={"side": "buy", "symbol": "005930", "quantity": 1, "confirm_submit": True},
+    )
+
+    assert response.status_code == 403
+    assert "PAPER_TRADING_ENABLED" in response.json()["detail"]
+
+
+def test_kis_paper_order_logs_before_and_after(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    def fake_submit_order(**kwargs) -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "order_type": kwargs["order_type"],
+            "quantity": kwargs["quantity"],
+            "price": 0,
+            "order_no": "0000000001",
+            "order_time": "101010",
+            "exchange_order_org_no": "001",
+            "message": "모의주문 접수",
+        }
+
+    monkeypatch.setattr(main_module, "submit_kis_domestic_cash_order", fake_submit_order)
+
+    response = client.post(
+        "/api/broker/kis/paper/orders",
+        json={"side": "buy", "symbol": "005930", "quantity": 1, "confirm_submit": True},
+    )
+    data = response.json()
+
+    assert response.status_code == 202
+    assert data["order_no"] == "0000000001"
+    assert data["audit_log_id"] is not None
+
+    with session_factory() as session:
+        logs = session.scalars(select(BrokerAuditLog).order_by(BrokerAuditLog.id)).all()
+        assert [log.action for log in logs] == ["paper_order.submit.before", "paper_order.submit.after"]
+        assert all("12345678" not in log.request_json for log in logs)
 
 
 def test_dashboard_contains_initial_mvp_data() -> None:
@@ -1005,7 +1138,7 @@ def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
 def test_data_status_returns_table_counts(monkeypatch) -> None:
     class FakeSession:
         def __init__(self) -> None:
-            self.counts = [1, 3, 0, 0, 0, 0, 0, 0, 2, 4]
+            self.counts = [1, 3, 0, 0, 0, 0, 0, 5, 0, 2, 4]
 
         def __enter__(self) -> "FakeSession":
             return self
@@ -1034,11 +1167,13 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["table_counts"]["supply_flow_dailies"] == 0
     assert data["table_counts"]["risk_indicator_dailies"] == 0
     assert data["table_counts"]["fundamental_ratios"] == 0
+    assert data["table_counts"]["broker_audit_logs"] == 5
     assert data["table_counts"]["user_strategies"] == 2
     assert data["table_counts"]["backtest_runs"] == 4
     providers = {item["name"]: item for item in data["provider_status"]}
     assert providers["Yahoo Finance"]["ready"] is True
     assert providers["KIS Open API"]["status"] in {"App Key/Secret 필요", "인증정보 설정됨"}
+    assert providers["KIS 계좌"]["status"] in {"계좌번호 설정 필요", "계좌 설정됨"}
 
 
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:

@@ -242,6 +242,25 @@ class DataImportJob(Base):
     message: Mapped[str | None] = mapped_column(String(500))
 
 
+class BrokerAuditLog(Base):
+    __tablename__ = "broker_audit_logs"
+    __table_args__ = (
+        Index("ix_broker_audit_logs_created_at", "created_at"),
+        Index("ix_broker_audit_logs_provider_action", "provider", "action"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    environment: Mapped[str] = mapped_column(String(20))
+    action: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(30))
+    request_json: Mapped[str] = mapped_column(Text)
+    response_json: Mapped[str] = mapped_column(Text)
+    message: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst_naive, server_default=func.now())
+
+
 class UserStrategy(TimestampMixin, Base):
     __tablename__ = "user_strategies"
     __table_args__ = (

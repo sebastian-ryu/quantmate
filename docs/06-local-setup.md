@@ -101,9 +101,12 @@ KIS_ACCOUNT_PRODUCT_CODE=계좌번호_뒤_2자리
 KIS_IS_PAPER=true
 KIS_BASE_URL=https://openapivts.koreainvestment.com:29443
 KIS_WS_URL=ws://ops.koreainvestment.com:31000
+PAPER_TRADING_ENABLED=false
 ```
 
-실전투자는 값을 교체하되 `LIVE_TRADING_ENABLED=false`를 유지하고, 주문 기능 구현 전에는 읽기 전용 API만 사용한다.
+`PAPER_TRADING_ENABLED=false`는 모의투자 주문 제출 잠금이다. 계좌 상태와 잔고 조회는 이 값과 무관하게 읽기 전용으로 동작한다. 모의주문 제출은 이 값을 `true`로 바꾸고, 요청 본문에 `confirm_submit=true`를 넣은 경우에만 동작한다.
+
+실전투자는 값을 교체하되 `LIVE_TRADING_ENABLED=false`를 유지하고, 실전 주문은 별도 안전장치 검토 전까지 사용하지 않는다.
 
 ```env
 # KIS_IS_PAPER=false
@@ -122,7 +125,12 @@ curl "http://127.0.0.1:8000/api/data/kis/daily-short-sale?symbol=005930&limit=20
 curl "http://127.0.0.1:8000/api/data/kis/daily-credit-balance?symbol=005930&limit=20"
 curl "http://127.0.0.1:8000/api/data/kis/financial-ratios?symbol=005930&period_type=annual&limit=4"
 curl "http://127.0.0.1:8000/api/data/kis/daily-prices?symbol=005930"
+curl http://127.0.0.1:8000/api/broker/kis/account/status
+curl http://127.0.0.1:8000/api/broker/kis/balance
+curl "http://127.0.0.1:8000/api/broker/kis/buyable-cash?symbol=005930&order_type=market"
 ```
+
+모의주문 제출 API는 `/api/broker/kis/paper/orders`다. 기본은 차단 상태이며, 주문 전후 감사 로그가 DB의 `broker_audit_logs`에 저장된다. 실제 주문 테스트는 주문 시점에 별도 확인 후 진행한다.
 
 전략 후보와 백테스트 화면은 사용자가 별도 적재 버튼을 누르지 않아도 DB 일봉을 우선 사용한다. 데이터가 부족하면 서버가 KIS 시가총액 랭킹과 저장된 일봉 종목을 후보 시드로 삼아 KIS 일봉을 먼저 자동 수집하고, KIS 커버리지가 부족한 종목은 Yahoo/yfinance 일봉으로 보완해 `daily_prices`에 저장한 뒤 계산한다. 전략 후보 조회 시에는 KIS 재무비율을 `fundamental_ratios`에 저장해 ROE, 성장률, 부채비율을 보강하고, KIS 투자자별 매매동향을 `supply_flow_dailies`에 저장해 외국인/기관/연기금 수급 필드를 보강하며, 공매도/신용잔고 일별 지표를 `risk_indicator_dailies`에 저장해 리스크 필드를 보강한다. 공급원 우선순위는 종목별로 `KRX Open API -> KIS Open API -> Yahoo Finance`이며, KRX 승인 전에는 KIS와 Yahoo를 혼합해 사용한다.
 

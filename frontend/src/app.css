@@ -343,6 +343,66 @@ textarea {
   color: #166243;
 }
 
+.broker-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.broker-status-row {
+  align-items: center;
+  background: #f7fafa;
+  border: 1px solid #e2e9eb;
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.broker-status-row strong {
+  font-size: 13px;
+}
+
+.broker-status-row span:last-child {
+  color: #6f7f86;
+  font-size: 12px;
+}
+
+.broker-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+}
+
+.broker-summary-grid div {
+  background: #ffffff;
+  border: 1px solid #e5ecef;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.broker-summary-grid span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.broker-summary-grid strong {
+  font-size: 13px;
+}
+
+.compact-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.broker-holdings-table td,
+.broker-holdings-table th {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .screener-workbench {
   display: grid;
   font-size: 13px;

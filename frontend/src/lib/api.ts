@@ -226,6 +226,58 @@ export type DataStatus = {
   message: string;
 };
 
+export type KisBrokerAccountStatus = {
+  provider: string;
+  ready: boolean;
+  environment: string;
+  account_configured: boolean;
+  account_label: string;
+  paper_trading_enabled: boolean;
+  live_trading_enabled: boolean;
+  message: string;
+};
+
+export type KisBrokerBalanceSummary = {
+  deposit_amount: number;
+  next_settlement_amount: number;
+  purchase_amount: number;
+  evaluation_amount: number;
+  profit_loss_amount: number;
+  profit_loss_rate: number;
+  securities_evaluation_amount: number;
+  total_evaluation_amount: number;
+  net_asset_amount: number;
+  total_loan_amount: number;
+  previous_total_asset_evaluation_amount: number;
+  asset_change_amount: number;
+  asset_change_rate: number;
+};
+
+export type KisBrokerHolding = {
+  symbol: string;
+  name: string;
+  trade_type: string;
+  holding_quantity: number;
+  orderable_quantity: number;
+  average_price: number;
+  purchase_amount: number;
+  current_price: number;
+  evaluation_amount: number;
+  profit_loss_amount: number;
+  profit_loss_rate: number;
+  evaluation_earning_rate: number;
+  change_rate: number;
+};
+
+export type KisBrokerBalance = {
+  provider: string;
+  environment: string;
+  account_label: string;
+  fetched_at: string;
+  summary: KisBrokerBalanceSummary;
+  holdings: KisBrokerHolding[];
+};
+
 export type YahooDailyPrice = {
   symbol: string;
   trade_date: string;
@@ -309,6 +361,28 @@ export async function fetchDataStatus(): Promise<DataStatus> {
 
   if (!response.ok) {
     throw new Error(`데이터 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchKisBrokerAccountStatus(): Promise<KisBrokerAccountStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/account/status`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 계좌 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchKisBrokerBalance(): Promise<KisBrokerBalance> {
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/balance`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 잔고를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

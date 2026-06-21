@@ -128,9 +128,10 @@ curl "http://127.0.0.1:8000/api/data/kis/daily-prices?symbol=005930"
 curl http://127.0.0.1:8000/api/broker/kis/account/status
 curl http://127.0.0.1:8000/api/broker/kis/balance
 curl "http://127.0.0.1:8000/api/broker/kis/buyable-cash?symbol=005930&order_type=market"
+curl http://127.0.0.1:8000/api/broker/kis/orders
 ```
 
-모의주문 제출 API는 `/api/broker/kis/paper/orders`다. 기본은 차단 상태이며, 주문 전후 감사 로그가 DB의 `broker_audit_logs`에 저장된다. 실제 주문 테스트는 주문 시점에 별도 확인 후 진행한다.
+모의주문 제출 API는 `/api/broker/kis/paper/orders`다. 기본은 차단 상태이며, 주문 전후 감사 로그가 DB의 `broker_audit_logs`에 저장된다. 최근 주문체결 내역은 `/api/broker/kis/orders`로 읽기 전용 조회한다. 실제 주문 테스트는 주문 시점에 별도 확인 후 진행한다.
 
 전략 후보와 백테스트 화면은 사용자가 별도 적재 버튼을 누르지 않아도 DB 일봉을 우선 사용한다. 데이터가 부족하면 서버가 KIS 시가총액 랭킹과 저장된 일봉 종목을 후보 시드로 삼아 KIS 일봉을 먼저 자동 수집하고, KIS 커버리지가 부족한 종목은 Yahoo/yfinance 일봉으로 보완해 `daily_prices`에 저장한 뒤 계산한다. 전략 후보 조회 시에는 KIS 재무비율을 `fundamental_ratios`에 저장해 ROE, 성장률, 부채비율을 보강하고, KIS 투자자별 매매동향을 `supply_flow_dailies`에 저장해 외국인/기관/연기금 수급 필드를 보강하며, 공매도/신용잔고 일별 지표를 `risk_indicator_dailies`에 저장해 리스크 필드를 보강한다. 공급원 우선순위는 종목별로 `KRX Open API -> KIS Open API -> Yahoo Finance`이며, KRX 승인 전에는 KIS와 Yahoo를 혼합해 사용한다.
 

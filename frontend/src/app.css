@@ -392,6 +392,30 @@ textarea {
   font-size: 13px;
 }
 
+.broker-subsection-heading {
+  align-items: end;
+  border-top: 1px solid #e5ecef;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  padding-top: 10px;
+}
+
+.broker-subsection-heading div {
+  display: grid;
+  gap: 3px;
+}
+
+.broker-subsection-heading span {
+  color: #6f7f86;
+  font-size: 12px;
+}
+
+.broker-subsection-heading strong {
+  font-size: 13px;
+}
+
 .compact-table-wrap {
   max-height: 320px;
   overflow: auto;

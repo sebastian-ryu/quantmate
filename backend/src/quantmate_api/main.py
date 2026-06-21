@@ -21,6 +21,7 @@ from quantmate_api.market_data import (
     fetch_kis_buyable_cash,
     fetch_kis_current_price,
     fetch_kis_daily_credit_balance,
+    fetch_kis_daily_order_executions,
     fetch_kis_daily_prices,
     fetch_kis_daily_short_sale,
     fetch_kis_domestic_balance,
@@ -403,6 +404,49 @@ class KisBuyableCashResponse(BaseModel):
     max_buy_amount: int = 0
     max_buy_quantity: int = 0
     cma_evaluation_amount: int = 0
+
+
+class KisOrderExecutionItem(BaseModel):
+    order_date: str
+    order_time: str
+    order_branch_no: str
+    order_no: str
+    original_order_no: str = ""
+    symbol: str
+    name: str
+    side_code: str = ""
+    side_name: str = ""
+    order_type_name: str = ""
+    order_type_code: str = ""
+    ordered_quantity: int = 0
+    order_price: int = 0
+    filled_quantity: int = 0
+    average_price: int = 0
+    filled_amount: int = 0
+    remaining_quantity: int = 0
+    rejected_quantity: int = 0
+    canceled: bool = False
+    status: str = ""
+    execution_condition: str = ""
+    exchange_code: str = ""
+
+
+class KisOrderExecutionSummary(BaseModel):
+    total_order_quantity: int = 0
+    total_filled_quantity: int = 0
+    total_filled_amount: int = 0
+    estimated_fee_total: int = 0
+    purchase_average_price: int = 0
+
+
+class KisOrderExecutionResponse(BaseModel):
+    provider: str
+    environment: str
+    account_label: str
+    start_date: str
+    end_date: str
+    summary: KisOrderExecutionSummary
+    orders: list[KisOrderExecutionItem]
 
 
 class KisPaperOrderRequest(BaseModel):
@@ -3052,6 +3096,57 @@ async def kis_broker_buyable_cash(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return KisBuyableCashResponse(**result)
+
+
+@app.get("/api/broker/kis/orders")
+async def kis_broker_orders(
+    start: date | None = None,
+    end: date | None = None,
+    side: str = "all",
+    execution_status: str = "all",
+    symbol: str = "",
+) -> KisOrderExecutionResponse:
+    request_payload = {
+        "account_label": _masked_kis_account_label(),
+        "environment": get_kis_environment_name(),
+        "start": start,
+        "end": end,
+        "side": side,
+        "execution_status": execution_status,
+        "symbol": symbol,
+        "mode": "read-only",
+    }
+    try:
+        result = fetch_kis_daily_order_executions(
+            start=start,
+            end=end,
+            side=side,
+            execution_status=execution_status,
+            symbol=symbol,
+        )
+        _try_create_broker_audit_log(
+            action="order_history.read",
+            status="success",
+            request_payload=request_payload,
+            response_payload={
+                "order_count": len(result.get("orders", [])),
+                "summary": result.get("summary", {}),
+            },
+            message="KIS 주문체결 내역 조회 성공",
+        )
+    except MarketDataProviderUnavailable as exc:
+        _try_create_broker_audit_log(
+            action="order_history.read",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisOrderExecutionResponse(**result)
 
 
 @app.post("/api/broker/kis/paper/orders", status_code=202)

@@ -278,6 +278,49 @@ export type KisBrokerBalance = {
   holdings: KisBrokerHolding[];
 };
 
+export type KisOrderExecutionItem = {
+  order_date: string;
+  order_time: string;
+  order_branch_no: string;
+  order_no: string;
+  original_order_no: string;
+  symbol: string;
+  name: string;
+  side_code: string;
+  side_name: string;
+  order_type_name: string;
+  order_type_code: string;
+  ordered_quantity: number;
+  order_price: number;
+  filled_quantity: number;
+  average_price: number;
+  filled_amount: number;
+  remaining_quantity: number;
+  rejected_quantity: number;
+  canceled: boolean;
+  status: string;
+  execution_condition: string;
+  exchange_code: string;
+};
+
+export type KisOrderExecutionSummary = {
+  total_order_quantity: number;
+  total_filled_quantity: number;
+  total_filled_amount: number;
+  estimated_fee_total: number;
+  purchase_average_price: number;
+};
+
+export type KisOrderExecutions = {
+  provider: string;
+  environment: string;
+  account_label: string;
+  start_date: string;
+  end_date: string;
+  summary: KisOrderExecutionSummary;
+  orders: KisOrderExecutionItem[];
+};
+
 export type YahooDailyPrice = {
   symbol: string;
   trade_date: string;
@@ -383,6 +426,17 @@ export async function fetchKisBrokerBalance(): Promise<KisBrokerBalance> {
   if (!response.ok) {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `KIS 잔고를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchKisOrderExecutions(): Promise<KisOrderExecutions> {
+  const response = await fetch(`${API_BASE_URL}/api/broker/kis/orders`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `KIS 주문체결 내역을 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

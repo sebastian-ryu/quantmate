@@ -246,6 +246,70 @@ def test_kis_broker_balance_logs_audit(monkeypatch) -> None:
         assert "12345678" not in log.request_json
 
 
+def test_kis_broker_orders_logs_audit(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+
+    def fake_orders(**_kwargs) -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "environment": "paper",
+            "account_label": "******78-01",
+            "start_date": "2026-06-07",
+            "end_date": "2026-06-21",
+            "summary": {
+                "total_order_quantity": 1,
+                "total_filled_quantity": 1,
+                "total_filled_amount": 70000,
+                "estimated_fee_total": 0,
+                "purchase_average_price": 70000,
+            },
+            "orders": [
+                {
+                    "order_date": "2026-06-21",
+                    "order_time": "10:10:10",
+                    "order_branch_no": "001",
+                    "order_no": "0000000001",
+                    "original_order_no": "",
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "side_code": "02",
+                    "side_name": "매수",
+                    "order_type_name": "시장가",
+                    "order_type_code": "01",
+                    "ordered_quantity": 1,
+                    "order_price": 0,
+                    "filled_quantity": 1,
+                    "average_price": 70000,
+                    "filled_amount": 70000,
+                    "remaining_quantity": 0,
+                    "rejected_quantity": 0,
+                    "canceled": False,
+                    "status": "체결",
+                    "execution_condition": "",
+                    "exchange_code": "KRX",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main_module, "fetch_kis_daily_order_executions", fake_orders)
+
+    response = client.get("/api/broker/kis/orders")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["orders"][0]["status"] == "체결"
+    assert data["summary"]["total_filled_quantity"] == 1
+
+    with session_factory() as session:
+        log = session.scalar(select(BrokerAuditLog))
+        assert log is not None
+        assert log.action == "order_history.read"
+        assert "12345678" not in log.request_json
+
+
 def test_kis_paper_order_requires_enabled_flag(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
     monkeypatch.delenv("PAPER_TRADING_ENABLED", raising=False)

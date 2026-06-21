@@ -4,10 +4,12 @@
     fetchDashboard,
     fetchKisBrokerAccountStatus,
     fetchKisBrokerBalance,
+    fetchKisOrderExecutions,
     fetchStrategyCandidates,
     type Dashboard,
     type KisBrokerAccountStatus,
     type KisBrokerBalance,
+    type KisOrderExecutions,
     type Strategy,
     type StrategyCandidateResult,
     fetchUserStrategies,
@@ -71,8 +73,10 @@
   let candidateRequestId = 0;
   let brokerStatus: KisBrokerAccountStatus | null = null;
   let brokerBalance: KisBrokerBalance | null = null;
+  let brokerOrders: KisOrderExecutions | null = null;
   let brokerLoading = false;
   let brokerError = '';
+  let brokerOrderError = '';
   let loading = true;
   let error = '';
 
@@ -317,8 +321,8 @@
       registeredStrategies = userStrategies;
       selectedStrategy = dashboard.backtest.strategy_code;
       await tick();
-      void loadBrokerAccount();
       await loadCandidateRowsForSelectedStrategy();
+      void loadBrokerAccount();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략 데이터를 불러오지 못했습니다.';
     } finally {
@@ -443,21 +447,35 @@
   async function loadBrokerAccount() {
     brokerLoading = true;
     brokerError = '';
+    brokerOrderError = '';
 
     try {
       const status = await fetchKisBrokerAccountStatus();
       brokerStatus = status;
       if (status.ready) {
         brokerBalance = await fetchKisBrokerBalance();
+        await wait(900);
+        try {
+          brokerOrders = await fetchKisOrderExecutions();
+        } catch (err) {
+          brokerOrders = null;
+          brokerOrderError = err instanceof Error ? err.message : 'KIS 주문체결 내역을 불러오지 못했습니다.';
+        }
       } else {
         brokerBalance = null;
+        brokerOrders = null;
       }
     } catch (err) {
       brokerError = err instanceof Error ? err.message : 'KIS 계좌 정보를 불러오지 못했습니다.';
       brokerBalance = null;
+      brokerOrders = null;
     } finally {
       brokerLoading = false;
     }
+  }
+
+  function wait(ms: number) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
   function toStrategyCandidate(candidate: StrategyCandidateResult): StrategyCandidate {
@@ -828,6 +846,70 @@
             </div>
           {:else}
             <div class="empty-state">현재 조회된 보유 종목이 없습니다.</div>
+          {/if}
+          {#if brokerOrderError}
+            <div class="broker-subsection-heading">
+              <div>
+                <span>최근 주문체결</span>
+                <strong>조회 보류</strong>
+              </div>
+            </div>
+            <div class="empty-state error">{brokerOrderError}</div>
+          {:else if brokerOrders}
+            <div class="broker-subsection-heading">
+              <div>
+                <span>최근 주문체결</span>
+                <strong>{brokerOrders.start_date} ~ {brokerOrders.end_date}</strong>
+              </div>
+              <span>
+                주문 {formatNumber(brokerOrders.summary.total_order_quantity)}주 · 체결
+                {formatNumber(brokerOrders.summary.total_filled_quantity)}주
+              </span>
+            </div>
+            {#if brokerOrders.orders.length}
+              <div class="table-wrap compact-table-wrap">
+                <table class="wide-table broker-holdings-table">
+                  <thead>
+                    <tr>
+                      <th>일시</th>
+                      <th>종목</th>
+                      <th>구분</th>
+                      <th>상태</th>
+                      <th>주문수량</th>
+                      <th>체결수량</th>
+                      <th>잔여</th>
+                      <th>주문가</th>
+                      <th>평균가</th>
+                      <th>주문번호</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each brokerOrders.orders.slice(0, 10) as order}
+                      <tr>
+                        <td>
+                          <strong>{order.order_date}</strong>
+                          <span>{order.order_time}</span>
+                        </td>
+                        <td>
+                          <strong>{order.name || order.symbol}</strong>
+                          <span>{order.symbol}</span>
+                        </td>
+                        <td>{order.side_name || order.side_code}</td>
+                        <td>{order.status}</td>
+                        <td>{formatNumber(order.ordered_quantity)}주</td>
+                        <td>{formatNumber(order.filled_quantity)}주</td>
+                        <td>{formatNumber(order.remaining_quantity)}주</td>
+                        <td>{formatKrw(order.order_price)}</td>
+                        <td>{formatKrw(order.average_price)}</td>
+                        <td>{order.order_no}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {:else}
+              <div class="empty-state">최근 14일 주문체결 내역이 없습니다.</div>
+            {/if}
           {/if}
         {/if}
       {/if}

@@ -47,6 +47,7 @@ KIS_DOMESTIC_FINANCIAL_RATIO_PATH = "/uapi/domestic-stock/v1/finance/financial-r
 KIS_DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 KIS_DOMESTIC_BUYABLE_CASH_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 KIS_DOMESTIC_CASH_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+KIS_DOMESTIC_DAILY_ORDER_EXECUTION_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 KIS_MARKET_CAP_RANKING_MARKET_CODES = {
     "ALL": "0000",
     "KOSPI": "0001",
@@ -756,6 +757,94 @@ def fetch_kis_buyable_cash(
     return normalize_kis_buyable_cash(output, symbol=normalized_symbol)
 
 
+def fetch_kis_daily_order_executions(
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    side: str = "all",
+    execution_status: str = "all",
+    symbol: str = "",
+    max_pages: int = 5,
+) -> dict[str, Any]:
+    account = get_kis_account_config()
+    today = today_kst()
+    end_date = end or today
+    start_date = start or (end_date - timedelta(days=14))
+    if end_date < start_date:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+
+    normalized_side = side.strip().lower()
+    side_code_by_name = {"all": "00", "sell": "01", "buy": "02"}
+    if normalized_side not in side_code_by_name:
+        raise ValueError("매수매도 구분은 all, buy, sell만 지원합니다.")
+
+    normalized_execution_status = execution_status.strip().lower()
+    execution_code_by_name = {"all": "00", "filled": "01", "unfilled": "02"}
+    if normalized_execution_status not in execution_code_by_name:
+        raise ValueError("체결 구분은 all, filled, unfilled만 지원합니다.")
+
+    pd_dv = "before" if start_date < today - timedelta(days=90) else "inner"
+    if is_kis_paper_trading():
+        tr_id = "VTSC9215R" if pd_dv == "before" else "VTTC0081R"
+    else:
+        tr_id = "CTSC9215R" if pd_dv == "before" else "TTTC0081R"
+
+    orders: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {}
+    ctx_area_fk100 = ""
+    ctx_area_nk100 = ""
+    tr_cont = ""
+    safe_max_pages = max(1, min(max_pages, 20))
+
+    for _page in range(safe_max_pages):
+        payload, headers = request_kis_open_api(
+            method="GET",
+            path=KIS_DOMESTIC_DAILY_ORDER_EXECUTION_PATH,
+            tr_id=tr_id,
+            tr_cont=tr_cont,
+            params={
+                "CANO": account["account_no"],
+                "ACNT_PRDT_CD": account["product_code"],
+                "INQR_STRT_DT": start_date.strftime("%Y%m%d"),
+                "INQR_END_DT": end_date.strftime("%Y%m%d"),
+                "SLL_BUY_DVSN_CD": side_code_by_name[normalized_side],
+                "PDNO": normalize_kis_symbol(symbol) if symbol else "",
+                "CCLD_DVSN": execution_code_by_name[normalized_execution_status],
+                "INQR_DVSN": "00",
+                "INQR_DVSN_3": "00",
+                "ORD_GNO_BRNO": "",
+                "ODNO": "",
+                "INQR_DVSN_1": "",
+                "CTX_AREA_FK100": ctx_area_fk100,
+                "CTX_AREA_NK100": ctx_area_nk100,
+                "EXCG_ID_DVSN_CD": "KRX",
+            },
+        )
+        raw_orders = payload.get("output1") or []
+        raw_summary = payload.get("output2") or {}
+        if isinstance(raw_orders, list):
+            orders.extend(normalize_kis_daily_order_execution(row) for row in raw_orders if isinstance(row, dict))
+        if isinstance(raw_summary, dict):
+            summary = normalize_kis_daily_order_execution_summary(raw_summary)
+
+        ctx_area_fk100 = str(payload.get("ctx_area_fk100") or "")
+        ctx_area_nk100 = str(payload.get("ctx_area_nk100") or "")
+        response_tr_cont = str(headers.get("tr_cont") or "").strip()
+        if response_tr_cont not in {"M", "F"}:
+            break
+        tr_cont = "N"
+
+    return {
+        "provider": KIS_PROVIDER_NAME,
+        "environment": get_kis_environment_name(),
+        "account_label": account["account_label"],
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "orders": orders,
+        "summary": summary,
+    }
+
+
 def submit_kis_domestic_cash_order(
     *,
     side: str,
@@ -1276,6 +1365,74 @@ def normalize_kis_buyable_cash(row: dict[str, Any], *, symbol: str) -> dict[str,
         "max_buy_quantity": int_from_kis(row.get("max_buy_qty")) or 0,
         "cma_evaluation_amount": int_from_kis(row.get("cma_evlu_amt")) or 0,
     }
+
+
+def normalize_kis_daily_order_execution(row: dict[str, Any]) -> dict[str, Any]:
+    ordered_quantity = int_from_kis(row.get("ord_qty")) or 0
+    filled_quantity = int_from_kis(row.get("tot_ccld_qty")) or 0
+    remaining_quantity = int_from_kis(row.get("rmn_qty")) or 0
+    rejected_quantity = int_from_kis(row.get("rjct_qty")) or 0
+    canceled = str(row.get("cncl_yn") or "").strip().upper() == "Y"
+    status = "접수"
+    if canceled:
+        status = "취소"
+    elif rejected_quantity > 0:
+        status = "거부"
+    elif remaining_quantity > 0 and filled_quantity > 0:
+        status = "부분체결"
+    elif remaining_quantity > 0:
+        status = "미체결"
+    elif filled_quantity > 0:
+        status = "체결"
+
+    return {
+        "order_date": format_kis_yyyymmdd(row.get("ord_dt")),
+        "order_time": format_kis_hhmmss(row.get("ord_tmd")),
+        "order_branch_no": str(row.get("ord_gno_brno") or "").strip(),
+        "order_no": str(row.get("odno") or "").strip(),
+        "original_order_no": str(row.get("orgn_odno") or "").strip(),
+        "symbol": str(row.get("pdno") or "").strip(),
+        "name": str(row.get("prdt_name") or "").strip(),
+        "side_code": str(row.get("sll_buy_dvsn_cd") or "").strip(),
+        "side_name": str(row.get("sll_buy_dvsn_cd_name") or "").strip(),
+        "order_type_name": str(row.get("ord_dvsn_name") or "").strip(),
+        "order_type_code": str(row.get("ord_dvsn_cd") or "").strip(),
+        "ordered_quantity": ordered_quantity,
+        "order_price": int_from_kis(row.get("ord_unpr")) or 0,
+        "filled_quantity": filled_quantity,
+        "average_price": int_from_kis(row.get("avg_prvs")) or 0,
+        "filled_amount": int_from_kis(row.get("tot_ccld_amt")) or 0,
+        "remaining_quantity": remaining_quantity,
+        "rejected_quantity": rejected_quantity,
+        "canceled": canceled,
+        "status": status,
+        "execution_condition": str(row.get("ccld_cndt_name") or "").strip(),
+        "exchange_code": str(row.get("excg_dvsn_cd") or row.get("excg_id_dvsn_Cd") or "").strip(),
+    }
+
+
+def normalize_kis_daily_order_execution_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "total_order_quantity": int_from_kis(row.get("tot_ord_qty")) or 0,
+        "total_filled_quantity": int_from_kis(row.get("tot_ccld_qty")) or 0,
+        "total_filled_amount": int_from_kis(row.get("tot_ccld_amt")) or 0,
+        "estimated_fee_total": int_from_kis(row.get("prsm_tlex_smtl")) or 0,
+        "purchase_average_price": int_from_kis(row.get("pchs_avg_pric")) or 0,
+    }
+
+
+def format_kis_yyyymmdd(value: Any) -> str:
+    raw = str(value or "").strip()
+    if len(raw) != 8:
+        return raw
+    return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+
+
+def format_kis_hhmmss(value: Any) -> str:
+    raw = str(value or "").strip()
+    if len(raw) != 6:
+        return raw
+    return f"{raw[:2]}:{raw[2:4]}:{raw[4:6]}"
 
 
 def list_value(values: Any, index: int) -> Any:

@@ -350,7 +350,14 @@ def test_kis_paper_order_logs_before_and_after(monkeypatch) -> None:
 
     response = client.post(
         "/api/broker/kis/paper/orders",
-        json={"side": "buy", "symbol": "005930", "quantity": 1, "confirm_submit": True},
+        json={
+            "side": "buy",
+            "symbol": "005930",
+            "quantity": 1,
+            "order_type": "limit",
+            "price": 70000,
+            "confirm_submit": True,
+        },
     )
     data = response.json()
 
@@ -362,6 +369,46 @@ def test_kis_paper_order_logs_before_and_after(monkeypatch) -> None:
         logs = session.scalars(select(BrokerAuditLog).order_by(BrokerAuditLog.id)).all()
         assert [log.action for log in logs] == ["paper_order.submit.before", "paper_order.submit.after"]
         assert all("12345678" not in log.request_json for log in logs)
+
+
+def test_kis_paper_order_rejects_order_amount_limit(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_paper_trading", lambda: True)
+    monkeypatch.setattr(main_module, "get_kis_environment_name", lambda: "paper")
+    monkeypatch.setenv("PAPER_TRADING_ENABLED", "true")
+    monkeypatch.setenv("MAX_ORDER_AMOUNT_KRW", "50000")
+    monkeypatch.setenv("KIS_ACCOUNT_NO", "12345678")
+    monkeypatch.setenv("KIS_ACCOUNT_PRODUCT_CODE", "01")
+    submitted = False
+
+    def fake_submit_order(**_kwargs) -> dict[str, object]:
+        nonlocal submitted
+        submitted = True
+        return {}
+
+    monkeypatch.setattr(main_module, "submit_kis_domestic_cash_order", fake_submit_order)
+
+    response = client.post(
+        "/api/broker/kis/paper/orders",
+        json={
+            "side": "buy",
+            "symbol": "005930",
+            "quantity": 1,
+            "order_type": "limit",
+            "price": 70000,
+            "confirm_submit": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "1회 주문 한도" in response.json()["detail"]
+    assert submitted is False
+
+    with session_factory() as session:
+        log = session.scalar(select(BrokerAuditLog))
+        assert log is not None
+        assert log.action == "paper_order.risk_check"
+        assert log.status == "failed"
 
 
 def test_dashboard_contains_initial_mvp_data() -> None:

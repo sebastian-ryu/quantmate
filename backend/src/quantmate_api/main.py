@@ -716,12 +716,30 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _json_dumps(payload: dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _paper_trading_enabled() -> bool:
     return _env_bool("PAPER_TRADING_ENABLED", default=False)
+
+
+def _max_order_amount_krw() -> int:
+    return _env_int("MAX_ORDER_AMOUNT_KRW", 100_000)
+
+
+def _max_daily_order_count() -> int:
+    return _env_int("MAX_DAILY_ORDER_COUNT", 10)
 
 
 def _masked_kis_account_label() -> str:
@@ -774,6 +792,57 @@ def _try_create_broker_audit_log(
         )
     except SQLAlchemyError:
         return None
+
+
+def _count_today_successful_paper_orders() -> int:
+    today_start = datetime.combine(today_kst(), datetime.min.time())
+    with SessionLocal() as session:
+        return (
+            session.scalar(
+                select(func.count())
+                .select_from(BrokerAuditLog)
+                .where(
+                    BrokerAuditLog.environment == "paper",
+                    BrokerAuditLog.action == "paper_order.submit.after",
+                    BrokerAuditLog.status == "success",
+                    BrokerAuditLog.created_at >= today_start,
+                )
+            )
+            or 0
+        )
+
+
+def _estimate_order_amount(request: KisPaperOrderRequest) -> int:
+    if request.order_type == "limit":
+        return request.quantity * request.price
+
+    quote = fetch_kis_current_price(symbol=request.symbol)
+    price = int(quote.get("price") or 0)
+    if price <= 0:
+        raise MarketDataProviderUnavailable("시장가 주문 한도 계산에 필요한 현재가를 확인하지 못했습니다.")
+    return request.quantity * price
+
+
+def _validate_paper_order_risk_limits(request: KisPaperOrderRequest) -> int:
+    estimated_amount = _estimate_order_amount(request)
+    max_order_amount = _max_order_amount_krw()
+    if max_order_amount > 0 and estimated_amount > max_order_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"주문 예상금액 {estimated_amount:,}원이 1회 주문 한도 "
+                f"{max_order_amount:,}원을 초과합니다."
+            ),
+        )
+
+    max_daily_count = _max_daily_order_count()
+    if max_daily_count > 0 and _count_today_successful_paper_orders() >= max_daily_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"오늘 모의주문 횟수가 일일 한도 {max_daily_count}회를 초과했습니다.",
+        )
+
+    return estimated_amount
 
 
 def _allowed_origins() -> list[str]:
@@ -3168,6 +3237,28 @@ async def kis_paper_order(request: KisPaperOrderRequest) -> KisPaperOrderRespons
         "price": request.price,
         "exchange_id": request.exchange_id,
     }
+    try:
+        estimated_amount = _validate_paper_order_risk_limits(request)
+        request_payload["estimated_amount"] = estimated_amount
+    except HTTPException as exc:
+        _try_create_broker_audit_log(
+            action="paper_order.risk_check",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={"detail": exc.detail},
+            message=str(exc.detail),
+        )
+        raise
+    except MarketDataProviderUnavailable as exc:
+        _try_create_broker_audit_log(
+            action="paper_order.risk_check",
+            status="failed",
+            request_payload=request_payload,
+            response_payload={},
+            message=str(exc),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     try:
         pre_log_id = _create_broker_audit_log(
             action="paper_order.submit.before",

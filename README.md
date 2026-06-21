@@ -84,4 +84,4 @@ make db-seed
 - 모든 신호와 주문의 감사 로그
 - 실거래 활성화 전 사용자 명시 확인
 
-현재 KIS 모의투자 계좌는 읽기 전용 잔고 조회와 매수가능금액 조회까지 앱에 연결되어 있습니다. 모의주문 제출 API는 구현되어 있지만 `PAPER_TRADING_ENABLED=true`와 요청별 `confirm_submit=true`가 모두 있어야 동작하며, 주문 전후 내용은 `broker_audit_logs`에 저장됩니다. 실전 주문은 계속 비활성화 상태로 둡니다.
+현재 KIS 모의투자 계좌는 읽기 전용 잔고 조회, 매수가능금액 조회, 최근 주문체결 조회까지 앱에 연결되어 있습니다. 모의주문 제출 API는 구현되어 있지만 `PAPER_TRADING_ENABLED=true`와 요청별 `confirm_submit=true`가 모두 있어야 동작하며, 1회 주문금액과 일일 주문 횟수 한도를 서버에서 검사합니다. 주문 전후 내용은 `broker_audit_logs`에 저장됩니다. 실전 주문은 계속 비활성화 상태로 둡니다.

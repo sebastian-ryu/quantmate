@@ -105,6 +105,7 @@ PAPER_TRADING_ENABLED=false
 ```
 
 `PAPER_TRADING_ENABLED=false`는 모의투자 주문 제출 잠금이다. 계좌 상태와 잔고 조회는 이 값과 무관하게 읽기 전용으로 동작한다. 모의주문 제출은 이 값을 `true`로 바꾸고, 요청 본문에 `confirm_submit=true`를 넣은 경우에만 동작한다.
+주문 제출 전 서버는 `MAX_ORDER_AMOUNT_KRW`와 `MAX_DAILY_ORDER_COUNT`를 검사한다. 시장가 주문은 KIS 현재가로 예상 주문금액을 계산한다.
 
 실전투자는 값을 교체하되 `LIVE_TRADING_ENABLED=false`를 유지하고, 실전 주문은 별도 안전장치 검토 전까지 사용하지 않는다.
 

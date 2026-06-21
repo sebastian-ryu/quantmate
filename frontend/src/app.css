@@ -848,6 +848,10 @@ button:disabled,
   opacity: 0.6;
 }
 
+.tooltip-anchor {
+  position: relative;
+}
+
 .tooltip-anchor .tooltip {
   background: #172026;
   border-radius: 6px;
@@ -868,6 +872,50 @@ button:disabled,
     transform 0.16s ease;
   width: max-content;
   z-index: 5;
+}
+
+.column-tooltip {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: help;
+  display: inline-flex;
+  font: inherit;
+  gap: 4px;
+  outline: none;
+  padding: 0;
+  text-align: inherit;
+}
+
+.column-tooltip::after {
+  color: #8a98a0;
+  content: "?";
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.column-tooltip .tooltip {
+  bottom: auto;
+  left: 0;
+  right: auto;
+  top: calc(100% + 8px);
+  white-space: normal;
+}
+
+.rule-tooltip {
+  border-bottom: 1px dotted #94a3aa;
+  cursor: help;
+  display: inline-flex;
+  line-height: 1.5;
+}
+
+.rule-tooltip .tooltip {
+  bottom: auto;
+  left: 0;
+  right: auto;
+  top: calc(100% + 6px);
+  white-space: normal;
 }
 
 .tooltip-anchor:hover .tooltip,

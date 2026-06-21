@@ -13,6 +13,7 @@
     type Strategy,
     type UserStrategy
   } from '$lib/api';
+  import { describeStrategyRule } from '$lib/strategyRuleTooltips';
 
   type StrategyOption = {
     code: string;
@@ -123,6 +124,7 @@
   let selectedSavedRunId = '';
   let chartTooltip: ChartTooltip | null = null;
   let recentBacktests: BacktestRunSummary[] = [];
+  let recentBacktestsLoading = false;
   let recentBacktestsError = '';
 
   const benchmarkOptions = [
@@ -165,10 +167,10 @@
       dashboard = dashboardData;
       registeredStrategies = userStrategies;
       selectedStrategy = chooseInitialStrategy(dashboardData, userStrategies);
-      await loadRecentBacktests();
+      loading = false;
+      void loadRecentBacktests();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략과 백테스트 데이터를 불러오지 못했습니다.';
-    } finally {
       loading = false;
     }
   });
@@ -391,11 +393,14 @@
   }
 
   async function loadRecentBacktests() {
+    recentBacktestsLoading = true;
     try {
       recentBacktests = await fetchBacktestRuns(8);
       recentBacktestsError = '';
     } catch (err) {
       recentBacktestsError = err instanceof Error ? err.message : '최근 백테스트 결과를 불러오지 못했습니다.';
+    } finally {
+      recentBacktestsLoading = false;
     }
   }
 
@@ -806,35 +811,37 @@
   </div>
 </header>
 
-{#if loading}
-  <section class="state-panel">백테스트 데이터를 불러오는 중입니다.</section>
-{:else if error}
+{#if error && !dashboard}
   <section class="state-panel error">{error}</section>
-{:else if dashboard}
+{:else}
   <div class="backtest-stack">
     <section class="panel backtest-panel">
       <div class="panel-heading">
         <span>전략 선택</span>
-        <strong>{selectedOption?.name ?? '전략 선택 필요'}</strong>
+        <strong>{loading && !selectedOption ? '전략 목록 로딩 중' : selectedOption?.name ?? '전략 선택 필요'}</strong>
       </div>
       <div class="backtest-form-grid strategy-select-grid">
         <label>
           <span>전략</span>
-          <select bind:value={selectedStrategy} onchange={clearBacktestResult}>
-            <optgroup label={`시스템 제공 전략 (${systemStrategyOptions.length})`}>
-              {#each systemStrategyOptions as item}
-                <option value={item.code}>[시스템] {strategyLabel(item)}</option>
-              {/each}
-            </optgroup>
-            <optgroup label={`사용자 등록 전략 (${customStrategyOptions.length})`}>
-              {#if customStrategyOptions.length}
-                {#each customStrategyOptions as item}
-                  <option value={item.code}>[사용자] {strategyLabel(item)}</option>
+          <select bind:value={selectedStrategy} disabled={loading || !strategyOptions.length} onchange={clearBacktestResult}>
+            {#if loading && !strategyOptions.length}
+              <option value={selectedStrategy}>전략 목록을 불러오는 중입니다</option>
+            {:else}
+              <optgroup label={`시스템 제공 전략 (${systemStrategyOptions.length})`}>
+                {#each systemStrategyOptions as item}
+                  <option value={item.code}>[시스템] {strategyLabel(item)}</option>
                 {/each}
-              {:else}
-                <option disabled value="">검색기에서 전략을 등록하면 여기에 표시됩니다</option>
-              {/if}
-            </optgroup>
+              </optgroup>
+              <optgroup label={`사용자 등록 전략 (${customStrategyOptions.length})`}>
+                {#if customStrategyOptions.length}
+                  {#each customStrategyOptions as item}
+                    <option value={item.code}>[사용자] {strategyLabel(item)}</option>
+                  {/each}
+                {:else}
+                  <option disabled value="">검색기에서 전략을 등록하면 여기에 표시됩니다</option>
+                {/if}
+              </optgroup>
+            {/if}
           </select>
         </label>
       </div>
@@ -866,7 +873,12 @@
               <strong>후보 조건</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.signalRules) as rule}
-                  <li>{rule}</li>
+                  <li>
+                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'signal')}>
+                      {rule}
+                      <span class="tooltip">{describeStrategyRule(rule, 'signal')}</span>
+                    </span>
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -874,7 +886,12 @@
               <strong>우선순위</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.rankingRules) as rule}
-                  <li>{rule}</li>
+                  <li>
+                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'ranking')}>
+                      {rule}
+                      <span class="tooltip">{describeStrategyRule(rule, 'ranking')}</span>
+                    </span>
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -882,7 +899,12 @@
               <strong>위험 제어</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.riskControls) as rule}
-                  <li>{rule}</li>
+                  <li>
+                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'risk')}>
+                      {rule}
+                      <span class="tooltip">{describeStrategyRule(rule, 'risk')}</span>
+                    </span>
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -897,6 +919,8 @@
             <code class="formula-box compact-formula">{selectedOption.formula}</code>
           {/if}
         </div>
+      {:else}
+        <div class="empty-state">전략 목록을 불러오는 중입니다.</div>
       {/if}
     </section>
 
@@ -906,7 +930,7 @@
           <span>백테스트 조건</span>
           <strong>기간과 초기 투자금</strong>
         </div>
-        <button type="button" onclick={runBacktest} disabled={backtestRunning}>
+        <button type="button" onclick={runBacktest} disabled={backtestRunning || !selectedOption}>
           {#if backtestRunning}
             <span class="button-spinner" aria-hidden="true"></span>
             실행 중
@@ -978,10 +1002,21 @@
     <section class="panel backtest-panel">
       <div class="panel-heading">
         <span>최근 백테스트</span>
-        <strong>{recentBacktests.length ? `${recentBacktests.length}개 저장됨` : '저장 결과 없음'}</strong>
+        <strong>
+          {recentBacktestsLoading
+            ? '불러오는 중'
+            : recentBacktests.length
+              ? `${recentBacktests.length}개 저장됨`
+              : '저장 결과 없음'}
+        </strong>
       </div>
       {#if recentBacktestsError}
         <div class="empty-state error">{recentBacktestsError}</div>
+      {:else if recentBacktestsLoading}
+        <div class="empty-state loading-state">
+          <span class="panel-spinner" aria-hidden="true"></span>
+          <strong>최근 백테스트를 불러오는 중입니다.</strong>
+        </div>
       {:else if recentBacktests.length}
         <div class="recent-backtest-picker">
           <label>

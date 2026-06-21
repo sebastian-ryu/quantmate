@@ -21,6 +21,7 @@
     fetchUserStrategies,
     type UserStrategy
   } from '$lib/api';
+  import { describeStrategyRule } from '$lib/strategyRuleTooltips';
 
   type StrategyOption = {
     code: string;
@@ -103,6 +104,26 @@
   let proposalError = '';
   let loading = true;
   let error = '';
+
+  const candidateColumns = [
+    { label: '종목', description: '종목명, 종목코드, 업종을 함께 표시합니다.' },
+    { label: '전략 점수', description: '선택한 전략의 조건을 종합해 0~100점으로 환산한 순위 점수입니다.' },
+    { label: '선정 사유', description: '해당 종목이 전략 후보로 선정된 핵심 근거와 위험 신호입니다.' },
+    { label: '거래소', description: '종목이 상장된 시장입니다. KOSPI, KOSDAQ 등을 표시합니다.' },
+    { label: '섹터', description: '종목의 큰 산업 분류입니다.' },
+    { label: '시가총액', description: '상장주식 가치의 총합입니다. 현재 화면은 조 단위로 표시합니다.' },
+    { label: '가격', description: '후보 산출에 사용한 최근 가격 또는 현재가입니다.' },
+    { label: '등락', description: '최근 가격 기준 등락률입니다. 양수는 상승, 음수는 하락입니다.' },
+    { label: 'PER', description: '주가를 주당순이익으로 나눈 값입니다. 낮을수록 이익 대비 주가가 낮게 평가될 수 있습니다.' },
+    { label: 'PBR', description: '주가를 주당순자산으로 나눈 값입니다. 낮을수록 순자산 대비 주가가 낮게 평가될 수 있습니다.' },
+    { label: 'ROE', description: '자기자본이익률입니다. 자본 대비 이익 창출력을 나타냅니다.' },
+    { label: '성장', description: '매출 성장률입니다. 높을수록 외형 성장 속도가 빠릅니다.' },
+    { label: '외국인 5일', description: '최근 5거래일 외국인 순매수 금액입니다. 억 원 단위로 표시합니다.' },
+    { label: '기관 5일', description: '최근 5거래일 기관 순매수 금액입니다. 억 원 단위로 표시합니다.' },
+    { label: '수급 점수', description: '외국인, 기관, 거래대금 흐름 등을 종합한 수급 강도 점수입니다.' },
+    { label: '공매도', description: '거래대금 대비 공매도 비중입니다. 높을수록 단기 수급 부담이 커질 수 있습니다.' },
+    { label: '모멘텀', description: '최근 수익률과 추세 강도를 종합한 가격 흐름 점수입니다.' }
+  ];
 
   const candidateUniverse: CandidateUniverseRow[] = [
     {
@@ -344,12 +365,12 @@
       dashboard = dashboardData;
       registeredStrategies = userStrategies;
       selectedStrategy = dashboard.backtest.strategy_code;
+      loading = false;
       await tick();
-      await loadCandidateRowsForSelectedStrategy();
+      void loadCandidateRowsForSelectedStrategy();
       void loadBrokerAccount();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략 데이터를 불러오지 못했습니다.';
-    } finally {
       loading = false;
     }
   });
@@ -792,35 +813,37 @@
   </div>
 </header>
 
-{#if loading}
-  <section class="state-panel">전략 데이터를 불러오는 중입니다.</section>
-{:else if error}
+{#if error && !dashboard}
   <section class="state-panel error">{error}</section>
-{:else if dashboard}
+{:else}
   <div class="backtest-stack">
     <section class="panel backtest-panel">
       <div class="panel-heading">
         <span>전략 선택</span>
-        <strong>{selectedOption?.name ?? '전략 선택 필요'}</strong>
+        <strong>{loading && !selectedOption ? '전략 목록 로딩 중' : selectedOption?.name ?? '전략 선택 필요'}</strong>
       </div>
       <div class="backtest-form-grid strategy-select-grid">
         <label>
           <span>전략</span>
-          <select bind:value={selectedStrategy} onchange={handleStrategyChange}>
-            <optgroup label={`시스템 제공 전략 (${systemStrategyOptions.length})`}>
-              {#each systemStrategyOptions as item}
-                <option value={item.code}>[시스템] {strategyLabel(item)}</option>
-              {/each}
-            </optgroup>
-            <optgroup label={`사용자 등록 전략 (${customStrategyOptions.length})`}>
-              {#if customStrategyOptions.length}
-                {#each customStrategyOptions as item}
-                  <option value={item.code}>[사용자] {strategyLabel(item)}</option>
+          <select bind:value={selectedStrategy} disabled={loading || !strategyOptions.length} onchange={handleStrategyChange}>
+            {#if loading && !strategyOptions.length}
+              <option value={selectedStrategy}>전략 목록을 불러오는 중입니다</option>
+            {:else}
+              <optgroup label={`시스템 제공 전략 (${systemStrategyOptions.length})`}>
+                {#each systemStrategyOptions as item}
+                  <option value={item.code}>[시스템] {strategyLabel(item)}</option>
                 {/each}
-              {:else}
-                <option disabled value="">검색기에서 전략을 등록하면 여기에 표시됩니다</option>
-              {/if}
-            </optgroup>
+              </optgroup>
+              <optgroup label={`사용자 등록 전략 (${customStrategyOptions.length})`}>
+                {#if customStrategyOptions.length}
+                  {#each customStrategyOptions as item}
+                    <option value={item.code}>[사용자] {strategyLabel(item)}</option>
+                  {/each}
+                {:else}
+                  <option disabled value="">검색기에서 전략을 등록하면 여기에 표시됩니다</option>
+                {/if}
+              </optgroup>
+            {/if}
           </select>
         </label>
       </div>
@@ -852,7 +875,12 @@
               <strong>후보 조건</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.signalRules) as rule}
-                  <li>{rule}</li>
+                  <li>
+                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'signal')}>
+                      {rule}
+                      <span class="tooltip">{describeStrategyRule(rule, 'signal')}</span>
+                    </span>
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -860,7 +888,12 @@
               <strong>우선순위</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.rankingRules) as rule}
-                  <li>{rule}</li>
+                  <li>
+                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'ranking')}>
+                      {rule}
+                      <span class="tooltip">{describeStrategyRule(rule, 'ranking')}</span>
+                    </span>
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -868,7 +901,12 @@
               <strong>위험 제어</strong>
               <ul class="compact-list">
                 {#each firstRules(selectedOption.riskControls) as rule}
-                  <li>{rule}</li>
+                  <li>
+                    <span class="tooltip-anchor rule-tooltip" title={describeStrategyRule(rule, 'risk')}>
+                      {rule}
+                      <span class="tooltip">{describeStrategyRule(rule, 'risk')}</span>
+                    </span>
+                  </li>
                 {/each}
               </ul>
             </div>
@@ -886,6 +924,8 @@
             <code class="formula-box compact-formula">{selectedOption.formula}</code>
           {/if}
         </div>
+      {:else}
+        <div class="empty-state">전략 목록을 불러오는 중입니다.</div>
       {/if}
     </section>
 
@@ -1289,16 +1329,20 @@
       <div class="panel-heading inline">
         <div>
           <span>전략 검색 결과</span>
-          <strong>{candidateRows.length}개 종목</strong>
+          <strong>{loading && !selectedOption ? '대기 중' : `${candidateRows.length}개 종목`}</strong>
         </div>
         <span class="muted">
-          {candidatesLoading
+          {loading && !selectedOption
+            ? '전략 목록 로딩 중'
+            : candidatesLoading
             ? '후보 계산 중'
             : `${candidateSourceLabel(candidateSource)} · 전략 점수 평균 ${averageScore || '-'}`}
         </span>
       </div>
       {#if candidatesError}
         <div class="empty-state">{candidatesError}</div>
+      {:else if loading && !selectedOption}
+        <div class="empty-state">전략 목록이 준비되면 후보 종목을 계산합니다.</div>
       {:else if candidatesLoading}
         <div class="empty-state">전략 후보 종목을 계산하는 중입니다.</div>
       {:else}
@@ -1306,23 +1350,14 @@
         <table class="wide-table strategy-result-table">
           <thead>
             <tr>
-              <th>종목</th>
-              <th>전략 점수</th>
-              <th>선정 사유</th>
-              <th>거래소</th>
-              <th>섹터</th>
-              <th>시가총액</th>
-              <th>가격</th>
-              <th>등락</th>
-              <th>PER</th>
-              <th>PBR</th>
-              <th>ROE</th>
-              <th>성장</th>
-              <th>외국인 5일</th>
-              <th>기관 5일</th>
-              <th>수급 점수</th>
-              <th>공매도</th>
-              <th>모멘텀</th>
+              {#each candidateColumns as column}
+                <th>
+                  <button class="tooltip-anchor column-tooltip" title={column.description} type="button">
+                    {column.label}
+                    <span class="tooltip">{column.description}</span>
+                  </button>
+                </th>
+              {/each}
             </tr>
           </thead>
           <tbody>

@@ -1,6 +1,6 @@
 # 참고 자료
 
-이 자료는 초기 기획 단계에서 2026-06-20에 확인했다.
+이 자료는 초기 기획 단계에서 2026-06-20에 확인했고, 데이터 공급원 우선순위는 2026-06-21에 다시 점검했다.
 
 ## 증권사와 시장 데이터
 
@@ -10,13 +10,28 @@
 - KRX 정보데이터시스템: https://data.krx.co.kr/
 - KRX Open API: https://openapi.krx.co.kr/
 - KRX Open API 이용방법: https://openapi.krx.co.kr/contents/OPP/INFO/OPPINFO003.jsp
+- KRX Open API 서비스 목록: https://openapi.krx.co.kr/contents/OPP/INFO/service/OPPINFO004.cmd
+- Yahoo Finance 약관: https://legal.yahoo.com/us/en/yahoo/terms/product-atos/apiforydn/index.html
 - OpenDART: https://opendart.fss.or.kr/
 - FinanceDataReader: https://github.com/FinanceData/FinanceDataReader
 - pykrx: https://github.com/sharebook-kr/pykrx
 - pykrx PyPI: https://pypi.org/project/pykrx/
 - yfinance: https://github.com/ranaroussi/yfinance
+- yfinance 문서: https://ranaroussi.github.io/yfinance/
 
-KRX Open API는 2026-06-20 기준 로그인 후 API 인증키를 신청하고, 사용할 API 서비스별로 이용신청 후 승인받는 방식이다. 실제 호출 시 인증키는 요청 헤더 `AUTH_KEY`에 넣어 전달한다. `pykrx`는 보조 후보로 남기되, 초기 실제 데이터 연결은 공식 KRX Open API를 우선한다.
+2026-06-21 기준 데이터 공급원 결정:
+
+- KIS Open API는 현재가, 기간별 시세, 분봉, 재무비율, 수급/공매도/신용잔고/프로그램 매매, 순위분석, 실시간 시세, 계좌/주문을 제공하므로 초기 실제 데이터와 향후 자동매매 연결의 중심으로 둔다.
+- KRX Open API는 2010년 이후 주식 일별매매정보와 종목기본정보 등을 제공하므로 승인 후 백테스트용 공식 장기 데이터 공급원으로 둔다.
+- KRX 승인이 지연되면 Yahoo/yfinance를 백테스트 개발용 임시 과거 가격 데이터로 사용한다. Yahoo/yfinance는 약관과 안정성 제약이 있으므로 정식 한국 주식 데이터 공급원으로 고정하지 않는다.
+- `pykrx`, FinanceDataReader는 검증 또는 임시 보조 후보로 유지한다.
+
+백테스트 비교군에 사용하는 Yahoo Finance 지수 티커:
+
+- KOSPI 200: `^KS200`
+- KOSDAQ 대표지수: `^KQ11`
+- S&P 500: `^GSPC`
+- Nasdaq 100: `^NDX`
 
 ## 플랫폼
 

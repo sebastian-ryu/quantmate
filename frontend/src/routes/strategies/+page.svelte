@@ -2,9 +2,11 @@
   import { onMount } from 'svelte';
   import {
     fetchDashboard,
+    fetchBacktestRun,
     fetchBacktestRuns,
     fetchUserStrategies,
     runBacktest as requestBacktest,
+    type BacktestBenchmarkPoint,
     type BacktestRunSummary,
     type BacktestRunResult,
     type Dashboard,
@@ -53,14 +55,43 @@
     portfolio: number;
   };
 
+  type MonthLabeledRow = {
+    label: string;
+  };
+
   type ChartPoint = GrowthRow & {
     x: number;
     y: number;
   };
 
+  type BenchmarkChartPoint = BacktestBenchmarkPoint & {
+    x: number;
+    y: number;
+  };
+
+  type ChartTooltip = {
+    x: number;
+    y: number;
+    title: string;
+    value: string;
+    tone: 'strategy' | 'benchmark';
+  };
+
+  type PerformanceComparisonRow = {
+    metric: string;
+    strategyValue: string;
+    benchmarkValue: string;
+  };
+
   type ValueScale = {
     min: number;
     max: number;
+  };
+
+  type MonthBounds = {
+    start: number;
+    end: number;
+    span: number;
   };
 
   let dashboard: Dashboard | null = null;
@@ -69,25 +100,47 @@
   let loading = true;
   let error = '';
 
-  let startYear = '2023';
-  let endYear = '2025';
+  const yahooStartYear = 1990;
+  const currentYear = new Date().getFullYear();
+  const defaultStartYear = Math.max(yahooStartYear, currentYear - 5);
+  const yearOptions = Array.from(
+    { length: currentYear - yahooStartYear + 1 },
+    (_, index) => currentYear - index
+  );
+
+  let startYear = String(defaultStartYear);
+  let endYear = String(currentYear);
   let initialAmount = 10000000;
+  let initialAmountInput = formatCurrencyInput(initialAmount);
+  let benchmarkCode = 'kospi200';
   let hasBacktestResult = false;
   let backtestRunAt = '';
   let backtestNotice = '';
   let backtestResult: BacktestRunResult | null = null;
   let backtestRunning = false;
   let backtestError = '';
+  let savedBacktestLoadingId: number | null = null;
+  let selectedSavedRunId = '';
+  let chartTooltip: ChartTooltip | null = null;
   let recentBacktests: BacktestRunSummary[] = [];
   let recentBacktestsError = '';
 
-  const chartWidth = 760;
+  const benchmarkOptions = [
+    { code: 'kospi200', name: 'KOSPI 200' },
+    { code: 'kosdaq', name: 'KOSDAQ 대표지수' },
+    { code: 'sp500', name: 'S&P 500' },
+    { code: 'nasdaq100', name: 'Nasdaq 100' },
+    { code: 'none', name: '비교 안 함' }
+  ];
+
+  const chartMinWidth = 760;
+  let chartContainerWidth = 0;
+  let chartWidth = chartMinWidth;
   const chartHeight = 360;
-  const chartLeft = 72;
-  const chartRight = 12;
+  const chartLeft = 68;
+  const chartRight = 4;
   const chartTop = 28;
   const chartBottom = 310;
-  const chartPlotWidth = chartWidth - chartLeft - chartRight;
   const chartPlotHeight = chartBottom - chartTop;
 
   const metricDescriptions: Record<string, string> = {
@@ -131,17 +184,47 @@
     strategyOptions.find((item) => item.code === selectedStrategy) ?? strategyOptions[0] ?? null;
   $: annualRows = buildAnnualRows(backtestResult);
   $: growthRows = buildGrowthRows(backtestResult);
+  $: benchmarkRows = backtestResult?.benchmark_curve ?? [];
   $: rebalanceRows = backtestResult?.rebalance_history ?? [];
   $: performanceRows = backtestResult?.metrics ?? [];
-  $: initialAmountValue = Number(initialAmount) || 0;
-  $: growthValues = growthRows.length ? growthRows.map((row) => row.portfolio) : [initialAmountValue];
+  $: benchmarkMetrics = buildBenchmarkMetrics(backtestResult);
+  $: performanceComparisonRows = performanceRows.map((row) => ({
+    metric: row.metric,
+    strategyValue: row.value,
+    benchmarkValue: benchmarkMetrics[row.metric] ?? '-'
+  }));
+  $: initialAmountValue = initialAmount || 0;
+  $: growthValues = [
+    ...(growthRows.length ? growthRows.map((row) => row.portfolio) : [initialAmountValue]),
+    ...benchmarkRows.map((row) => row.benchmark)
+  ];
   $: growthMin = Math.min(...growthValues, initialAmountValue);
   $: growthMax = Math.max(...growthValues, initialAmountValue);
   $: growthScale = buildValueScale(growthMin, growthMax);
-  $: growthChartPoints = buildChartPoints(growthRows, growthScale.min, growthScale.max);
+  $: chartWidth = Math.max(chartMinWidth, Math.round(chartContainerWidth || chartMinWidth));
+  $: chartPlotWidth = chartWidth - chartLeft - chartRight;
+  $: growthMonthBounds = buildMonthBounds([...growthRows, ...benchmarkRows]);
+  $: growthChartPoints = buildChartPoints(
+    growthRows,
+    growthScale.min,
+    growthScale.max,
+    growthMonthBounds,
+    chartPlotWidth
+  );
+  $: benchmarkChartPoints = buildBenchmarkChartPoints(
+    benchmarkRows,
+    growthScale.min,
+    growthScale.max,
+    growthMonthBounds,
+    chartPlotWidth
+  );
   $: portfolioLine = growthChartPoints.map((point) => `${point.x},${point.y}`).join(' ');
+  $: benchmarkLine = benchmarkChartPoints.map((point) => `${point.x},${point.y}`).join(' ');
   $: growthYAxisTicks = buildYAxisTicks(growthScale.min, growthScale.max);
-  $: growthXAxisTicks = buildXAxisTicks(growthRows);
+  $: growthXAxisTicks = buildXAxisTicks(growthMonthBounds, chartPlotWidth);
+  $: if (!selectedSavedRunId && recentBacktests.length) {
+    selectedSavedRunId = String(recentBacktests[0].id);
+  }
 
   function toBaseStrategyOption(strategy: Strategy): StrategyOption {
     return {
@@ -236,13 +319,11 @@
         strategy_code: selectedOption.code,
         start_year: Number(startYear),
         end_year: Number(endYear),
-        initial_amount: Number(initialAmount)
+        initial_amount: initialAmount,
+        benchmark_code: benchmarkCode
       });
 
-      backtestResult = result;
-      hasBacktestResult = true;
-      backtestRunAt = new Date(result.run_at).toLocaleString('ko-KR');
-      backtestNotice = result.notice;
+      applyBacktestResult(result);
       await loadRecentBacktests();
     } catch (err) {
       backtestError = err instanceof Error ? err.message : '백테스트를 실행하지 못했습니다.';
@@ -251,12 +332,62 @@
     }
   }
 
+  async function loadSavedBacktest(runId: number) {
+    savedBacktestLoadingId = runId;
+    backtestError = '';
+
+    try {
+      const result = await fetchBacktestRun(runId);
+      applyBacktestResult(result);
+      selectedStrategy = result.strategy_code;
+      setInitialAmount(result.initial_amount);
+      benchmarkCode = result.benchmark_code || 'none';
+      const [loadedStartYear, loadedEndYear] = result.period.split(' ~ ');
+      if (loadedStartYear) startYear = loadedStartYear;
+      if (loadedEndYear) endYear = loadedEndYear;
+    } catch (err) {
+      recentBacktestsError = err instanceof Error ? err.message : '저장된 백테스트 결과를 불러오지 못했습니다.';
+    } finally {
+      savedBacktestLoadingId = null;
+    }
+  }
+
+  async function loadSelectedSavedBacktest() {
+    const runId = Number(selectedSavedRunId);
+
+    if (!runId) {
+      recentBacktestsError = '불러올 백테스트 결과를 선택하세요.';
+      return;
+    }
+
+    await loadSavedBacktest(runId);
+  }
+
+  function applyBacktestResult(result: BacktestRunResult) {
+    backtestResult = result;
+    hasBacktestResult = true;
+    backtestRunAt = new Date(result.run_at).toLocaleString('ko-KR');
+    backtestNotice = result.notice;
+  }
+
   function clearBacktestResult() {
     hasBacktestResult = false;
     backtestResult = null;
     backtestRunAt = '';
     backtestNotice = '';
     backtestError = '';
+    chartTooltip = null;
+  }
+
+  function handleInitialAmountInput(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    setInitialAmount(parseCurrencyInput(input.value));
+    clearBacktestResult();
+  }
+
+  function setInitialAmount(value: number) {
+    initialAmount = Math.max(0, Math.floor(Number(value) || 0));
+    initialAmountInput = formatCurrencyInput(initialAmount);
   }
 
   async function loadRecentBacktests() {
@@ -284,12 +415,166 @@
     return result?.equity_curve ?? [];
   }
 
-  function buildChartPoints(rows: GrowthRow[], min: number, max: number): ChartPoint[] {
+  function buildBenchmarkMetrics(result: BacktestRunResult | null): Record<string, string> {
+    if (!result?.benchmark_curve?.length) return {};
+
+    const curve = result.benchmark_curve;
+    const initial = result.initial_amount;
+    const finalAmount = curve[curve.length - 1].benchmark;
+    const monthlyReturns = buildMonthlyReturnsFromCurve(curve, 'benchmark', initial);
+    const annualReturns = buildAnnualReturnsFromCurve(curve, 'benchmark', initial);
+    const cagr = calculateCagr(initial, finalAmount, curve);
+    const volatility = calculateStandardDeviation(monthlyReturns) * Math.sqrt(12);
+    const downsideReturns = monthlyReturns.filter((value) => value < 0);
+    const downsideDeviation = calculateDownsideDeviation(downsideReturns) * Math.sqrt(12);
+    const sharpe = volatility ? cagr / volatility : 0;
+    const sortino = downsideDeviation ? cagr / downsideDeviation : 0;
+    const bestYear = annualReturns.reduce((best, item) => (item.returnPct > best.returnPct ? item : best), annualReturns[0]);
+    const worstYear = annualReturns.reduce((worst, item) => (item.returnPct < worst.returnPct ? item : worst), annualReturns[0]);
+
+    return {
+      시작금액: formatKrw(initial),
+      종료금액: formatKrw(finalAmount),
+      '연평균 수익률(CAGR)': formatPercent(cagr * 100),
+      변동성: formatPercent(volatility * 100),
+      '최고 연도': `${bestYear.year} · ${formatPercent(bestYear.returnPct)}`,
+      '최저 연도': `${worstYear.year} · ${formatPercent(worstYear.returnPct)}`,
+      '최대 낙폭(MDD)': formatPercent(calculateMdd(curve.map((point) => point.benchmark))),
+      '샤프 비율': sharpe.toFixed(2),
+      '소르티노 비율': sortino.toFixed(2),
+      '월평균 회전율': '-'
+    };
+  }
+
+  function buildMonthlyReturnsFromCurve<T extends { label: string }>(
+    curve: T[],
+    valueKey: keyof T,
+    initial: number
+  ) {
+    let previous = initial;
+
+    return curve
+      .map((point) => {
+        const value = Number(point[valueKey]);
+        const monthlyReturn = previous > 0 ? value / previous - 1 : 0;
+        previous = value;
+        return monthlyReturn;
+      })
+      .filter((value) => Number.isFinite(value));
+  }
+
+  function buildAnnualReturnsFromCurve<T extends { label: string }>(
+    curve: T[],
+    valueKey: keyof T,
+    initial: number
+  ) {
+    const rows: { year: string; start: number; end: number }[] = [];
+    let currentYear = '';
+    let previousValue = initial;
+
+    for (const point of curve) {
+      const year = point.label.slice(0, 4);
+      const value = Number(point[valueKey]);
+      const current = rows[rows.length - 1];
+
+      if (!current || currentYear !== year) {
+        rows.push({ year, start: previousValue, end: value });
+        currentYear = year;
+      } else {
+        current.end = value;
+      }
+
+      previousValue = value;
+    }
+
+    return rows.map((row) => ({
+      year: row.year,
+      returnPct: row.start > 0 ? (row.end / row.start - 1) * 100 : 0
+    }));
+  }
+
+  function calculateCagr<T extends { label: string }>(initial: number, finalAmount: number, curve: T[]) {
+    const firstMonth = parseMonthLabel(curve[0].label);
+    const lastMonth = parseMonthLabel(curve[curve.length - 1].label);
+    const years =
+      Number.isFinite(firstMonth) && Number.isFinite(lastMonth)
+        ? Math.max((lastMonth - firstMonth + 1) / 12, 1 / 12)
+        : Math.max(curve.length / 12, 1 / 12);
+    return initial > 0 ? (finalAmount / initial) ** (1 / years) - 1 : 0;
+  }
+
+  function calculateStandardDeviation(values: number[]) {
+    if (values.length <= 1) return 0;
+
+    const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance =
+      values.reduce((sum, value) => sum + (value - average) ** 2, 0) / values.length;
+    return Math.sqrt(variance);
+  }
+
+  function calculateDownsideDeviation(values: number[]) {
+    if (!values.length) return 0;
+
+    return Math.sqrt(values.reduce((sum, value) => sum + value ** 2, 0) / values.length);
+  }
+
+  function calculateMdd(values: number[]) {
+    let peak = 0;
+    let maxDrawdown = 0;
+
+    for (const value of values) {
+      peak = Math.max(peak, value);
+      if (peak > 0) {
+        maxDrawdown = Math.min(maxDrawdown, (value / peak - 1) * 100);
+      }
+    }
+
+    return maxDrawdown;
+  }
+
+  function showStrategyTooltip(point: ChartPoint) {
+    chartTooltip = buildChartTooltip({
+      x: point.x,
+      y: point.y,
+      title: point.label,
+      value: `선택 전략 ${formatKrw(point.portfolio)}`,
+      tone: 'strategy'
+    });
+  }
+
+  function showBenchmarkTooltip(point: BenchmarkChartPoint) {
+    chartTooltip = buildChartTooltip({
+      x: point.x,
+      y: point.y,
+      title: point.label,
+      value: `${backtestResult?.benchmark_name ?? '비교군'} ${formatKrw(point.benchmark)}`,
+      tone: 'benchmark'
+    });
+  }
+
+  function buildChartTooltip(tooltip: ChartTooltip): ChartTooltip {
+    return {
+      ...tooltip,
+      x: Math.min(Math.max(tooltip.x, chartLeft + 88), chartWidth - 112),
+      y: Math.max(tooltip.y - 48, chartTop + 12)
+    };
+  }
+
+  function buildChartPoints(
+    rows: GrowthRow[],
+    min: number,
+    max: number,
+    monthBounds: MonthBounds | null,
+    plotWidth: number
+  ): ChartPoint[] {
     const range = Math.max(max - min, 1);
-    const step = rows.length > 1 ? chartPlotWidth / (rows.length - 1) : chartPlotWidth;
 
     return rows.map((row, index) => {
-      const x = Math.round(chartLeft + index * step);
+      const monthIndex = parseMonthLabel(row.label);
+      const x =
+        monthBounds && Number.isFinite(monthIndex)
+          ? Math.round(chartLeft + ((monthIndex - monthBounds.start) / monthBounds.span) * plotWidth)
+          : buildIndexX(index, rows.length, plotWidth);
       const y = Math.round(chartBottom - ((row.portfolio - min) / range) * chartPlotHeight);
 
       return {
@@ -298,6 +583,54 @@
         y
       };
     });
+  }
+
+  function buildBenchmarkChartPoints(
+    rows: BacktestBenchmarkPoint[],
+    min: number,
+    max: number,
+    monthBounds: MonthBounds | null,
+    plotWidth: number
+  ): BenchmarkChartPoint[] {
+    const range = Math.max(max - min, 1);
+
+    return rows.map((row, index) => {
+      const monthIndex = parseMonthLabel(row.label);
+      const x =
+        monthBounds && Number.isFinite(monthIndex)
+          ? Math.round(chartLeft + ((monthIndex - monthBounds.start) / monthBounds.span) * plotWidth)
+          : buildIndexX(index, rows.length, plotWidth);
+      const y = Math.round(chartBottom - ((row.benchmark - min) / range) * chartPlotHeight);
+
+      return {
+        ...row,
+        x,
+        y
+      };
+    });
+  }
+
+  function buildMonthBounds(rows: MonthLabeledRow[]): MonthBounds | null {
+    const months = rows.map((row) => parseMonthLabel(row.label)).filter((value) => Number.isFinite(value));
+
+    if (!months.length) return null;
+
+    const start = Math.min(...months);
+    const end = Math.max(...months);
+
+    if (start === end) return null;
+
+    return {
+      start,
+      end,
+      span: Math.max(end - start, 1)
+    };
+  }
+
+  function buildIndexX(index: number, totalCount: number, plotWidth: number) {
+    if (totalCount <= 1) return Math.round(chartLeft + plotWidth);
+
+    return Math.round(chartLeft + (index / (totalCount - 1)) * plotWidth);
   }
 
   function buildValueScale(min: number, max: number): ValueScale {
@@ -336,24 +669,73 @@
     });
   }
 
-  function buildXAxisTicks(rows: GrowthRow[]): ChartTick[] {
-    const lastIndex = rows.length - 1;
-    const interval = getMonthTickInterval(rows.length);
-    const ticks = rows
-      .map((row, index) => ({ row, index }))
-      .filter(({ index }) => index === 0 || index === lastIndex || index % interval === 0);
+  function buildXAxisTicks(monthBounds: MonthBounds | null, plotWidth: number): ChartTick[] {
+    if (!monthBounds) return [];
 
-    return ticks.map(({ row, index }) => ({
-      label: row.label,
-      x: rows.length === 1 ? chartLeft + chartPlotWidth / 2 : chartLeft + (index / lastIndex) * chartPlotWidth
+    const interval = getMonthTickInterval(monthBounds.span + 1);
+    const tickMonths = buildTickMonths(monthBounds, interval);
+
+    return tickMonths.map((monthIndex) => ({
+      label: formatMonthTick(monthIndex, interval),
+      x: Math.round(chartLeft + ((monthIndex - monthBounds.start) / monthBounds.span) * plotWidth)
     }));
   }
 
-  function getMonthTickInterval(rowCount: number) {
-    if (rowCount <= 18) return 1;
-    if (rowCount <= 49) return 3;
-    if (rowCount <= 85) return 6;
-    return 12;
+  function buildTickMonths(monthBounds: MonthBounds, interval: number) {
+    const months = [monthBounds.start];
+    let cursor = alignNextTickMonth(monthBounds.start, interval);
+
+    while (cursor < monthBounds.end) {
+      if (cursor !== months[months.length - 1]) {
+        months.push(cursor);
+      }
+      cursor += interval;
+    }
+
+    if (monthBounds.end !== months[months.length - 1]) {
+      months.push(monthBounds.end);
+    }
+
+    return months;
+  }
+
+  function alignNextTickMonth(start: number, interval: number) {
+    if (interval <= 1) return start + 1;
+
+    const remainder = start % interval;
+    return remainder === 0 ? start + interval : start + (interval - remainder);
+  }
+
+  function getMonthTickInterval(monthCount: number) {
+    if (monthCount <= 18) return 1;
+    if (monthCount <= 48) return 3;
+    if (monthCount <= 84) return 6;
+    if (monthCount <= 144) return 12;
+    if (monthCount <= 240) return 24;
+    return 60;
+  }
+
+  function parseMonthLabel(label: string) {
+    const [yearText, monthText] = label.split(/[.-]/);
+    const year = Number(yearText);
+    const month = Number(monthText);
+
+    if (!Number.isFinite(year) || !Number.isFinite(month)) {
+      return Number.NaN;
+    }
+
+    return year * 12 + month - 1;
+  }
+
+  function formatMonthTick(monthIndex: number, interval: number) {
+    const year = Math.floor(monthIndex / 12);
+    const month = (monthIndex % 12) + 1;
+
+    if (interval >= 12 && month === 1) {
+      return String(year);
+    }
+
+    return `${year}.${String(month).padStart(2, '0')}`;
   }
 
   function getNiceStep(rawStep: number) {
@@ -370,6 +752,14 @@
       currency: 'KRW',
       maximumFractionDigits: 0
     }).format(value);
+  }
+
+  function parseCurrencyInput(value: string) {
+    return Number(value.replace(/[^\d]/g, '')) || 0;
+  }
+
+  function formatCurrencyInput(value: number) {
+    return new Intl.NumberFormat('ko-KR').format(Math.max(0, Math.floor(Number(value) || 0)));
   }
 
   function formatCompactKrw(value: number) {
@@ -398,6 +788,10 @@
 
   function formatDateTime(value: string) {
     return new Date(value).toLocaleString('ko-KR');
+  }
+
+  function savedBacktestLabel(row: BacktestRunSummary) {
+    return `${formatDateTime(row.created_at)} · ${row.strategy_name} · ${row.period} · ${formatKrw(row.final_amount)}`;
   }
 </script>
 
@@ -513,31 +907,51 @@
           <strong>기간과 초기 투자금</strong>
         </div>
         <button type="button" onclick={runBacktest} disabled={backtestRunning}>
-          {backtestRunning ? '실행 중' : '백테스트 실행'}
+          {#if backtestRunning}
+            <span class="button-spinner" aria-hidden="true"></span>
+            실행 중
+          {:else}
+            백테스트 실행
+          {/if}
         </button>
       </div>
       <div class="backtest-form-grid compact-backtest-grid">
         <label>
           <span>시작연도</span>
           <select bind:value={startYear} onchange={clearBacktestResult}>
-            <option value="2020">2020</option>
-            <option value="2021">2021</option>
-            <option value="2022">2022</option>
-            <option value="2023">2023</option>
-            <option value="2024">2024</option>
+            {#each yearOptions as year}
+              <option value={String(year)}>{year}</option>
+            {/each}
           </select>
         </label>
         <label>
           <span>종료연도</span>
           <select bind:value={endYear} onchange={clearBacktestResult}>
-            <option value="2024">2024</option>
-            <option value="2025">2025</option>
-            <option value="2026">2026</option>
+            {#each yearOptions as year}
+              <option value={String(year)}>{year}</option>
+            {/each}
           </select>
         </label>
         <label>
           <span>초기투자금</span>
-          <input bind:value={initialAmount} min="0" step="100000" type="number" onchange={clearBacktestResult} />
+          <div class="money-input">
+            <input
+              aria-label="초기투자금"
+              inputmode="numeric"
+              oninput={handleInitialAmountInput}
+              type="text"
+              value={initialAmountInput}
+            />
+            <span>원</span>
+          </div>
+        </label>
+        <label>
+          <span>비교군</span>
+          <select bind:value={benchmarkCode} onchange={clearBacktestResult}>
+            {#each benchmarkOptions as option}
+              <option value={option.code}>{option.name}</option>
+            {/each}
+          </select>
         </label>
       </div>
       {#if backtestError}
@@ -545,13 +959,19 @@
           <strong>백테스트 실행 불가</strong>
           <span>{backtestError}</span>
         </div>
+      {:else if backtestRunning}
+        <div class="empty-state loading-state">
+          <span class="panel-spinner" aria-hidden="true"></span>
+          <strong>백테스트 실행 중</strong>
+          <span>전략 후보와 비교군 데이터를 계산하고 있습니다.</span>
+        </div>
       {:else if backtestNotice}
         <div class="empty-state">
           <strong>{backtestRunAt}</strong>
           <span>{backtestNotice}</span>
         </div>
       {:else}
-        <p>전략은 위에서 선택하고, 백테스트 조건은 기간과 초기투자금만 입력합니다.</p>
+        <p>백테스트 실행 시 Yahoo 일봉을 자동 갱신한 뒤 가능한 실제 가격 데이터로 계산합니다.</p>
       {/if}
     </section>
 
@@ -563,33 +983,28 @@
       {#if recentBacktestsError}
         <div class="empty-state error">{recentBacktestsError}</div>
       {:else if recentBacktests.length}
-        <div class="table-wrap">
-          <table class="compact-table wide-table">
-            <caption>최근 백테스트 실행 결과</caption>
-            <thead>
-              <tr>
-                <th>실행일</th>
-                <th>전략</th>
-                <th>기간</th>
-                <th>초기투자금</th>
-                <th>종료금액</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div class="recent-backtest-picker">
+          <label>
+            <span>저장 결과</span>
+            <select bind:value={selectedSavedRunId}>
               {#each recentBacktests as row}
-                <tr>
-                  <td>{formatDateTime(row.created_at)}</td>
-                  <td>
-                    <strong>{row.strategy_name}</strong>
-                    <span>{row.strategy_code}</span>
-                  </td>
-                  <td>{row.period}</td>
-                  <td>{formatKrw(row.initial_amount)}</td>
-                  <td>{formatKrw(row.final_amount)}</td>
-                </tr>
+                <option value={String(row.id)}>{savedBacktestLabel(row)}</option>
               {/each}
-            </tbody>
-          </table>
+            </select>
+          </label>
+          <button
+            type="button"
+            class="secondary"
+            onclick={loadSelectedSavedBacktest}
+            disabled={savedBacktestLoadingId !== null}
+          >
+            {#if savedBacktestLoadingId !== null}
+              <span class="button-spinner dark" aria-hidden="true"></span>
+              불러오는 중
+            {:else}
+              보기
+            {/if}
+          </button>
         </div>
       {:else}
         <p>백테스트를 실행하면 결과 요약이 여기에 저장됩니다.</p>
@@ -639,14 +1054,16 @@
             <thead>
               <tr>
                 <th>지표</th>
-                <th>결과</th>
+                <th>선택 전략</th>
+                <th>{backtestResult?.benchmark_name || '비교군'}</th>
               </tr>
             </thead>
             <tbody>
-              {#each performanceRows as row}
+              {#each performanceComparisonRows as row}
                 <tr>
                   <th scope="row" title={metricDescriptions[row.metric] ?? ''}>{row.metric}</th>
-                  <td>{row.value}</td>
+                  <td>{row.strategyValue}</td>
+                  <td>{row.benchmarkValue}</td>
                 </tr>
               {/each}
             </tbody>
@@ -660,7 +1077,12 @@
           <strong>{formatKrw(backtestResult?.initial_amount ?? initialAmountValue)} 투자 기준</strong>
         </div>
         <p>초기 투자금 {formatKrw(backtestResult?.initial_amount ?? initialAmountValue)} 기준으로 월별 평가금 흐름을 표시합니다.</p>
-        <div class="growth-chart" aria-label="자산 성장">
+        <div
+          class="growth-chart"
+          bind:clientWidth={chartContainerWidth}
+          onmouseleave={() => (chartTooltip = null)}
+          role="presentation"
+        >
           <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img">
             <title>자산 성장</title>
             <text class="chart-title" x={chartWidth / 2} y="18" text-anchor="middle">포트폴리오 평가금액</text>
@@ -682,9 +1104,31 @@
             {/each}
             <line class="chart-axis-line" x1={chartLeft} x2={chartWidth - chartRight} y1={chartBottom} y2={chartBottom}></line>
             <line class="chart-axis-line" x1={chartLeft} x2={chartLeft} y1={chartTop} y2={chartBottom}></line>
+            {#if benchmarkLine}
+              <polyline class="benchmark-line" points={benchmarkLine}></polyline>
+            {/if}
             <polyline class="portfolio-line" points={portfolioLine}></polyline>
+            {#each benchmarkChartPoints as point}
+              <circle
+                class="chart-point-hitbox"
+                cx={point.x}
+                cy={point.y}
+                r="7"
+                onmousemove={() => showBenchmarkTooltip(point)}
+                role="presentation"
+              >
+                <title>{point.label} · {backtestResult?.benchmark_name}: {formatKrw(point.benchmark)}</title>
+              </circle>
+            {/each}
             {#each growthChartPoints as point}
-              <circle class="chart-point-hitbox" cx={point.x} cy={point.y} r="7">
+              <circle
+                class="chart-point-hitbox"
+                cx={point.x}
+                cy={point.y}
+                r="7"
+                onmousemove={() => showStrategyTooltip(point)}
+                role="presentation"
+              >
                 <title>{point.label} · {formatKrw(point.portfolio)}</title>
               </circle>
             {/each}
@@ -696,9 +1140,20 @@
                 r="4"
               ></circle>
             {/if}
+            {#if chartTooltip}
+              <g class:benchmark={chartTooltip.tone === 'benchmark'} class="chart-tooltip" transform={`translate(${chartTooltip.x}, ${chartTooltip.y})`}>
+                <rect x="-88" y="-30" width="176" height="46" rx="6"></rect>
+                <text x="0" y="-12" text-anchor="middle">{chartTooltip.title}</text>
+                <text x="0" y="6" text-anchor="middle">{chartTooltip.value}</text>
+              </g>
+            {/if}
             <g class="chart-svg-legend">
               <line x1={chartWidth - 150} x2={chartWidth - 118} y1="18" y2="18"></line>
               <text x={chartWidth - 110} y="22">선택 전략</text>
+              {#if benchmarkLine && backtestResult?.benchmark_name}
+                <line class="benchmark-legend-line" x1={chartWidth - 150} x2={chartWidth - 118} y1="36" y2="36"></line>
+                <text x={chartWidth - 110} y="40">{backtestResult.benchmark_name}</text>
+              {/if}
             </g>
           </svg>
         </div>

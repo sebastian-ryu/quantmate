@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from uuid import uuid4
 
@@ -12,16 +13,21 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from quantmate_api.backtest_engine import build_sample_backtest
+from quantmate_api.backtest_engine import build_daily_price_backtest, build_sample_backtest
 from quantmate_api.db import SessionLocal
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
     fetch_krx_instruments,
+    fetch_yahoo_daily_prices,
+    fetch_yfinance_symbol_daily_prices,
+    is_kis_open_api_ready,
     is_krx_open_api_ready,
+    normalize_yahoo_symbol,
 )
 from quantmate_api.models import BacktestRun, DailyPrice, DataImportJob, Instrument, Market, UserStrategy
 from quantmate_api.strategy_engine import build_strategy_candidates
+from quantmate_api.time_utils import now_kst_naive, today_kst
 
 
 class AppMode(StrEnum):
@@ -139,6 +145,7 @@ class BacktestRunRequest(BaseModel):
     start_year: int = Field(ge=1990, le=2100)
     end_year: int = Field(ge=1990, le=2100)
     initial_amount: int = Field(gt=0)
+    benchmark_code: str = "kospi200"
 
 
 class BacktestPerformanceMetric(BaseModel):
@@ -159,6 +166,11 @@ class BacktestEquityPoint(BaseModel):
     portfolio: int
 
 
+class BacktestBenchmarkPoint(BaseModel):
+    label: str
+    benchmark: int
+
+
 class BacktestRebalanceRow(BaseModel):
     date: str
     holdings: str
@@ -177,6 +189,9 @@ class BacktestRunResponse(BaseModel):
     final_amount: int
     run_at: str
     notice: str
+    benchmark_code: str = "none"
+    benchmark_name: str = ""
+    benchmark_curve: list[BacktestBenchmarkPoint] = Field(default_factory=list)
     metrics: list[BacktestPerformanceMetric]
     annual_returns: list[BacktestAnnualReturn]
     equity_curve: list[BacktestEquityPoint]
@@ -222,6 +237,74 @@ class KrxInstrumentPreviewResponse(BaseModel):
     base_date: str
     count: int
     instruments: list[KrxInstrumentPreview]
+
+
+class YahooDailyPrice(BaseModel):
+    symbol: str
+    trade_date: date
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float
+    adjusted_close: float | None
+    volume: int | None
+    provider: str
+
+
+class YahooDailyPricePreviewResponse(BaseModel):
+    provider: str
+    symbol: str
+    yahoo_symbol: str
+    exchange: str
+    count: int
+    prices: list[YahooDailyPrice]
+
+
+class YahooDailyPriceImportRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    name: str | None = Field(default=None, max_length=200)
+    exchange: str = Field(default="KOSPI", max_length=40)
+    start: date | None = None
+    end: date | None = None
+    is_adjusted: bool = False
+
+
+class YahooDailyPriceImportResponse(BaseModel):
+    provider: str
+    job_id: int
+    symbol: str
+    yahoo_symbol: str
+    exchange: str
+    fetched_count: int
+    saved_count: int
+    message: str
+
+
+class YahooDailyPriceBatchImportRequest(BaseModel):
+    strategy_code: str = "relative-momentum-swing"
+    start: date | None = None
+    end: date | None = None
+    max_symbols: int = Field(default=10, ge=1, le=30)
+    is_adjusted: bool = False
+
+
+class YahooDailyPriceBatchImportItem(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+    status: str
+    saved_count: int
+    message: str
+
+
+class YahooDailyPriceBatchImportResponse(BaseModel):
+    provider: str
+    strategy_code: str
+    requested_symbols: int
+    success_count: int
+    failed_count: int
+    saved_count: int
+    items: list[YahooDailyPriceBatchImportItem]
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -480,6 +563,14 @@ BACKTEST = BacktestPreview(
     ],
 )
 
+BENCHMARKS: dict[str, dict[str, str]] = {
+    "none": {"name": "비교 안 함", "symbol": "", "market": ""},
+    "kospi200": {"name": "KOSPI 200", "symbol": "^KS200", "market": "KR"},
+    "kosdaq": {"name": "KOSDAQ Composite", "symbol": "^KQ11", "market": "KR"},
+    "sp500": {"name": "S&P 500", "symbol": "^GSPC", "market": "US"},
+    "nasdaq100": {"name": "Nasdaq 100", "symbol": "^NDX", "market": "US"},
+}
+
 
 def _find_system_strategy(strategy_code: str) -> Strategy | None:
     return next((item for item in STRATEGIES if item.code == strategy_code), None)
@@ -572,6 +663,312 @@ def _backtest_summary(run: BacktestRun) -> BacktestRunSummary:
         final_amount=run.final_amount,
         created_at=run.created_at,
     )
+
+
+def _saved_backtest_response(run: BacktestRun) -> BacktestRunResponse:
+    try:
+        payload = json.loads(run.result_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="저장된 백테스트 결과를 해석하지 못했습니다.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="저장된 백테스트 결과 형식이 올바르지 않습니다.")
+
+    payload["run_id"] = run.id
+    payload.setdefault("strategy_code", run.strategy_code)
+    payload.setdefault("strategy_name", run.strategy_name)
+    payload.setdefault("source", run.source)
+    payload.setdefault("period", f"{run.start_year} ~ {run.end_year}")
+    payload.setdefault("initial_amount", run.initial_amount)
+    payload.setdefault("final_amount", run.final_amount)
+    payload.setdefault("benchmark_code", "none")
+    payload.setdefault("benchmark_name", "")
+    payload.setdefault("benchmark_curve", [])
+    _attach_saved_benchmark_curve_if_missing(payload=payload, run=run)
+
+    return BacktestRunResponse(**payload)
+
+
+def _attach_saved_benchmark_curve_if_missing(
+    *,
+    payload: dict[str, object],
+    run: BacktestRun,
+) -> None:
+    benchmark_code = str(payload.get("benchmark_code") or "none").strip().lower()
+    payload["benchmark_code"] = benchmark_code
+
+    if benchmark_code == "none" or benchmark_code not in BENCHMARKS:
+        payload["benchmark_name"] = ""
+        payload["benchmark_curve"] = []
+        return
+
+    payload["benchmark_name"] = BENCHMARKS[benchmark_code]["name"]
+
+    existing_curve = payload.get("benchmark_curve")
+    if isinstance(existing_curve, list) and existing_curve:
+        return
+
+    _attach_benchmark_curve(
+        result=payload,
+        request=BacktestRunRequest(
+            strategy_code=run.strategy_code,
+            start_year=run.start_year,
+            end_year=run.end_year,
+            initial_amount=int(payload.get("initial_amount") or run.initial_amount),
+            benchmark_code=benchmark_code,
+        ),
+    )
+
+
+def _attach_benchmark_curve(
+    *,
+    result: dict[str, object],
+    request: BacktestRunRequest,
+) -> None:
+    benchmark_code = request.benchmark_code.strip().lower()
+    benchmark = BENCHMARKS.get(benchmark_code)
+
+    if benchmark is None:
+        supported = ", ".join(BENCHMARKS)
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 비교군입니다. 사용 가능: {supported}")
+
+    result["benchmark_code"] = benchmark_code
+    result["benchmark_name"] = benchmark["name"] if benchmark_code != "none" else ""
+    result["benchmark_curve"] = []
+
+    if benchmark_code == "none":
+        return
+
+    first_year = min(request.start_year, request.end_year)
+    last_year = max(request.start_year, request.end_year)
+
+    try:
+        prices = fetch_yfinance_symbol_daily_prices(
+            yahoo_symbol=benchmark["symbol"],
+            start=date(first_year, 1, 1),
+            end=date(last_year, 12, 31),
+        )
+    except (MarketDataProviderUnavailable, ValueError):
+        return
+
+    result["benchmark_curve"] = _build_benchmark_curve(
+        prices=prices,
+        initial_amount=request.initial_amount,
+    )
+
+
+def _build_benchmark_curve(
+    *,
+    prices: list[dict[str, object]],
+    initial_amount: int,
+) -> list[dict[str, object]]:
+    monthly_prices: dict[str, list[dict[str, object]]] = {}
+
+    for row in prices:
+        trade_date = _row_trade_date(row)
+        month_key = f"{trade_date.year}-{trade_date.month:02d}"
+        monthly_prices.setdefault(month_key, []).append(row)
+
+    ordered_months = sorted(monthly_prices)
+    if len(ordered_months) < 2:
+        return []
+
+    balance = float(initial_amount)
+    curve: list[dict[str, object]] = []
+
+    for month_key in ordered_months:
+        rows = sorted(monthly_prices[month_key], key=_row_trade_date)
+        start_price = _decimal_or_none(rows[0].get("close"))
+        end_price = _decimal_or_none(rows[-1].get("close"))
+
+        if start_price is None or end_price is None or start_price <= 0:
+            continue
+
+        balance *= float(end_price / start_price)
+        curve.append({"label": month_key.replace("-", "."), "benchmark": round(balance)})
+
+    return curve
+
+
+def _build_daily_price_backtest_if_available(
+    *,
+    strategy_code: str,
+    strategy_name: str,
+    start_year: int,
+    end_year: int,
+    initial_amount: int,
+) -> dict[str, object] | None:
+    first_year = min(start_year, end_year)
+    last_year = max(start_year, end_year)
+    start_date = date(first_year, 1, 1)
+    end_date = date(last_year, 12, 31)
+    candidate_symbols = [item["symbol"] for item in build_strategy_candidates(strategy_code, limit=10)]
+
+    existing_result, existing_provider = _build_daily_price_backtest_from_db(
+        strategy_code=strategy_code,
+        strategy_name=strategy_name,
+        start_year=start_year,
+        end_year=end_year,
+        initial_amount=initial_amount,
+        candidate_symbols=candidate_symbols,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if existing_result is not None and existing_provider == "KRX Open API":
+        return existing_result
+
+    _auto_import_yahoo_daily_prices_for_backtest(
+        strategy_code=strategy_code,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    refreshed_result, _provider = _build_daily_price_backtest_from_db(
+        strategy_code=strategy_code,
+        strategy_name=strategy_name,
+        start_year=start_year,
+        end_year=end_year,
+        initial_amount=initial_amount,
+        candidate_symbols=candidate_symbols,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return refreshed_result
+
+
+def _build_daily_price_backtest_from_db(
+    *,
+    strategy_code: str,
+    strategy_name: str,
+    start_year: int,
+    end_year: int,
+    initial_amount: int,
+    candidate_symbols: list[str],
+    start_date: date,
+    end_date: date,
+) -> tuple[dict[str, object] | None, str]:
+    if not candidate_symbols:
+        return None, ""
+
+    try:
+        with SessionLocal() as session:
+            price_rows, provider = _load_backtest_price_rows(
+                session=session,
+                symbols=candidate_symbols,
+                start_date=start_date,
+                end_date=end_date,
+            )
+    except SQLAlchemyError:
+        return None, ""
+
+    if not price_rows:
+        return None, ""
+
+    result = build_daily_price_backtest(
+        strategy_code=strategy_code,
+        strategy_name=strategy_name,
+        start_year=start_year,
+        end_year=end_year,
+        initial_amount=initial_amount,
+        price_rows=price_rows,
+        provider=provider,
+    )
+    return result, provider if result is not None else ""
+
+
+def _auto_import_yahoo_daily_prices_for_backtest(
+    *,
+    strategy_code: str,
+    start_date: date,
+    end_date: date,
+) -> YahooDailyPriceBatchImportResponse | None:
+    try:
+        return _import_yahoo_daily_prices_for_strategy_candidates(
+            YahooDailyPriceBatchImportRequest(
+                strategy_code=strategy_code,
+                start=start_date,
+                end=end_date,
+                max_symbols=10,
+                is_adjusted=False,
+            )
+        )
+    except (HTTPException, SQLAlchemyError, ValueError):
+        return None
+
+
+def _load_backtest_price_rows(
+    *,
+    session,
+    symbols: list[str],
+    start_date: date,
+    end_date: date,
+) -> tuple[list[dict[str, object]], str]:
+    provider_priority = ["KRX Open API", "Yahoo Finance", "KIS Open API"]
+    rows = session.execute(
+        select(
+            Instrument.symbol,
+            Instrument.name,
+            DailyPrice.trade_date,
+            DailyPrice.close_price,
+            DailyPrice.provider,
+        )
+        .join(Instrument, Instrument.id == DailyPrice.instrument_id)
+        .where(
+            Instrument.symbol.in_(symbols),
+            DailyPrice.trade_date >= start_date,
+            DailyPrice.trade_date <= end_date,
+            DailyPrice.is_adjusted.is_(False),
+            DailyPrice.provider.in_(provider_priority),
+        )
+        .order_by(Instrument.symbol, DailyPrice.provider, DailyPrice.trade_date)
+    ).all()
+
+    grouped_by_provider: dict[str, list[dict[str, object]]] = {provider: [] for provider in provider_priority}
+    for row in rows:
+        grouped_by_provider[row.provider].append(
+            {
+                "symbol": row.symbol,
+                "name": row.name,
+                "trade_date": row.trade_date,
+                "close_price": row.close_price,
+                "provider": row.provider,
+            }
+        )
+
+    for provider in provider_priority:
+        provider_rows = _filter_backtest_price_rows_for_coverage(grouped_by_provider[provider])
+        if _has_minimum_price_coverage(provider_rows):
+            return provider_rows, provider
+
+    return [], ""
+
+
+def _filter_backtest_price_rows_for_coverage(
+    price_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    rows_by_symbol: dict[str, list[dict[str, object]]] = {}
+    for row in price_rows:
+        rows_by_symbol.setdefault(str(row["symbol"]), []).append(row)
+
+    covered_rows: list[dict[str, object]] = []
+    for rows in rows_by_symbol.values():
+        months = {
+            f"{_row_trade_date(row).year}-{_row_trade_date(row).month:02d}"
+            for row in rows
+        }
+        if len(months) >= 2 and len(rows) >= 4:
+            covered_rows.extend(rows)
+
+    return covered_rows
+
+
+def _has_minimum_price_coverage(price_rows: list[dict[str, object]]) -> bool:
+    symbols = {str(row["symbol"]) for row in price_rows}
+    months = {
+        f"{_row_trade_date(row).year}-{_row_trade_date(row).month:02d}"
+        for row in price_rows
+    }
+    return len(symbols) >= 1 and len(months) >= 2 and len(price_rows) >= 4
 
 
 @app.get("/api/health")
@@ -705,13 +1102,20 @@ async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
     if not strategy_name:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
-    result = build_sample_backtest(
+    result = _build_daily_price_backtest_if_available(
+        strategy_code=request.strategy_code,
+        strategy_name=strategy_name,
+        start_year=request.start_year,
+        end_year=request.end_year,
+        initial_amount=request.initial_amount,
+    ) or build_sample_backtest(
         strategy_code=request.strategy_code,
         strategy_name=strategy_name,
         start_year=request.start_year,
         end_year=request.end_year,
         initial_amount=request.initial_amount,
     )
+    _attach_benchmark_curve(result=result, request=request)
     result["run_id"] = _save_backtest_run(result=result, request=request)
 
     return BacktestRunResponse(**result)
@@ -737,10 +1141,28 @@ async def list_backtest_runs(limit: int = 10) -> list[BacktestRunSummary]:
     return [_backtest_summary(run) for run in runs]
 
 
+@app.get("/api/backtests/runs/{run_id}")
+async def get_backtest_run(run_id: int) -> BacktestRunResponse:
+    try:
+        with SessionLocal() as session:
+            run = session.get(BacktestRun, run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="백테스트 결과를 찾지 못했습니다.")
+
+            return _saved_backtest_response(run)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"백테스트 결과 DB 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+
 @app.get("/api/dashboard")
 async def dashboard() -> DashboardResponse:
     return DashboardResponse(
-        as_of=date.today(),
+        as_of=today_kst(),
         modes=[
             {"code": AppMode.RESEARCH.value, "label": "리서치", "enabled": True},
             {"code": AppMode.LIVE_READONLY.value, "label": "실계좌 읽기", "enabled": False},
@@ -754,10 +1176,21 @@ async def dashboard() -> DashboardResponse:
 
 @app.get("/api/data/status")
 async def data_status() -> DataStatusResponse:
+    kis_ready = is_kis_open_api_ready()
     krx_ready = is_krx_open_api_ready()
     provider_status = [
-        {"name": "KIS Open API", "scope": "현재가/실시간/계좌", "status": "권한 필요", "ready": False},
-        {"name": "FinanceDataReader", "scope": "종목 목록/일봉", "status": "후보", "ready": True},
+        {
+            "name": "KIS Open API",
+            "scope": "현재가/분봉/재무/수급/실시간/계좌",
+            "status": "인증정보 설정됨" if kis_ready else "App Key/Secret 필요",
+            "ready": kis_ready,
+        },
+        {
+            "name": "Yahoo Finance",
+            "scope": "KR 일봉 임시 백테스트 데이터",
+            "status": "임시 사용 가능",
+            "ready": True,
+        },
         {
             "name": "KRX Open API",
             "scope": "공식 인증키 기반 종목/OHLCV",
@@ -819,3 +1252,313 @@ async def krx_instruments(
         count=len(instruments),
         instruments=[KrxInstrumentPreview(**item) for item in instruments],
     )
+
+
+@app.get("/api/data/yahoo/daily-prices")
+async def yahoo_daily_prices(
+    symbol: str,
+    exchange: str = "KOSPI",
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 120,
+) -> YahooDailyPricePreviewResponse:
+    safe_limit = max(1, min(limit, 500))
+
+    try:
+        prices = fetch_yahoo_daily_prices(symbol=symbol, exchange=exchange, start=start, end=end)
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limited_prices = prices[-safe_limit:]
+
+    return YahooDailyPricePreviewResponse(
+        provider="Yahoo Finance",
+        symbol=symbol.strip().upper(),
+        yahoo_symbol=normalize_yahoo_symbol(symbol, exchange),
+        exchange=exchange.strip().upper(),
+        count=len(limited_prices),
+        prices=[YahooDailyPrice(**item) for item in limited_prices],
+    )
+
+
+@app.post("/api/data/yahoo/daily-prices/import", status_code=201)
+async def import_yahoo_daily_prices(
+    request: YahooDailyPriceImportRequest,
+) -> YahooDailyPriceImportResponse:
+    try:
+        prices = fetch_yahoo_daily_prices(
+            symbol=request.symbol,
+            exchange=request.exchange,
+            start=request.start,
+            end=request.end,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not prices:
+        raise HTTPException(status_code=404, detail="Yahoo 일봉 데이터가 없습니다.")
+
+    try:
+        with SessionLocal() as session:
+            response = _save_yahoo_daily_prices(session=session, request=request, prices=prices)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Yahoo 일봉 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return response
+
+
+@app.post("/api/data/yahoo/daily-prices/import/strategy", status_code=201)
+async def import_yahoo_daily_prices_for_strategy(
+    request: YahooDailyPriceBatchImportRequest,
+) -> YahooDailyPriceBatchImportResponse:
+    strategy = _find_system_strategy(request.strategy_code)
+    user_strategy = None
+
+    if strategy is None and request.strategy_code.startswith("user-"):
+        user_strategy = _load_active_user_strategy(request.strategy_code)
+
+    if strategy is None and user_strategy is None:
+        raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
+
+    return _import_yahoo_daily_prices_for_strategy_candidates(request)
+
+
+def _import_yahoo_daily_prices_for_strategy_candidates(
+    request: YahooDailyPriceBatchImportRequest,
+) -> YahooDailyPriceBatchImportResponse:
+    candidates = build_strategy_candidates(request.strategy_code, limit=request.max_symbols)
+    items: list[YahooDailyPriceBatchImportItem] = []
+
+    for candidate in candidates:
+        import_request = YahooDailyPriceImportRequest(
+            symbol=str(candidate["symbol"]),
+            name=str(candidate["name"]),
+            exchange=str(candidate["exchange"]),
+            start=request.start,
+            end=request.end,
+            is_adjusted=request.is_adjusted,
+        )
+
+        try:
+            prices = fetch_yahoo_daily_prices(
+                symbol=import_request.symbol,
+                exchange=import_request.exchange,
+                start=import_request.start,
+                end=import_request.end,
+            )
+
+            if not prices:
+                items.append(
+                    YahooDailyPriceBatchImportItem(
+                        symbol=import_request.symbol,
+                        name=import_request.name or import_request.symbol,
+                        exchange=import_request.exchange,
+                        status="failed",
+                        saved_count=0,
+                        message="Yahoo 일봉 데이터 없음",
+                    )
+                )
+                continue
+
+            with SessionLocal() as session:
+                saved = _save_yahoo_daily_prices(
+                    session=session,
+                    request=import_request,
+                    prices=prices,
+                )
+
+            items.append(
+                YahooDailyPriceBatchImportItem(
+                    symbol=saved.symbol,
+                    name=import_request.name or saved.symbol,
+                    exchange=saved.exchange,
+                    status="completed",
+                    saved_count=saved.saved_count,
+                    message=saved.message,
+                )
+            )
+        except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError) as exc:
+            items.append(
+                YahooDailyPriceBatchImportItem(
+                    symbol=import_request.symbol,
+                    name=import_request.name or import_request.symbol,
+                    exchange=import_request.exchange,
+                    status="failed",
+                    saved_count=0,
+                    message=str(exc),
+                )
+            )
+
+    success_count = sum(1 for item in items if item.status == "completed")
+    saved_count = sum(item.saved_count for item in items)
+
+    return YahooDailyPriceBatchImportResponse(
+        provider="Yahoo Finance",
+        strategy_code=request.strategy_code,
+        requested_symbols=len(candidates),
+        success_count=success_count,
+        failed_count=len(items) - success_count,
+        saved_count=saved_count,
+        items=items,
+    )
+
+
+def _save_yahoo_daily_prices(
+    *,
+    session,
+    request: YahooDailyPriceImportRequest,
+    prices: list[dict[str, object]],
+) -> YahooDailyPriceImportResponse:
+    yahoo_symbol = normalize_yahoo_symbol(request.symbol, request.exchange)
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=request.symbol.strip().upper(),
+        name=request.name or request.symbol.strip().upper(),
+        exchange=request.exchange.strip().upper(),
+    )
+    job = DataImportJob(
+        provider="Yahoo Finance",
+        job_type="daily_prices",
+        status="running",
+        message=f"{yahoo_symbol} 일봉 수집 중",
+    )
+    session.add(job)
+    session.flush()
+
+    saved_count = 0
+    for row in prices:
+        trade_date = _row_trade_date(row)
+        close_price = _decimal_or_none(row.get("adjusted_close") if request.is_adjusted else row.get("close"))
+        raw_close_price = _decimal_or_none(row.get("close"))
+
+        if close_price is None or raw_close_price is None:
+            continue
+
+        open_price = _decimal_or_none(row.get("open")) or raw_close_price
+        high_price = _decimal_or_none(row.get("high")) or raw_close_price
+        low_price = _decimal_or_none(row.get("low")) or raw_close_price
+        volume = int(row.get("volume") or 0)
+
+        existing = session.scalar(
+            select(DailyPrice).where(
+                DailyPrice.instrument_id == instrument.id,
+                DailyPrice.trade_date == trade_date,
+                DailyPrice.provider == "Yahoo Finance",
+                DailyPrice.is_adjusted == request.is_adjusted,
+            )
+        )
+
+        if existing is None:
+            session.add(
+                DailyPrice(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    open_price=open_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    close_price=close_price,
+                    volume=volume,
+                    trading_value=None,
+                    provider="Yahoo Finance",
+                    is_adjusted=request.is_adjusted,
+                )
+            )
+        else:
+            existing.open_price = open_price
+            existing.high_price = high_price
+            existing.low_price = low_price
+            existing.close_price = close_price
+            existing.volume = volume
+            existing.trading_value = None
+
+        saved_count += 1
+
+    job.status = "completed"
+    job.finished_at = now_kst_naive()
+    job.message = f"{yahoo_symbol} 일봉 {saved_count}건 저장"
+    session.commit()
+
+    return YahooDailyPriceImportResponse(
+        provider="Yahoo Finance",
+        job_id=job.id,
+        symbol=request.symbol.strip().upper(),
+        yahoo_symbol=yahoo_symbol,
+        exchange=request.exchange.strip().upper(),
+        fetched_count=len(prices),
+        saved_count=saved_count,
+        message=job.message,
+    )
+
+
+def _get_or_create_kr_market(session) -> Market:
+    market = session.scalar(select(Market).where(Market.code == "KR"))
+    if market is not None:
+        return market
+
+    market = Market(
+        code="KR",
+        name="한국 주식",
+        country="KR",
+        currency="KRW",
+        timezone="Asia/Seoul",
+    )
+    session.add(market)
+    session.flush()
+    return market
+
+
+def _get_or_create_instrument(
+    *,
+    session,
+    market: Market,
+    symbol: str,
+    name: str,
+    exchange: str,
+) -> Instrument:
+    instrument = session.scalar(
+        select(Instrument).where(
+            Instrument.market_id == market.id,
+            Instrument.symbol == symbol,
+        )
+    )
+    if instrument is not None:
+        instrument.name = name
+        instrument.exchange = exchange
+        instrument.is_active = True
+        return instrument
+
+    instrument = Instrument(
+        market_id=market.id,
+        symbol=symbol,
+        name=name,
+        exchange=exchange,
+        asset_type="stock",
+        is_active=True,
+    )
+    session.add(instrument)
+    session.flush()
+    return instrument
+
+
+def _row_trade_date(row: dict[str, object]) -> date:
+    value = row["trade_date"]
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    raise ValueError("거래일 형식이 올바르지 않습니다.")
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(value))

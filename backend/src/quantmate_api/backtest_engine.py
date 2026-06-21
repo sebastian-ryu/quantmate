@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from collections import defaultdict
+from datetime import date
 from statistics import fmean, pstdev
 from typing import Any
 
 from quantmate_api.strategy_engine import build_strategy_candidates
+from quantmate_api.time_utils import now_kst
 
 
 BASE_ANNUAL_RETURNS = {
@@ -60,6 +62,95 @@ STRATEGY_PROFILES = {
 }
 
 
+def build_daily_price_backtest(
+    *,
+    strategy_code: str,
+    strategy_name: str,
+    start_year: int,
+    end_year: int,
+    initial_amount: int,
+    price_rows: list[dict[str, Any]],
+    provider: str,
+) -> dict[str, Any] | None:
+    first_year = min(start_year, end_year)
+    last_year = max(start_year, end_year)
+    monthly_returns = _build_monthly_returns(price_rows)
+
+    if len(monthly_returns) < 2:
+        return None
+
+    balance = float(initial_amount)
+    equity_curve: list[dict[str, Any]] = []
+    annual_start_balance: dict[int, float] = {}
+    annual_end_balance: dict[int, float] = {}
+
+    for month_key, monthly_return in monthly_returns:
+        year = int(month_key[:4])
+        annual_start_balance.setdefault(year, balance)
+        balance *= 1 + monthly_return
+        annual_end_balance[year] = balance
+        equity_curve.append({"label": month_key.replace("-", "."), "portfolio": round(balance)})
+
+    annual_rows: list[dict[str, Any]] = []
+    annual_returns: list[float] = []
+    for year in range(first_year, last_year + 1):
+        if year not in annual_start_balance or year not in annual_end_balance:
+            continue
+
+        start_balance = annual_start_balance[year]
+        end_balance = annual_end_balance[year]
+        annual_return = (end_balance / start_balance - 1) * 100 if start_balance else 0
+        annual_returns.append(round(annual_return, 1))
+        annual_rows.append(
+            {
+                "year": str(year),
+                "portfolio_return": round(annual_return, 1),
+                "yield_pct": 0.0,
+                "balance": round(end_balance),
+                "income": 0,
+            }
+        )
+
+    if not annual_rows:
+        return None
+
+    final_amount = int(equity_curve[-1]["portfolio"])
+    years = [int(row["year"]) for row in annual_rows]
+    metrics = _build_metrics(
+        initial_amount=initial_amount,
+        final_amount=final_amount,
+        years=years,
+        annual_returns=annual_returns,
+        equity_curve=equity_curve,
+        monthly_turnover_pct=100.0,
+    )
+
+    symbol_names = {
+        str(row["symbol"]): str(row.get("name") or row["symbol"])
+        for row in price_rows
+    }
+    holding_names = [symbol_names[symbol] for symbol in sorted(symbol_names)]
+
+    return {
+        "strategy_code": strategy_code,
+        "strategy_name": strategy_name,
+        "source": f"daily-price-backtest:{provider}",
+        "period": f"{first_year} ~ {last_year}",
+        "initial_amount": initial_amount,
+        "final_amount": final_amount,
+        "run_at": now_kst().isoformat(),
+        "notice": (
+            f"{provider} 일봉 데이터로 계산한 임시 백테스트입니다. "
+            "가격 데이터 기반 동일비중 월별 리밸런싱으로 계산하며, "
+            "KRX 승인 후 공식 일봉과 전략별 리밸런싱 규칙으로 교체합니다."
+        ),
+        "metrics": metrics,
+        "annual_returns": annual_rows,
+        "equity_curve": equity_curve,
+        "rebalance_history": _build_daily_price_rebalance_history(holding_names, monthly_returns),
+    }
+
+
 def build_sample_backtest(
     *,
     strategy_code: str,
@@ -106,7 +197,7 @@ def build_sample_backtest(
         "period": f"{first_year} ~ {last_year}",
         "initial_amount": initial_amount,
         "final_amount": final_amount,
-        "run_at": datetime.now(UTC).isoformat(),
+        "run_at": now_kst().isoformat(),
         "notice": (
             "현재 결과는 서버 샘플 백테스트 엔진으로 계산했습니다. "
             "KRX 일봉 데이터 적재 후 같은 API를 실제 리밸런싱 계산으로 교체합니다."
@@ -116,6 +207,64 @@ def build_sample_backtest(
         "equity_curve": equity_curve,
         "rebalance_history": _build_rebalance_history(strategy_code),
     }
+
+
+def _build_monthly_returns(price_rows: list[dict[str, Any]]) -> list[tuple[str, float]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+
+    for row in price_rows:
+        trade_date = _coerce_date(row["trade_date"])
+        month_key = f"{trade_date.year}-{trade_date.month:02d}"
+        grouped[(str(row["symbol"]), month_key)].append(row)
+
+    symbol_month_returns: dict[str, list[float]] = defaultdict(list)
+    for (_symbol, month_key), rows in grouped.items():
+        ordered = sorted(rows, key=lambda item: _coerce_date(item["trade_date"]))
+        if len(ordered) < 2:
+            continue
+
+        start_price = float(ordered[0]["close_price"])
+        end_price = float(ordered[-1]["close_price"])
+        if start_price <= 0:
+            continue
+
+        symbol_month_returns[month_key].append(end_price / start_price - 1)
+
+    monthly_returns = [
+        (month_key, fmean(returns))
+        for month_key, returns in sorted(symbol_month_returns.items())
+        if returns
+    ]
+    return monthly_returns
+
+
+def _coerce_date(value: Any) -> date:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    raise ValueError("거래일 형식이 올바르지 않습니다.")
+
+
+def _build_daily_price_rebalance_history(
+    holdings: list[str],
+    monthly_returns: list[tuple[str, float]],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    displayed_holdings = ", ".join(holdings)
+
+    for month_key, monthly_return in monthly_returns[-6:]:
+        rows.append(
+            {
+                "date": month_key,
+                "holdings": f"{len(holdings)}종목",
+                "entries": displayed_holdings or "없음",
+                "exits": "월말 동일비중 재조정",
+                "turnover": _format_percent(abs(monthly_return) * 100),
+            }
+        )
+
+    return rows
 
 
 def _strategy_return_for_year(

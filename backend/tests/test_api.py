@@ -1,15 +1,31 @@
+import json
+from datetime import date
+
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import quantmate_api.main as main_module
 
 from quantmate_api.main import app
-from quantmate_api.models import Base
+from quantmate_api.models import BacktestRun, Base, DailyPrice
 
 
 client = TestClient(app)
+
+
+def stub_empty_yahoo_prices(monkeypatch) -> None:
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+    monkeypatch.setattr(main_module, "fetch_yfinance_symbol_daily_prices", lambda **_kwargs: [])
 
 
 def use_sqlite_session(monkeypatch) -> sessionmaker:
@@ -62,7 +78,9 @@ def test_strategy_candidates_unknown_strategy_returns_404() -> None:
     assert response.status_code == 404
 
 
-def test_backtest_run_returns_monthly_equity_curve() -> None:
+def test_backtest_run_returns_monthly_equity_curve(monkeypatch) -> None:
+    stub_empty_yahoo_prices(monkeypatch)
+
     response = client.post(
         "/api/backtests/run",
         json={
@@ -134,6 +152,7 @@ def test_user_strategy_lifecycle_uses_database(monkeypatch) -> None:
 
 def test_backtest_run_accepts_user_strategy(monkeypatch) -> None:
     use_sqlite_session(monkeypatch)
+    stub_empty_yahoo_prices(monkeypatch)
 
     create_response = client.post(
         "/api/user-strategies",
@@ -165,6 +184,7 @@ def test_backtest_run_accepts_user_strategy(monkeypatch) -> None:
 
 def test_backtest_run_persists_recent_summary(monkeypatch) -> None:
     use_sqlite_session(monkeypatch)
+    stub_empty_yahoo_prices(monkeypatch)
 
     response = client.post(
         "/api/backtests/run",
@@ -189,6 +209,216 @@ def test_backtest_run_persists_recent_summary(monkeypatch) -> None:
     assert recent[0]["period"] == "2024 ~ 2025"
     assert recent[0]["initial_amount"] == 10000000
     assert recent[0]["final_amount"] == data["final_amount"]
+
+    detail_response = client.get(f"/api/backtests/runs/{data['run_id']}")
+    detail = detail_response.json()
+
+    assert detail_response.status_code == 200
+    assert detail["run_id"] == data["run_id"]
+    assert detail["strategy_code"] == "trend-breakout"
+    assert detail["equity_curve"] == data["equity_curve"]
+
+
+def test_backtest_run_adds_selected_benchmark_curve(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", lambda **_kwargs: [])
+
+    def fake_fetch_yfinance_symbol_daily_prices(
+        yahoo_symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert yahoo_symbol == "^GSPC"
+        return [
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-01-02",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adjusted_close": 100.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-01-30",
+                "open": 100.0,
+                "high": 111.0,
+                "low": 99.0,
+                "close": 110.0,
+                "adjusted_close": 110.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-02-02",
+                "open": 110.0,
+                "high": 112.0,
+                "low": 108.0,
+                "close": 110.0,
+                "adjusted_close": 110.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-02-27",
+                "open": 110.0,
+                "high": 122.0,
+                "low": 109.0,
+                "close": 121.0,
+                "adjusted_close": 121.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(
+        main_module,
+        "fetch_yfinance_symbol_daily_prices",
+        fake_fetch_yfinance_symbol_daily_prices,
+    )
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "trend-breakout",
+            "start_year": 2026,
+            "end_year": 2026,
+            "initial_amount": 1000000,
+            "benchmark_code": "sp500",
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["benchmark_code"] == "sp500"
+    assert data["benchmark_name"] == "S&P 500"
+    assert data["benchmark_curve"] == [
+        {"label": "2026.01", "benchmark": 1100000},
+        {"label": "2026.02", "benchmark": 1210000},
+    ]
+
+
+def test_saved_backtest_refills_missing_benchmark_curve(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yfinance_symbol_daily_prices(
+        yahoo_symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert yahoo_symbol == "^NDX"
+        assert start == date(2026, 1, 1)
+        assert end == date(2026, 12, 31)
+        return [
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-01-02",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adjusted_close": 100.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-01-30",
+                "open": 100.0,
+                "high": 106.0,
+                "low": 99.0,
+                "close": 105.0,
+                "adjusted_close": 105.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-02-02",
+                "open": 105.0,
+                "high": 106.0,
+                "low": 103.0,
+                "close": 105.0,
+                "adjusted_close": 105.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": yahoo_symbol,
+                "trade_date": "2026-02-27",
+                "open": 105.0,
+                "high": 117.0,
+                "low": 104.0,
+                "close": 115.5,
+                "adjusted_close": 115.5,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(
+        main_module,
+        "fetch_yfinance_symbol_daily_prices",
+        fake_fetch_yfinance_symbol_daily_prices,
+    )
+
+    payload = {
+        "strategy_code": "trend-breakout",
+        "strategy_name": "추세 돌파형",
+        "source": "sample-backtest-engine",
+        "period": "2026 ~ 2026",
+        "initial_amount": 1000000,
+        "final_amount": 1120000,
+        "run_at": "2026-06-21T09:00:00+09:00",
+        "notice": "저장 테스트",
+        "benchmark_code": "nasdaq100",
+        "benchmark_name": "Nasdaq 100",
+        "benchmark_curve": [],
+        "metrics": [{"metric": "시작금액", "value": "1,000,000원"}],
+        "annual_returns": [
+            {
+                "year": "2026",
+                "portfolio_return": 12.0,
+                "yield_pct": 0.0,
+                "balance": 1120000,
+                "income": 0,
+            }
+        ],
+        "equity_curve": [{"label": "2026.01", "portfolio": 1120000}],
+        "rebalance_history": [],
+    }
+
+    with session_factory() as session:
+        run = BacktestRun(
+            strategy_code="trend-breakout",
+            strategy_name="추세 돌파형",
+            source="sample-backtest-engine",
+            start_year=2026,
+            end_year=2026,
+            initial_amount=1000000,
+            final_amount=1120000,
+            result_json=json.dumps(payload, ensure_ascii=False),
+        )
+        session.add(run)
+        session.commit()
+        run_id = run.id
+
+    response = client.get(f"/api/backtests/runs/{run_id}")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["benchmark_code"] == "nasdaq100"
+    assert data["benchmark_name"] == "Nasdaq 100"
+    assert data["benchmark_curve"] == [
+        {"label": "2026.01", "benchmark": 1050000},
+        {"label": "2026.02", "benchmark": 1155000},
+    ]
 
 
 def test_data_status_returns_table_counts(monkeypatch) -> None:
@@ -221,6 +451,9 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
     assert data["table_counts"]["instruments"] == 3
     assert data["table_counts"]["user_strategies"] == 2
     assert data["table_counts"]["backtest_runs"] == 4
+    providers = {item["name"]: item for item in data["provider_status"]}
+    assert providers["Yahoo Finance"]["ready"] is True
+    assert providers["KIS Open API"]["status"] in {"App Key/Secret 필요", "인증정보 설정됨"}
 
 
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
@@ -268,3 +501,407 @@ def test_krx_instruments_preview_returns_503_when_provider_needs_permission(monk
 
     assert response.status_code == 503
     assert response.json()["detail"] == "KRX 인증 정보 필요"
+
+
+def test_yahoo_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert exchange == "KOSPI"
+        assert start == date(2026, 6, 1)
+        assert end == date(2026, 6, 5)
+        return [
+            {
+                "symbol": "005930.KS",
+                "trade_date": "2026-06-03",
+                "open": 70000.0,
+                "high": 71000.0,
+                "low": 69500.0,
+                "close": 70500.0,
+                "adjusted_close": 70500.0,
+                "volume": 1000000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": "005930.KS",
+                "trade_date": "2026-06-04",
+                "open": 70600.0,
+                "high": 72000.0,
+                "low": 70400.0,
+                "close": 71800.0,
+                "adjusted_close": 71800.0,
+                "volume": 1200000,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+
+    response = client.get(
+        "/api/data/yahoo/daily-prices"
+        "?symbol=005930&exchange=KOSPI&start=2026-06-01&end=2026-06-05&limit=1"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "Yahoo Finance"
+    assert data["symbol"] == "005930"
+    assert data["yahoo_symbol"] == "005930.KS"
+    assert data["count"] == 1
+    assert data["prices"][0]["trade_date"] == "2026-06-04"
+
+
+def test_yahoo_daily_prices_preview_returns_400_for_invalid_period(monkeypatch) -> None:
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+
+    response = client.get(
+        "/api/data/yahoo/daily-prices?symbol=005930&start=2026-06-05&end=2026-06-01"
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "종료일은 시작일보다 빠를 수 없습니다."
+
+
+def test_yahoo_strategy_batch_import_saves_daily_prices(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-06-01",
+                "open": 100.0,
+                "high": 105.0,
+                "low": 99.0,
+                "close": 102.0,
+                "adjusted_close": 102.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-06-30",
+                "open": 102.0,
+                "high": 110.0,
+                "low": 101.0,
+                "close": 108.0,
+                "adjusted_close": 108.0,
+                "volume": 1200,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+
+    response = client.post(
+        "/api/data/yahoo/daily-prices/import/strategy",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start": "2026-06-01",
+            "end": "2026-06-30",
+            "max_symbols": 2,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 201
+    assert data["success_count"] == 2
+    assert data["failed_count"] == 0
+    assert data["saved_count"] == 4
+
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(DailyPrice)) == 4
+
+
+def test_backtest_run_uses_daily_prices_when_available(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-01-02",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adjusted_close": 100.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-01-30",
+                "open": 100.0,
+                "high": 111.0,
+                "low": 99.0,
+                "close": 110.0,
+                "adjusted_close": 110.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-02-02",
+                "open": 110.0,
+                "high": 112.0,
+                "low": 108.0,
+                "close": 110.0,
+                "adjusted_close": 110.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-02-27",
+                "open": 110.0,
+                "high": 122.0,
+                "low": 109.0,
+                "close": 121.0,
+                "adjusted_close": 121.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+    monkeypatch.setattr(main_module, "fetch_yfinance_symbol_daily_prices", lambda **_kwargs: [])
+
+    import_response = client.post(
+        "/api/data/yahoo/daily-prices/import/strategy",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start": "2026-01-01",
+            "end": "2026-02-28",
+            "max_symbols": 2,
+        },
+    )
+    assert import_response.status_code == 201
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2026,
+            "end_year": 2026,
+            "initial_amount": 1000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["source"] == "daily-price-backtest:Yahoo Finance"
+    assert data["final_amount"] == 1210000
+    assert len(data["equity_curve"]) == 2
+
+
+def test_backtest_run_auto_imports_yahoo_prices_when_db_is_empty(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-01-02",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adjusted_close": 100.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-01-30",
+                "open": 100.0,
+                "high": 111.0,
+                "low": 99.0,
+                "close": 110.0,
+                "adjusted_close": 110.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-02-02",
+                "open": 110.0,
+                "high": 112.0,
+                "low": 108.0,
+                "close": 110.0,
+                "adjusted_close": 110.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KS",
+                "trade_date": "2026-02-27",
+                "open": 110.0,
+                "high": 122.0,
+                "low": 109.0,
+                "close": 121.0,
+                "adjusted_close": 121.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+    monkeypatch.setattr(main_module, "fetch_yfinance_symbol_daily_prices", lambda **_kwargs: [])
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2026,
+            "end_year": 2026,
+            "initial_amount": 1000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["source"] == "daily-price-backtest:Yahoo Finance"
+    assert data["final_amount"] == 1210000
+
+
+def test_backtest_run_ignores_incomplete_daily_price_symbols(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+
+    def fake_fetch_yahoo_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        if symbol == "012450":
+            return [
+                {
+                    "symbol": f"{symbol}.KS",
+                    "trade_date": "2026-01-02",
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "adjusted_close": 100.0,
+                    "volume": 1000,
+                    "provider": "Yahoo Finance",
+                },
+                {
+                    "symbol": f"{symbol}.KS",
+                    "trade_date": "2026-01-30",
+                    "open": 100.0,
+                    "high": 111.0,
+                    "low": 99.0,
+                    "close": 110.0,
+                    "adjusted_close": 110.0,
+                    "volume": 1000,
+                    "provider": "Yahoo Finance",
+                },
+                {
+                    "symbol": f"{symbol}.KS",
+                    "trade_date": "2026-02-02",
+                    "open": 110.0,
+                    "high": 112.0,
+                    "low": 108.0,
+                    "close": 110.0,
+                    "adjusted_close": 110.0,
+                    "volume": 1000,
+                    "provider": "Yahoo Finance",
+                },
+                {
+                    "symbol": f"{symbol}.KS",
+                    "trade_date": "2026-02-27",
+                    "open": 110.0,
+                    "high": 122.0,
+                    "low": 109.0,
+                    "close": 121.0,
+                    "adjusted_close": 121.0,
+                    "volume": 1000,
+                    "provider": "Yahoo Finance",
+                },
+            ]
+
+        return [
+            {
+                "symbol": f"{symbol}.KQ",
+                "trade_date": "2026-06-01",
+                "open": 50.0,
+                "high": 55.0,
+                "low": 49.0,
+                "close": 50.0,
+                "adjusted_close": 50.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+            {
+                "symbol": f"{symbol}.KQ",
+                "trade_date": "2026-06-30",
+                "open": 50.0,
+                "high": 505.0,
+                "low": 49.0,
+                "close": 500.0,
+                "adjusted_close": 500.0,
+                "volume": 1000,
+                "provider": "Yahoo Finance",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_yahoo_daily_prices", fake_fetch_yahoo_daily_prices)
+    monkeypatch.setattr(main_module, "fetch_yfinance_symbol_daily_prices", lambda **_kwargs: [])
+
+    import_response = client.post(
+        "/api/data/yahoo/daily-prices/import/strategy",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start": "2026-01-01",
+            "end": "2026-06-30",
+            "max_symbols": 2,
+        },
+    )
+    assert import_response.status_code == 201
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2026,
+            "end_year": 2026,
+            "initial_amount": 1000000,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["source"] == "daily-price-backtest:Yahoo Finance"
+    assert data["final_amount"] == 1210000
+    assert data["rebalance_history"][0]["holdings"] == "1종목"
+    assert "한화에어로스페이스" in data["rebalance_history"][0]["entries"]
+    assert "에코프로비엠" not in data["rebalance_history"][0]["entries"]

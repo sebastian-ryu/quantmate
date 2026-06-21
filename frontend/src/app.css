@@ -177,6 +177,41 @@ textarea {
   width: 100%;
 }
 
+.money-input {
+  align-items: center;
+  background: #f7fafa;
+  border: 1px solid #cbd6da;
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.money-input input {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  padding-right: 4px;
+}
+
+.money-input input:focus {
+  outline: none;
+}
+
+.money-input:focus-within {
+  border-color: #1f6b8f;
+  box-shadow: 0 0 0 2px rgb(31 107 143 / 12%);
+}
+
+.money-input span {
+  color: #6f7f86;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px 0 4px;
+}
+
 textarea {
   min-height: 96px;
   resize: vertical;
@@ -208,6 +243,14 @@ textarea {
 
 .backtest-panel .panel-heading {
   margin-bottom: 0;
+}
+
+.backtest-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .backtest-form-grid {
@@ -469,6 +512,7 @@ li {
 
 button,
 .button {
+  align-items: center;
   background: #1f6b8f;
   border: 0;
   border-radius: 999px;
@@ -477,6 +521,40 @@ button,
   display: inline-flex;
   justify-content: center;
   padding: 7px 11px;
+}
+
+.button-spinner,
+.panel-spinner {
+  animation: spin 0.75s linear infinite;
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.button-spinner {
+  border: 2px solid rgb(255 255 255 / 48%);
+  border-top-color: #ffffff;
+  height: 14px;
+  margin-right: 7px;
+  width: 14px;
+}
+
+.button-spinner.dark {
+  border-color: rgb(31 107 143 / 24%);
+  border-top-color: #1f6b8f;
+}
+
+.panel-spinner {
+  border: 3px solid #d7e3e8;
+  border-top-color: #1f6b8f;
+  height: 24px;
+  width: 24px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 button.secondary,
@@ -492,6 +570,12 @@ button.secondary,
   line-height: 1;
   min-width: 32px;
   padding: 0;
+}
+
+.table-action-button {
+  font-size: 12px;
+  padding: 5px 9px;
+  white-space: nowrap;
 }
 
 button:disabled,
@@ -1062,6 +1146,33 @@ td:first-child span {
   padding: 18px;
 }
 
+.loading-state {
+  align-items: center;
+  grid-template-columns: auto 1fr;
+}
+
+.loading-state span:last-child {
+  grid-column: 2;
+}
+
+.recent-backtest-picker {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.recent-backtest-picker label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.recent-backtest-picker select {
+  min-width: 0;
+  width: 100%;
+}
+
 meter {
   height: 8px;
   width: 88px;
@@ -1109,12 +1220,13 @@ td b {
   border-radius: 6px;
   display: grid;
   gap: 10px;
-  padding: 14px 8px;
+  padding: 14px 0 12px;
 }
 
 .growth-chart svg {
   background: #ffffff;
   border-radius: 4px;
+  display: block;
   height: 380px;
   overflow: visible;
   width: 100%;
@@ -1167,6 +1279,11 @@ td b {
   stroke-width: 2.5;
 }
 
+.chart-svg-legend .benchmark-legend-line {
+  stroke: #c05a2b;
+  stroke-dasharray: 5 4;
+}
+
 .chart-svg-legend text {
   fill: #4f6067;
   font-size: 11px;
@@ -1177,10 +1294,38 @@ td b {
   stroke: #1f6b8f;
 }
 
+.benchmark-line {
+  stroke: #c05a2b;
+  stroke-dasharray: 5 4;
+}
+
 .chart-point-hitbox {
   cursor: default;
   fill: transparent;
   stroke: transparent;
+}
+
+.chart-tooltip {
+  pointer-events: none;
+}
+
+.chart-tooltip rect {
+  fill: #172026;
+  filter: drop-shadow(0 8px 14px rgb(23 32 38 / 18%));
+}
+
+.chart-tooltip.benchmark rect {
+  fill: #7a3d22;
+}
+
+.chart-tooltip text {
+  fill: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chart-tooltip text + text {
+  font-size: 12px;
 }
 
 .chart-end-point {
@@ -1301,6 +1446,11 @@ td b {
   .panel-heading.inline {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .recent-backtest-picker {
+    align-items: stretch;
+    grid-template-columns: 1fr;
   }
 
   .compact-control,

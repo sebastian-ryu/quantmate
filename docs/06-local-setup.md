@@ -29,6 +29,8 @@ cp .env.example .env
 
 `.env`는 커밋하지 않는다.
 
+앱 기준 시간대는 `APP_TIMEZONE=Asia/Seoul`로 둔다. 사용자 입력, 화면 표시, DB 저장, 거래일 표현은 한국시간 기준이다.
+
 ## MySQL
 
 MySQL 시작:
@@ -64,6 +66,8 @@ docker compose down -v
 
 `down -v`는 로컬 DB 데이터를 의도적으로 지울 때만 사용한다.
 
+MySQL 컨테이너는 `TZ=Asia/Seoul`과 `--default-time-zone=+09:00`으로 실행한다. 로컬에서 별도 MySQL을 직접 사용할 경우에도 세션/서버 시간대를 한국시간으로 맞춘다.
+
 마이그레이션 적용:
 
 ```bash
@@ -84,7 +88,7 @@ make db-seed
 make install-backend
 ```
 
-백엔드 설치에는 KRX Open API 호출에 필요한 HTTP 클라이언트가 포함된다.
+백엔드 설치에는 KRX Open API 호출에 필요한 HTTP 클라이언트와 Yahoo 임시 일봉 수집용 `yfinance`가 포함된다.
 
 KRX 데이터는 ID/PW가 아니라 KRX Open API 인증키를 사용한다. 인증키는 `.env`의 `KRX_OPEN_API_AUTH_KEY`에만 입력하고 커밋하지 않는다.
 

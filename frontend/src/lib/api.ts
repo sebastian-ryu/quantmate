@@ -104,6 +104,7 @@ export type BacktestRunRequest = {
   start_year: number;
   end_year: number;
   initial_amount: number;
+  benchmark_code: string;
 };
 
 export type BacktestPerformanceMetric = {
@@ -124,6 +125,11 @@ export type BacktestEquityPoint = {
   portfolio: number;
 };
 
+export type BacktestBenchmarkPoint = {
+  label: string;
+  benchmark: number;
+};
+
 export type BacktestRebalanceRow = {
   date: string;
   holdings: string;
@@ -142,6 +148,9 @@ export type BacktestRunResult = {
   final_amount: number;
   run_at: string;
   notice: string;
+  benchmark_code: string;
+  benchmark_name: string;
+  benchmark_curve: BacktestBenchmarkPoint[];
   metrics: BacktestPerformanceMetric[];
   annual_returns: BacktestAnnualReturn[];
   equity_curve: BacktestEquityPoint[];
@@ -174,6 +183,74 @@ export type DataStatus = {
   message: string;
 };
 
+export type YahooDailyPrice = {
+  symbol: string;
+  trade_date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number;
+  adjusted_close: number | null;
+  volume: number | null;
+  provider: string;
+};
+
+export type YahooDailyPricePreview = {
+  provider: string;
+  symbol: string;
+  yahoo_symbol: string;
+  exchange: string;
+  count: number;
+  prices: YahooDailyPrice[];
+};
+
+export type YahooDailyPriceImportRequest = {
+  symbol: string;
+  name?: string;
+  exchange?: string;
+  start?: string;
+  end?: string;
+  is_adjusted?: boolean;
+};
+
+export type YahooDailyPriceImportResult = {
+  provider: string;
+  job_id: number;
+  symbol: string;
+  yahoo_symbol: string;
+  exchange: string;
+  fetched_count: number;
+  saved_count: number;
+  message: string;
+};
+
+export type YahooDailyPriceBatchImportRequest = {
+  strategy_code: string;
+  start?: string;
+  end?: string;
+  max_symbols?: number;
+  is_adjusted?: boolean;
+};
+
+export type YahooDailyPriceBatchImportItem = {
+  symbol: string;
+  name: string;
+  exchange: string;
+  status: string;
+  saved_count: number;
+  message: string;
+};
+
+export type YahooDailyPriceBatchImportResult = {
+  provider: string;
+  strategy_code: string;
+  requested_symbols: number;
+  success_count: number;
+  failed_count: number;
+  saved_count: number;
+  items: YahooDailyPriceBatchImportItem[];
+};
+
 export async function fetchDashboard(): Promise<Dashboard> {
   const response = await fetch(`${API_BASE_URL}/api/dashboard`);
 
@@ -189,6 +266,68 @@ export async function fetchDataStatus(): Promise<DataStatus> {
 
   if (!response.ok) {
     throw new Error(`데이터 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchYahooDailyPrices(params: {
+  symbol: string;
+  exchange?: string;
+  start?: string;
+  end?: string;
+  limit?: number;
+}): Promise<YahooDailyPricePreview> {
+  const search = new URLSearchParams();
+  search.set('symbol', params.symbol);
+  if (params.exchange) search.set('exchange', params.exchange);
+  if (params.start) search.set('start', params.start);
+  if (params.end) search.set('end', params.end);
+  if (params.limit) search.set('limit', String(params.limit));
+
+  const response = await fetch(`${API_BASE_URL}/api/data/yahoo/daily-prices?${search}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `Yahoo 일봉 데이터를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function importYahooDailyPrices(
+  request: YahooDailyPriceImportRequest
+): Promise<YahooDailyPriceImportResult> {
+  const response = await fetch(`${API_BASE_URL}/api/data/yahoo/daily-prices/import`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `Yahoo 일봉 데이터를 저장하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function importYahooDailyPricesForStrategy(
+  request: YahooDailyPriceBatchImportRequest
+): Promise<YahooDailyPriceBatchImportResult> {
+  const response = await fetch(`${API_BASE_URL}/api/data/yahoo/daily-prices/import/strategy`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `전략 후보의 Yahoo 일봉 데이터를 저장하지 못했습니다. (${response.status})`);
   }
 
   return response.json();
@@ -251,6 +390,17 @@ export async function fetchBacktestRuns(limit = 10): Promise<BacktestRunSummary[
   if (!response.ok) {
     const detail = await readErrorDetail(response);
     throw new Error(detail || `최근 백테스트 결과를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchBacktestRun(runId: number): Promise<BacktestRunResult> {
+  const response = await fetch(`${API_BASE_URL}/api/backtests/runs/${runId}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `저장된 백테스트 결과를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

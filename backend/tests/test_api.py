@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import quantmate_api.main as main_module
+import quantmate_api.market_data as market_data_module
 
 from quantmate_api.main import app
 from quantmate_api.models import (
@@ -1314,6 +1315,43 @@ def test_kis_financial_ratios_uses_market_data_provider(monkeypatch) -> None:
     assert data["period_type"] == "annual"
     assert data["count"] == 1
     assert data["items"][0]["roe"] == 15.7
+
+
+def test_kis_access_token_reuses_file_cache(monkeypatch, tmp_path) -> None:
+    token_path = tmp_path / "kis_token_cache.json"
+    issue_count = 0
+
+    monkeypatch.setenv("KIS_APP_KEY", "app-key")
+    monkeypatch.setenv("KIS_APP_SECRET", "app-secret")
+    monkeypatch.setenv("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
+    monkeypatch.delenv("KIS_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("KIS_TOKEN_CACHE_PATH", str(token_path))
+    market_data_module.KIS_TOKEN_CACHE.clear()
+
+    def fake_issue_kis_access_token(
+        *,
+        app_key: str,
+        app_secret: str,
+        base_url: str,
+    ) -> dict[str, object]:
+        nonlocal issue_count
+        issue_count += 1
+        assert app_key == "app-key"
+        assert app_secret == "app-secret"
+        assert base_url == "https://openapivts.koreainvestment.com:29443"
+        return {
+            "access_token": "cached-token",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+
+    monkeypatch.setattr(market_data_module, "issue_kis_access_token", fake_issue_kis_access_token)
+
+    assert market_data_module.get_kis_access_token() == "cached-token"
+    market_data_module.KIS_TOKEN_CACHE.clear()
+    assert market_data_module.get_kis_access_token() == "cached-token"
+    assert issue_count == 1
+    assert token_path.exists()
 
 
 def test_kis_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:

@@ -90,7 +90,7 @@ make install-backend
 
 백엔드 설치에는 KRX Open API 호출에 필요한 HTTP 클라이언트와 Yahoo 임시 일봉 수집용 `yfinance`가 포함된다.
 
-한국투자증권 KIS Open API는 `.env`에만 아래 값을 입력한다. 기본은 앱이 `APP_KEY`와 `APP_SECRET`으로 접근토큰을 자동 발급한다. 개발 중 서버를 자주 재시작해 KIS의 1분당 토큰 발급 제한에 걸릴 때만 `KIS_ACCESS_TOKEN`에 직접 발급받은 토큰을 임시로 넣는다.
+한국투자증권 KIS Open API는 `.env`에만 아래 값을 입력한다. 기본은 앱이 `APP_KEY`와 `APP_SECRET`으로 접근토큰을 자동 발급하고 `.run/kis_token_cache.json`에 로컬 캐시한다. 개발 중 서버를 자주 재시작해도 캐시가 남아 있으면 같은 토큰을 재사용한다. KIS의 1분당 토큰 발급 제한에 걸릴 때만 `KIS_ACCESS_TOKEN`에 직접 발급받은 토큰을 임시로 넣는다.
 
 ```env
 KIS_APP_KEY=발급받은_APP_KEY

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -84,6 +86,49 @@ def get_kis_environment_name() -> str:
     return "paper" if is_kis_paper_trading() else "real"
 
 
+def get_kis_token_cache_path() -> Path:
+    configured = os.getenv("KIS_TOKEN_CACHE_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+
+    return Path(__file__).resolve().parents[3] / ".run" / "kis_token_cache.json"
+
+
+def read_kis_token_file_cache(cache_key: str, now: float) -> dict[str, Any] | None:
+    path = get_kis_token_cache_path()
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    if payload.get("cache_key") != cache_key:
+        return None
+    if not payload.get("access_token"):
+        return None
+    if float(payload.get("expires_at_epoch", 0)) <= now + 60:
+        return None
+
+    return payload
+
+
+def write_kis_token_file_cache(cache_key: str, cache_record: dict[str, Any]) -> None:
+    path = get_kis_token_cache_path()
+    payload = {
+        "cache_key": cache_key,
+        **cache_record,
+    }
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        return
+
+
 def get_kis_access_token(force_refresh: bool = False) -> str:
     app_key = os.getenv("KIS_APP_KEY", "").strip()
     app_secret = os.getenv("KIS_APP_SECRET", "").strip()
@@ -108,6 +153,11 @@ def get_kis_access_token(force_refresh: bool = False) -> str:
     ):
         return str(cached["access_token"])
 
+    file_cached = None if force_refresh else read_kis_token_file_cache(cache_key=cache_key, now=now)
+    if file_cached is not None:
+        KIS_TOKEN_CACHE[cache_key] = file_cached
+        return str(file_cached["access_token"])
+
     payload = issue_kis_access_token(app_key=app_key, app_secret=app_secret, base_url=base_url)
     access_token = str(payload.get("access_token") or "")
 
@@ -115,11 +165,13 @@ def get_kis_access_token(force_refresh: bool = False) -> str:
         raise MarketDataProviderUnavailable("KIS 접근토큰 응답에 access_token이 없습니다.")
 
     expires_in = int_value(payload.get("expires_in")) or 24 * 60 * 60
-    KIS_TOKEN_CACHE[cache_key] = {
+    cache_record = {
         "access_token": access_token,
         "expires_at_epoch": now + max(expires_in - 60, 60),
         "token_type": payload.get("token_type", "Bearer"),
     }
+    KIS_TOKEN_CACHE[cache_key] = cache_record
+    write_kis_token_file_cache(cache_key=cache_key, cache_record=cache_record)
     return access_token
 
 
@@ -157,14 +209,17 @@ def get_kis_token_status() -> dict[str, Any]:
     cache_key = f"{base_url}:{app_key}"
     cached = KIS_TOKEN_CACHE.get(cache_key)
     expires_at = float(cached.get("expires_at_epoch", 0)) if isinstance(cached, dict) else 0
+    file_cached = read_kis_token_file_cache(cache_key=cache_key, now=time.time()) if app_key else None
+    file_expires_at = float(file_cached.get("expires_at_epoch", 0)) if isinstance(file_cached, dict) else 0
+    effective_expires_at = max(expires_at, file_expires_at)
 
     return {
         "provider": KIS_PROVIDER_NAME,
         "ready": is_kis_open_api_ready(),
         "environment": get_kis_environment_name(),
         "base_url": base_url,
-        "token_cached": bool(configured_token or expires_at > time.time()),
-        "expires_in_seconds": max(0, int(expires_at - time.time())) if expires_at else 0,
+        "token_cached": bool(configured_token or effective_expires_at > time.time()),
+        "expires_in_seconds": max(0, int(effective_expires_at - time.time())) if effective_expires_at else 0,
     }
 
 

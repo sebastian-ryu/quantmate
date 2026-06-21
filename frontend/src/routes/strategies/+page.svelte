@@ -262,7 +262,7 @@
       dataRequirements: ['검색기 조건식', '검색 결과 후보군', '백테스트용 가격 데이터'],
       universeFilter: ['검색기에서 선택한 누적 조건'],
       signalRules: [strategy.formula],
-      rankingRules: ['검색 결과 순서와 점수는 실제 데이터 연결 후 계산'],
+      rankingRules: ['저장 조건식으로 후보를 필터링한 뒤 실제 일봉 기반 점수로 정렬'],
       riskControls: ['리스크 조건은 전략 편집 기능에서 확장 예정'],
       riskNotes: ['현재는 검색식 기반 전략 초안'],
       backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
@@ -971,7 +971,7 @@
           <span>{backtestNotice}</span>
         </div>
       {:else}
-        <p>백테스트 실행 시 Yahoo 일봉을 자동 갱신한 뒤 가능한 실제 가격 데이터로 계산합니다.</p>
+        <p>백테스트 실행 시 KIS 일봉을 먼저 확인하고, 부족하면 Yahoo 일봉을 자동 보완해 계산합니다.</p>
       {/if}
     </section>
 

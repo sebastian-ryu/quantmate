@@ -90,6 +90,44 @@ make install-backend
 
 백엔드 설치에는 KRX Open API 호출에 필요한 HTTP 클라이언트와 Yahoo 임시 일봉 수집용 `yfinance`가 포함된다.
 
+한국투자증권 KIS Open API는 `.env`에만 아래 값을 입력한다. `access_token`은 저장하지 않고 앱이 `APP_KEY`와 `APP_SECRET`으로 발급/갱신한다.
+
+```env
+KIS_APP_KEY=발급받은_APP_KEY
+KIS_APP_SECRET=발급받은_APP_SECRET
+KIS_ACCOUNT_NO=계좌번호_앞_8자리
+KIS_ACCOUNT_PRODUCT_CODE=계좌번호_뒤_2자리
+KIS_IS_PAPER=true
+KIS_BASE_URL=https://openapivts.koreainvestment.com:29443
+KIS_WS_URL=ws://ops.koreainvestment.com:31000
+```
+
+실전투자는 값을 교체하되 `LIVE_TRADING_ENABLED=false`를 유지하고, 주문 기능 구현 전에는 읽기 전용 API만 사용한다.
+
+```env
+# KIS_IS_PAPER=false
+# KIS_BASE_URL=https://openapi.koreainvestment.com:9443
+# KIS_WS_URL=ws://ops.koreainvestment.com:21000
+```
+
+현재 구현된 KIS 읽기 전용 확인용 API:
+
+```bash
+curl http://127.0.0.1:8000/api/data/kis/token/status
+curl "http://127.0.0.1:8000/api/data/kis/current-price?symbol=005930"
+curl "http://127.0.0.1:8000/api/data/kis/market-cap-ranking?market=KOSPI&limit=10"
+curl "http://127.0.0.1:8000/api/data/kis/investor-trade-daily?symbol=005930&limit=20"
+curl "http://127.0.0.1:8000/api/data/kis/daily-prices?symbol=005930"
+```
+
+전략 후보와 백테스트 화면은 사용자가 별도 적재 버튼을 누르지 않아도 DB 일봉을 우선 사용한다. 데이터가 부족하면 서버가 KIS 시가총액 랭킹과 저장된 일봉 종목을 후보 시드로 삼아 KIS 일봉을 먼저 자동 수집하고, KIS 커버리지가 부족한 종목은 Yahoo/yfinance 일봉으로 보완해 `daily_prices`에 저장한 뒤 계산한다. 전략 후보 조회 시에는 KIS 투자자별 매매동향도 `supply_flow_dailies`에 저장해 외국인/기관/연기금 수급 필드를 보강한다. 공급원 우선순위는 종목별로 `KRX Open API -> KIS Open API -> Yahoo Finance`이며, KRX 승인 전에는 KIS와 Yahoo를 혼합해 사용한다.
+
+전략 후보 API가 실제 일봉을 사용하면 응답의 `source`가 `daily-price-candidates:KIS Open API + Yahoo Finance`처럼 표시된다. KIS 현재가 스냅샷으로 PER/PBR/시가총액/회전율을 보강한 경우 `+ KIS 현재가`가 함께 표시된다. 백테스트 결과도 `daily-price-backtest:<공급원>` 형식의 `source`를 저장한다.
+
+검색기에서 저장한 사용자 전략은 백엔드가 저장된 조건식을 1차 해석해 후보에 적용한다. 현재 해석 가능한 조건은 키워드, 거래소, 섹터, 산업, 가격, 모멘텀, 등락률, PER/PBR/ROE, 거래량 배율, 이동평균 위치 등이며, 실제 재무/수급 데이터가 아직 연결되지 않은 조건은 후보에서 제외하지 않고 위험 표시로 남긴다.
+
+검색기 화면의 결과 목록은 `/api/screener/search`를 사용한다. 서버가 검색식 조건을 해석한 뒤 실제 일봉 기반 가격/모멘텀/등락 데이터와 KIS 현재가/수급 보조 필드를 함께 반환한다. 검색기는 전략 화면보다 넓은 후보 풀을 요청하므로, 이미 DB에 저장된 실제 일봉 종목까지 포함해 결과를 확장한다. 재무, 공매도, 신용 관련 세부 조건 중 실제 공급원 필드가 아직 없는 항목은 보조값 또는 0으로 표시되며, KIS/KRX/OpenDART 매핑 후 교체한다.
+
 KRX 데이터는 ID/PW가 아니라 KRX Open API 인증키를 사용한다. 인증키는 `.env`의 `KRX_OPEN_API_AUTH_KEY`에만 입력하고 커밋하지 않는다.
 
 KRX Open API는 인증키 발급과 서비스별 이용신청이 별도다. 종목 목록과 일봉 데이터를 쓰려면 최소 아래 서비스를 신청한다.

@@ -6,7 +6,11 @@ from datetime import date
 from statistics import fmean, pstdev
 from typing import Any
 
-from quantmate_api.strategy_engine import build_strategy_candidates
+from quantmate_api.strategy_engine import (
+    apply_user_strategy_formula,
+    build_strategy_candidates,
+    build_strategy_candidates_from_daily_prices,
+)
 from quantmate_api.time_utils import now_kst
 
 
@@ -71,25 +75,77 @@ def build_daily_price_backtest(
     initial_amount: int,
     price_rows: list[dict[str, Any]],
     provider: str,
+    candidate_formula: str | None = None,
 ) -> dict[str, Any] | None:
     first_year = min(start_year, end_year)
     last_year = max(start_year, end_year)
-    monthly_returns = _build_monthly_returns(price_rows)
 
-    if len(monthly_returns) < 2:
+    symbol_rows = _group_price_rows_by_symbol(price_rows)
+    month_keys = _month_keys_for_period(price_rows, first_year=first_year, last_year=last_year)
+
+    if len(month_keys) < 2:
         return None
 
     balance = float(initial_amount)
     equity_curve: list[dict[str, Any]] = []
     annual_start_balance: dict[int, float] = {}
     annual_end_balance: dict[int, float] = {}
+    previous_holdings: list[str] = []
+    rebalance_history: list[dict[str, str]] = []
+    turnover_values: list[float] = []
+    symbol_names = _symbol_names_from_price_rows(price_rows)
 
-    for month_key, monthly_return in monthly_returns:
+    for month_key in month_keys:
+        month_start = _month_start_date(month_key)
+        ranking_rows = [
+            row
+            for rows in symbol_rows.values()
+            for row in rows
+            if _coerce_date(row["trade_date"]) < month_start
+        ]
+        ranked_candidates = build_strategy_candidates_from_daily_prices(
+            strategy_code=strategy_code,
+            price_rows=ranking_rows,
+            limit=10,
+        )
+        if candidate_formula:
+            ranked_candidates, _unsupported_conditions = apply_user_strategy_formula(
+                candidates=ranked_candidates,
+                formula=candidate_formula,
+            )
+            ranked_candidates = ranked_candidates[:10]
+        holdings = [str(candidate["symbol"]) for candidate in ranked_candidates]
+
+        if not holdings:
+            continue
+
+        monthly_symbol_returns = [
+            month_return
+            for symbol in holdings
+            if (month_return := _symbol_month_return(symbol_rows.get(symbol, []), month_key)) is not None
+        ]
+
+        if not monthly_symbol_returns:
+            continue
+
+        monthly_return = fmean(monthly_symbol_returns)
         year = int(month_key[:4])
         annual_start_balance.setdefault(year, balance)
         balance *= 1 + monthly_return
         annual_end_balance[year] = balance
         equity_curve.append({"label": month_key.replace("-", "."), "portfolio": round(balance)})
+        turnover = _calculate_turnover(previous_holdings=previous_holdings, holdings=holdings)
+        turnover_values.append(turnover)
+        rebalance_history.append(
+            _build_dynamic_rebalance_row(
+                month_key=month_key,
+                previous_holdings=previous_holdings,
+                holdings=holdings,
+                symbol_names=symbol_names,
+                turnover=turnover,
+            )
+        )
+        previous_holdings = holdings
 
     annual_rows: list[dict[str, Any]] = []
     annual_returns: list[float] = []
@@ -122,14 +178,8 @@ def build_daily_price_backtest(
         years=years,
         annual_returns=annual_returns,
         equity_curve=equity_curve,
-        monthly_turnover_pct=100.0,
+        monthly_turnover_pct=fmean(turnover_values) if turnover_values else 0.0,
     )
-
-    symbol_names = {
-        str(row["symbol"]): str(row.get("name") or row["symbol"])
-        for row in price_rows
-    }
-    holding_names = [symbol_names[symbol] for symbol in sorted(symbol_names)]
 
     return {
         "strategy_code": strategy_code,
@@ -140,14 +190,14 @@ def build_daily_price_backtest(
         "final_amount": final_amount,
         "run_at": now_kst().isoformat(),
         "notice": (
-            f"{provider} 일봉 데이터로 계산한 임시 백테스트입니다. "
-            "가격 데이터 기반 동일비중 월별 리밸런싱으로 계산하며, "
-            "KRX 승인 후 공식 일봉과 전략별 리밸런싱 규칙으로 교체합니다."
+            f"{provider} 일봉 데이터로 계산했습니다. "
+            "매월 직전까지의 가격 데이터로 후보를 다시 선정하고, "
+            "상위 후보 동일비중 월별 리밸런싱으로 계산합니다."
         ),
         "metrics": metrics,
         "annual_returns": annual_rows,
         "equity_curve": equity_curve,
-        "rebalance_history": _build_daily_price_rebalance_history(holding_names, monthly_returns),
+        "rebalance_history": rebalance_history,
     }
 
 
@@ -236,6 +286,102 @@ def _build_monthly_returns(price_rows: list[dict[str, Any]]) -> list[tuple[str, 
         if returns
     ]
     return monthly_returns
+
+
+def _group_price_rows_by_symbol(price_rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    for row in price_rows:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            grouped[symbol].append(row)
+
+    return {
+        symbol: sorted(rows, key=lambda item: _coerce_date(item["trade_date"]))
+        for symbol, rows in grouped.items()
+    }
+
+
+def _month_keys_for_period(
+    price_rows: list[dict[str, Any]],
+    *,
+    first_year: int,
+    last_year: int,
+) -> list[str]:
+    month_keys = {
+        f"{trade_date.year}-{trade_date.month:02d}"
+        for row in price_rows
+        if first_year <= (trade_date := _coerce_date(row["trade_date"])).year <= last_year
+    }
+    return sorted(month_keys)
+
+
+def _month_start_date(month_key: str) -> date:
+    year, month = month_key.split("-")
+    return date(int(year), int(month), 1)
+
+
+def _symbol_month_return(rows: list[dict[str, Any]], month_key: str) -> float | None:
+    month_rows = [
+        row
+        for row in rows
+        if f"{_coerce_date(row['trade_date']).year}-{_coerce_date(row['trade_date']).month:02d}" == month_key
+    ]
+
+    if len(month_rows) < 2:
+        return None
+
+    start_price = float(month_rows[0]["close_price"])
+    end_price = float(month_rows[-1]["close_price"])
+    if start_price <= 0:
+        return None
+
+    return end_price / start_price - 1
+
+
+def _symbol_names_from_price_rows(price_rows: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        str(row["symbol"]): str(row.get("name") or row["symbol"])
+        for row in price_rows
+    }
+
+
+def _calculate_turnover(*, previous_holdings: list[str], holdings: list[str]) -> float:
+    if not holdings:
+        return 0.0
+    if not previous_holdings:
+        return 100.0
+
+    previous = set(previous_holdings)
+    current = set(holdings)
+    changed = len(current - previous) + len(previous - current)
+    base = max(len(previous) + len(current), 1)
+    return changed / base * 100
+
+
+def _build_dynamic_rebalance_row(
+    *,
+    month_key: str,
+    previous_holdings: list[str],
+    holdings: list[str],
+    symbol_names: dict[str, str],
+    turnover: float,
+) -> dict[str, str]:
+    previous = set(previous_holdings)
+    current = set(holdings)
+    entries = [symbol_names.get(symbol, symbol) for symbol in holdings if symbol not in previous]
+    exits = [symbol_names.get(symbol, symbol) for symbol in previous_holdings if symbol not in current]
+
+    if not entries and holdings:
+        entries = [symbol_names.get(symbol, symbol) for symbol in holdings]
+
+    return {
+        "date": month_key,
+        "holdings": f"{len(holdings)}종목",
+        "entries": ", ".join(entries) if entries else "없음",
+        "exits": ", ".join(exits) if exits else "없음",
+        "turnover": _format_percent(turnover),
+    }
 
 
 def _coerce_date(value: Any) -> date:

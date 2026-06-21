@@ -4,6 +4,8 @@
     createUserStrategy,
     deleteUserStrategy,
     fetchUserStrategies,
+    searchScreener,
+    type StrategyCandidateResult,
     type UserStrategy
   } from '$lib/api';
 
@@ -61,7 +63,7 @@
     label: string;
   };
 
-  const rows: ScreenerRow[] = [
+  const fallbackRows: ScreenerRow[] = [
     {
       symbol: '005930',
       name: '삼성전자',
@@ -431,9 +433,18 @@
   let deletingStrategyCode = '';
   let activeFilterChips: FilterChip[] = [];
   let categoryCounts: Record<string, number> = {};
+  let rows: ScreenerRow[] = fallbackRows;
+  let screenerLoading = true;
+  let screenerError = '';
+  let screenerSource = '샘플 후보군';
+  let screenerReady = false;
+  let lastScreenerFormula = '';
+  let screenerSearchTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(async () => {
     await loadRegisteredStrategies();
+    screenerReady = true;
+    await loadScreenerRows(formulaPreview);
   });
 
   $: sectors = Array.from(new Set(rows.map((row) => row.sector)));
@@ -657,6 +668,9 @@
     supplyScoreMin;
     activeFilterChips = buildFilterChips();
     categoryCounts = buildCategoryCounts();
+  }
+  $: if (screenerReady && formulaPreview !== lastScreenerFormula) {
+    scheduleScreenerSearch(formulaPreview);
   }
 
   function countSelected(values: Array<string | boolean>) {
@@ -929,6 +943,103 @@
     if (key === 'supplyScoreMin') supplyScoreMin = '';
   }
 
+  function scheduleScreenerSearch(formula: string) {
+    if (screenerSearchTimer) {
+      clearTimeout(screenerSearchTimer);
+    }
+    screenerSearchTimer = setTimeout(() => {
+      void loadScreenerRows(formula);
+    }, 350);
+  }
+
+  async function loadScreenerRows(formula: string) {
+    lastScreenerFormula = formula;
+    screenerLoading = true;
+    screenerError = '';
+
+    try {
+      const response = await searchScreener({
+        strategy_code: 'relative-momentum-swing',
+        formula,
+        limit: 100
+      });
+      rows = response.candidates.map(toScreenerRow);
+      screenerSource = candidateSourceLabel(response.source);
+    } catch (err) {
+      rows = fallbackRows;
+      screenerSource = '샘플 후보군';
+      screenerError = err instanceof Error ? err.message : '검색기 데이터를 불러오지 못했습니다.';
+    } finally {
+      screenerLoading = false;
+    }
+  }
+
+  function toScreenerRow(candidate: StrategyCandidateResult): ScreenerRow {
+    const fallback = fallbackRows.find((row) => row.symbol === candidate.symbol) ?? fallbackRows[0];
+
+    return {
+      ...fallback,
+      symbol: candidate.symbol,
+      name: candidate.name,
+      exchange: candidate.exchange,
+      sector: candidate.sector,
+      industry: candidate.industry,
+      marketCap: candidate.market_cap,
+      price: candidate.price,
+      changePct: candidate.change_pct,
+      per: candidate.per,
+      pbr: candidate.pbr,
+      roe: candidate.roe,
+      revenueGrowth: candidate.revenue_growth,
+      foreignNetBuy5d: candidate.foreign_net_buy_5d,
+      foreignNetBuy20d: candidate.foreign_net_buy_20d,
+      institutionNetBuy5d: candidate.institution_net_buy_5d,
+      institutionNetBuy20d: candidate.institution_net_buy_20d,
+      pensionNetBuy20d: candidate.pension_net_buy_20d,
+      programNetBuy5d: candidate.program_net_buy_5d,
+      consecutiveForeignBuyDays: candidate.consecutive_foreign_buy_days,
+      supplyScore: candidate.supply_score,
+      shortSaleRatio: candidate.short_sale_ratio,
+      marginDebtChange5d: candidate.margin_debt_change_5d,
+      momentum: candidate.momentum,
+      tradingValue: candidate.trading_value_krw_100m,
+      avgVolume20d: candidate.avg_volume_20d_10k,
+      turnover: candidate.turnover_pct,
+      psr: candidate.psr,
+      evEbitda: candidate.ev_ebitda,
+      fcfYield: candidate.fcf_yield,
+      dividendYield: candidate.dividend_yield,
+      payoutRatio: candidate.payout_ratio,
+      roa: candidate.roa,
+      operatingMargin: candidate.operating_margin,
+      netMargin: candidate.net_margin,
+      debtRatio: candidate.debt_ratio,
+      currentRatio: candidate.current_ratio,
+      epsGrowth: candidate.eps_growth,
+      operatingIncomeGrowth: candidate.operating_income_growth,
+      beta: candidate.beta,
+      volatility20d: candidate.volatility_20d,
+      drawdown52w: candidate.drawdown_52w,
+      rsi14: candidate.rsi14,
+      closeVsMa20: candidate.close_vs_ma20_pct,
+      closeVsMa60: candidate.close_vs_ma60_pct,
+      volumeSurge: candidate.volume_surge,
+      fairValueUpside: candidate.fair_value_upside
+    };
+  }
+
+  function candidateSourceLabel(source: string) {
+    if (source.startsWith('daily-price-candidates:')) {
+      const provider = source
+        .replace('daily-price-candidates:', '')
+        .replace(':filtered', '')
+        .replace(':screener-filtered', '');
+      return `실제 일봉 기반 · ${provider}`;
+    }
+    if (source.includes('sample')) return '샘플 후보군';
+    return source || '출처 확인 중';
+  }
+
   async function loadRegisteredStrategies() {
     try {
       registeredStrategies = await fetchUserStrategies();
@@ -1044,7 +1155,7 @@
         <strong>적용 {appliedFilterCount}개 조건</strong>
       </div>
       <div class="filter-heading-actions">
-        <span class="muted">더미 데이터 기준</span>
+        <span class="muted">실제 일봉 기준, 일부 재무/수급 보조값 포함</span>
         <button type="button" class="secondary" onclick={resetFilters}>초기화</button>
       </div>
     </div>
@@ -1393,8 +1504,11 @@
         <span>검색 결과</span>
         <strong>{filteredRows.length}개 종목</strong>
       </div>
-      <span class="muted">KRW 기준</span>
+      <span class="muted">{screenerLoading ? '검색기 데이터 갱신 중' : `${screenerSource} · KRW 기준`}</span>
     </div>
+    {#if screenerError}
+      <div class="empty-state error">{screenerError}</div>
+    {/if}
     <div class="table-wrap">
       <table class="wide-table">
         <thead>

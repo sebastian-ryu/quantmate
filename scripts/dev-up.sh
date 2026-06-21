@@ -98,6 +98,9 @@ echo "MySQL을 시작합니다."
 docker compose up -d mysql
 wait_for_mysql
 
+echo "DB 마이그레이션을 적용합니다."
+python3 -m alembic -c "$ROOT_DIR/backend/alembic.ini" upgrade head
+
 start_managed_process \
   "백엔드 API" \
   8000 \

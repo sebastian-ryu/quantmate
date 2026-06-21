@@ -54,12 +54,55 @@ export type StrategyCandidateResult = {
   strategy_score: number;
   rationale: string[];
   risk_flags: string[];
+  trading_value_krw_100m: number;
+  avg_volume_20d_10k: number;
+  turnover_pct: number;
+  psr: number;
+  ev_ebitda: number;
+  fcf_yield: number;
+  dividend_yield: number;
+  payout_ratio: number;
+  roa: number;
+  operating_margin: number;
+  net_margin: number;
+  debt_ratio: number;
+  current_ratio: number;
+  eps_growth: number;
+  operating_income_growth: number;
+  beta: number;
+  volatility_20d: number;
+  drawdown_52w: number;
+  rsi14: number;
+  close_vs_ma20_pct: number;
+  close_vs_ma60_pct: number;
+  volume_surge: number;
+  fair_value_upside: number;
+  foreign_net_buy_20d: number;
+  institution_net_buy_20d: number;
+  pension_net_buy_20d: number;
+  program_net_buy_5d: number;
+  consecutive_foreign_buy_days: number;
+  margin_debt_change_5d: number;
 };
 
 export type StrategyCandidateResponse = {
   strategy_code: string;
   strategy_name: string;
   source: string;
+  candidates: StrategyCandidateResult[];
+};
+
+export type ScreenerSearchRequest = {
+  strategy_code?: string;
+  formula?: string;
+  limit?: number;
+};
+
+export type ScreenerSearchResponse = {
+  strategy_code: string;
+  strategy_name: string;
+  source: string;
+  unsupported_conditions: string[];
   candidates: StrategyCandidateResult[];
 };
 
@@ -340,6 +383,25 @@ export async function fetchStrategyCandidates(
 
   if (!response.ok) {
     throw new Error(`전략 후보 종목을 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function searchScreener(
+  request: ScreenerSearchRequest = {}
+): Promise<ScreenerSearchResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/screener/search`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `검색기 결과를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

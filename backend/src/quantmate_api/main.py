@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from uuid import uuid4
@@ -18,15 +18,35 @@ from quantmate_api.db import SessionLocal
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
+    fetch_kis_current_price,
+    fetch_kis_daily_prices,
+    fetch_kis_investor_trade_daily,
+    fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
     fetch_yahoo_daily_prices,
     fetch_yfinance_symbol_daily_prices,
+    get_kis_token_status,
     is_kis_open_api_ready,
     is_krx_open_api_ready,
     normalize_yahoo_symbol,
 )
-from quantmate_api.models import BacktestRun, DailyPrice, DataImportJob, Instrument, Market, UserStrategy
-from quantmate_api.strategy_engine import build_strategy_candidates
+from quantmate_api.models import (
+    BacktestRun,
+    DailyPrice,
+    DataImportJob,
+    Instrument,
+    Market,
+    QuoteSnapshot,
+    SupplyFlowDaily,
+    UserStrategy,
+)
+from quantmate_api.strategy_engine import (
+    apply_user_strategy_formula,
+    build_strategy_candidates,
+    build_strategy_candidates_from_daily_prices,
+    enrich_strategy_candidates_with_quote_snapshots,
+    enrich_strategy_candidates_with_supply_flows,
+)
 from quantmate_api.time_utils import now_kst_naive, today_kst
 
 
@@ -95,12 +115,55 @@ class StrategyCandidate(BaseModel):
     strategy_score: int = Field(ge=0, le=100)
     rationale: list[str]
     risk_flags: list[str]
+    trading_value_krw_100m: float = 0
+    avg_volume_20d_10k: float = 0
+    turnover_pct: float = 0
+    psr: float = 0
+    ev_ebitda: float = 0
+    fcf_yield: float = 0
+    dividend_yield: float = 0
+    payout_ratio: float = 0
+    roa: float = 0
+    operating_margin: float = 0
+    net_margin: float = 0
+    debt_ratio: float = 0
+    current_ratio: float = 0
+    eps_growth: float = 0
+    operating_income_growth: float = 0
+    beta: float = 0
+    volatility_20d: float = 0
+    drawdown_52w: float = 0
+    rsi14: float = 0
+    close_vs_ma20_pct: float = 0
+    close_vs_ma60_pct: float = 0
+    volume_surge: float = 0
+    fair_value_upside: float = 0
+    foreign_net_buy_20d: int = 0
+    institution_net_buy_20d: int = 0
+    pension_net_buy_20d: int = 0
+    program_net_buy_5d: int = 0
+    consecutive_foreign_buy_days: int = 0
+    margin_debt_change_5d: float = 0
 
 
 class StrategyCandidateResponse(BaseModel):
     strategy_code: str
     strategy_name: str
     source: str
+    candidates: list[StrategyCandidate]
+
+
+class ScreenerSearchRequest(BaseModel):
+    strategy_code: str = "relative-momentum-swing"
+    formula: str = ""
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class ScreenerSearchResponse(BaseModel):
+    strategy_code: str
+    strategy_name: str
+    source: str
+    unsupported_conditions: list[str]
     candidates: list[StrategyCandidate]
 
 
@@ -251,6 +314,41 @@ class YahooDailyPrice(BaseModel):
     provider: str
 
 
+class KisTokenStatusResponse(BaseModel):
+    provider: str
+    ready: bool
+    environment: str
+    base_url: str
+    token_cached: bool
+    expires_in_seconds: int
+
+
+class KisCurrentPriceResponse(BaseModel):
+    provider: str
+    symbol: str
+    name: str
+    price: int | None
+    change: int | None
+    change_rate: float | None
+    volume: int | None
+    trading_value: int | None
+    open: int | None
+    high: int | None
+    low: int | None
+    market_state: str
+    market_cap: int | None = None
+    per: float | None = None
+    pbr: float | None = None
+    eps: float | None = None
+    bps: float | None = None
+    turnover_pct: float | None = None
+    foreign_holding_rate: float | None = None
+    foreign_net_buy_qty: int | None = None
+    program_net_buy_qty: int | None = None
+    high_52w: int | None = None
+    low_52w: int | None = None
+
+
 class YahooDailyPricePreviewResponse(BaseModel):
     provider: str
     symbol: str
@@ -258,6 +356,53 @@ class YahooDailyPricePreviewResponse(BaseModel):
     exchange: str
     count: int
     prices: list[YahooDailyPrice]
+
+
+class KisDailyPricePreviewResponse(BaseModel):
+    provider: str
+    symbol: str
+    count: int
+    prices: list[YahooDailyPrice]
+
+
+class KisMarketCapRankingItem(BaseModel):
+    provider: str
+    symbol: str
+    name: str
+    exchange: str
+    price: int | None = None
+    change_rate: float | None = None
+    volume: int | None = None
+    market_cap: int | None = None
+    listed_shares: int | None = None
+    market_cap_weight: float | None = None
+    rank: int | None = None
+
+
+class KisMarketCapRankingResponse(BaseModel):
+    provider: str
+    count: int
+    items: list[KisMarketCapRankingItem]
+
+
+class KisInvestorTradeDailyItem(BaseModel):
+    provider: str
+    symbol: str
+    trade_date: date
+    foreign_net_buy_qty: int | None = None
+    institution_net_buy_qty: int | None = None
+    pension_net_buy_qty: int | None = None
+    foreign_net_buy_value: int | None = None
+    institution_net_buy_value: int | None = None
+    pension_net_buy_value: int | None = None
+    individual_net_buy_value: int | None = None
+
+
+class KisInvestorTradeDailyResponse(BaseModel):
+    provider: str
+    symbol: str
+    count: int
+    items: list[KisInvestorTradeDailyItem]
 
 
 class YahooDailyPriceImportRequest(BaseModel):
@@ -278,6 +423,52 @@ class YahooDailyPriceImportResponse(BaseModel):
     fetched_count: int
     saved_count: int
     message: str
+
+
+class KisDailyPriceImportRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    name: str | None = Field(default=None, max_length=200)
+    exchange: str = Field(default="KOSPI", max_length=40)
+    start: date | None = None
+    end: date | None = None
+    is_adjusted: bool = False
+
+
+class KisDailyPriceImportResponse(BaseModel):
+    provider: str
+    job_id: int
+    symbol: str
+    exchange: str
+    fetched_count: int
+    saved_count: int
+    message: str
+
+
+class KisDailyPriceBatchImportRequest(BaseModel):
+    strategy_code: str = "relative-momentum-swing"
+    start: date | None = None
+    end: date | None = None
+    max_symbols: int = Field(default=5, ge=1, le=10)
+    is_adjusted: bool = False
+
+
+class KisDailyPriceBatchImportItem(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+    status: str
+    saved_count: int
+    message: str
+
+
+class KisDailyPriceBatchImportResponse(BaseModel):
+    provider: str
+    strategy_code: str
+    requested_symbols: int
+    success_count: int
+    failed_count: int
+    saved_count: int
+    items: list[KisDailyPriceBatchImportItem]
 
 
 class YahooDailyPriceBatchImportRequest(BaseModel):
@@ -570,6 +761,9 @@ BENCHMARKS: dict[str, dict[str, str]] = {
     "sp500": {"name": "S&P 500", "symbol": "^GSPC", "market": "US"},
     "nasdaq100": {"name": "Nasdaq 100", "symbol": "^NDX", "market": "US"},
 }
+KIS_QUOTE_SNAPSHOT_PROVIDER = "KIS Current Quote"
+KIS_SUPPLY_FLOW_PROVIDER = "KIS Investor Flow"
+KIS_SUPPLY_FLOW_COOLDOWN_UNTIL: datetime | None = None
 
 
 def _find_system_strategy(strategy_code: str) -> Strategy | None:
@@ -797,12 +991,13 @@ def _build_daily_price_backtest_if_available(
     start_year: int,
     end_year: int,
     initial_amount: int,
+    candidate_formula: str | None = None,
 ) -> dict[str, object] | None:
     first_year = min(start_year, end_year)
     last_year = max(start_year, end_year)
-    start_date = date(first_year, 1, 1)
+    data_start_date = date(max(first_year - 1, 1990), 1, 1)
     end_date = date(last_year, 12, 31)
-    candidate_symbols = [item["symbol"] for item in build_strategy_candidates(strategy_code, limit=10)]
+    candidate_symbols = [item["symbol"] for item in _seed_candidates_for_strategy(strategy_code, limit=50)]
 
     existing_result, existing_provider = _build_daily_price_backtest_from_db(
         strategy_code=strategy_code,
@@ -811,15 +1006,36 @@ def _build_daily_price_backtest_if_available(
         end_year=end_year,
         initial_amount=initial_amount,
         candidate_symbols=candidate_symbols,
-        start_date=start_date,
+        start_date=data_start_date,
         end_date=end_date,
+        candidate_formula=candidate_formula,
     )
     if existing_result is not None and existing_provider == "KRX Open API":
         return existing_result
 
+    _auto_import_kis_daily_prices_for_backtest(
+        strategy_code=strategy_code,
+        start_date=data_start_date,
+        end_date=end_date,
+    )
+
+    kis_result, kis_provider = _build_daily_price_backtest_from_db(
+        strategy_code=strategy_code,
+        strategy_name=strategy_name,
+        start_year=start_year,
+        end_year=end_year,
+        initial_amount=initial_amount,
+        candidate_symbols=candidate_symbols,
+        start_date=data_start_date,
+        end_date=end_date,
+        candidate_formula=candidate_formula,
+    )
+    if kis_result is not None and kis_provider == "KIS Open API":
+        return kis_result
+
     _auto_import_yahoo_daily_prices_for_backtest(
         strategy_code=strategy_code,
-        start_date=start_date,
+        start_date=data_start_date,
         end_date=end_date,
     )
 
@@ -830,8 +1046,9 @@ def _build_daily_price_backtest_if_available(
         end_year=end_year,
         initial_amount=initial_amount,
         candidate_symbols=candidate_symbols,
-        start_date=start_date,
+        start_date=data_start_date,
         end_date=end_date,
+        candidate_formula=candidate_formula,
     )
     return refreshed_result
 
@@ -846,6 +1063,7 @@ def _build_daily_price_backtest_from_db(
     candidate_symbols: list[str],
     start_date: date,
     end_date: date,
+    candidate_formula: str | None = None,
 ) -> tuple[dict[str, object] | None, str]:
     if not candidate_symbols:
         return None, ""
@@ -872,8 +1090,216 @@ def _build_daily_price_backtest_from_db(
         initial_amount=initial_amount,
         price_rows=price_rows,
         provider=provider,
+        candidate_formula=candidate_formula,
     )
     return result, provider if result is not None else ""
+
+
+def _seed_candidates_for_strategy(strategy_code: str, limit: int) -> list[dict[str, object]]:
+    seen_symbols: set[str] = set()
+    candidates: list[dict[str, object]] = []
+
+    for candidate in build_strategy_candidates(strategy_code, limit=min(limit, 30)):
+        symbol = str(candidate["symbol"])
+        if symbol in seen_symbols:
+            continue
+        candidates.append(candidate)
+        seen_symbols.add(symbol)
+
+    if is_kis_open_api_ready() and len(candidates) < limit:
+        try:
+            ranking_rows = fetch_kis_market_cap_ranking(limit=limit)
+            _refresh_instrument_names_from_market_cap_ranking(ranking_rows)
+            for row in ranking_rows:
+                symbol = str(row["symbol"])
+                if symbol in seen_symbols:
+                    continue
+                exchange = _normalize_exchange(str(row.get("exchange") or "KOSPI"))
+                candidates.append(
+                    {
+                        "symbol": symbol,
+                        "name": str(row["name"]),
+                        "exchange": exchange,
+                        "sector": "미분류",
+                        "industry": "미분류",
+                        "market_cap": _market_cap_to_trillion(row.get("market_cap")),
+                        "price": int(row.get("price") or 0),
+                        "change_pct": float(row.get("change_rate") or 0),
+                        "per": 0,
+                        "pbr": 0,
+                        "roe": 0,
+                        "revenue_growth": 0,
+                        "foreign_net_buy_5d": 0,
+                        "institution_net_buy_5d": 0,
+                        "supply_score": 50,
+                        "short_sale_ratio": 0,
+                        "momentum": 50,
+                    }
+                )
+                seen_symbols.add(symbol)
+                if len(candidates) >= limit:
+                    break
+        except MarketDataProviderUnavailable:
+            pass
+
+    if len(candidates) < limit:
+        for candidate in _stored_price_seed_candidates(limit=limit * 2):
+            symbol = str(candidate["symbol"])
+            if symbol in seen_symbols:
+                continue
+            candidates.append(candidate)
+            seen_symbols.add(symbol)
+            if len(candidates) >= limit:
+                break
+
+    return candidates[:limit]
+
+
+def _refresh_instrument_names_from_market_cap_ranking(rows: list[dict[str, object]]) -> None:
+    if not rows:
+        return
+
+    try:
+        with SessionLocal() as session:
+            market = _get_or_create_kr_market(session)
+            updated = False
+
+            for row in rows:
+                symbol = str(row.get("symbol") or "").strip().upper()
+                name = str(row.get("name") or "").strip()
+                if not symbol or not name or name == symbol:
+                    continue
+
+                instrument = _get_or_create_instrument(
+                    session=session,
+                    market=market,
+                    symbol=symbol,
+                    name=name,
+                    exchange=_normalize_exchange(str(row.get("exchange") or "KOSPI")),
+                )
+                if instrument.name != name:
+                    instrument.name = name
+                updated = True
+
+            if updated:
+                session.commit()
+    except SQLAlchemyError:
+        return
+
+
+def _normalize_exchange(exchange: str) -> str:
+    normalized = exchange.strip().upper()
+    if normalized in {"KOSPI", "KOSDAQ", "KONEX"}:
+        return normalized
+    if normalized in {"KR", "ALL", "KOSPI200"}:
+        return "KOSPI"
+    return normalized or "KOSPI"
+
+
+def _stored_price_seed_candidates(limit: int) -> list[dict[str, object]]:
+    safe_limit = max(1, min(limit, 200))
+    latest_price_dates = (
+        select(
+            DailyPrice.instrument_id.label("instrument_id"),
+            func.max(DailyPrice.trade_date).label("latest_trade_date"),
+        )
+        .where(
+            DailyPrice.provider.in_(("KRX Open API", "KIS Open API", "Yahoo Finance")),
+            DailyPrice.is_adjusted.is_(False),
+        )
+        .group_by(DailyPrice.instrument_id)
+        .subquery()
+    )
+
+    try:
+        with SessionLocal() as session:
+            rows = session.execute(
+                select(
+                    Instrument.symbol,
+                    Instrument.name,
+                    Instrument.exchange,
+                    DailyPrice.close_price,
+                    func.coalesce(
+                        DailyPrice.trading_value,
+                        DailyPrice.close_price * DailyPrice.volume,
+                        0,
+                    ).label("estimated_trading_value"),
+                )
+                .join(latest_price_dates, latest_price_dates.c.instrument_id == Instrument.id)
+                .join(
+                    DailyPrice,
+                    (DailyPrice.instrument_id == latest_price_dates.c.instrument_id)
+                    & (DailyPrice.trade_date == latest_price_dates.c.latest_trade_date)
+                    & (DailyPrice.is_adjusted.is_(False)),
+                )
+                .where(DailyPrice.provider.in_(("KRX Open API", "KIS Open API", "Yahoo Finance")))
+                .order_by(func.coalesce(DailyPrice.trading_value, DailyPrice.close_price * DailyPrice.volume, 0).desc())
+                .limit(safe_limit)
+            ).all()
+    except SQLAlchemyError:
+        return []
+
+    candidates: list[dict[str, object]] = []
+    seen_symbols: set[str] = set()
+    for row in rows:
+        symbol = str(row.symbol)
+        if symbol in seen_symbols:
+            continue
+
+        candidates.append(
+            {
+                "symbol": symbol,
+                "name": str(row.name or symbol),
+                "exchange": str(row.exchange or "KOSPI"),
+                "sector": "미분류",
+                "industry": "미분류",
+                "market_cap": 0,
+                "price": int(_decimal_or_none(row.close_price) or 0),
+                "change_pct": 0,
+                "per": 0,
+                "pbr": 0,
+                "roe": 0,
+                "revenue_growth": 0,
+                "foreign_net_buy_5d": 0,
+                "institution_net_buy_5d": 0,
+                "supply_score": 50,
+                "short_sale_ratio": 0,
+                "momentum": 50,
+            }
+        )
+        seen_symbols.add(symbol)
+
+    return candidates
+
+
+def _market_cap_to_trillion(value: object) -> float:
+    parsed = _decimal_or_none(value)
+    if parsed is None:
+        return 0.0
+    return round(float(parsed) / 10_000, 2)
+
+
+def _auto_import_kis_daily_prices_for_backtest(
+    *,
+    strategy_code: str,
+    start_date: date,
+    end_date: date,
+) -> KisDailyPriceBatchImportResponse | None:
+    if not is_kis_open_api_ready():
+        return None
+
+    try:
+        return _import_kis_daily_prices_for_strategy_candidates(
+            KisDailyPriceBatchImportRequest(
+                strategy_code=strategy_code,
+                start=start_date,
+                end=end_date,
+                max_symbols=10,
+                is_adjusted=False,
+            )
+        )
+    except (HTTPException, SQLAlchemyError, ValueError, MarketDataProviderUnavailable):
+        return None
 
 
 def _auto_import_yahoo_daily_prices_for_backtest(
@@ -888,7 +1314,7 @@ def _auto_import_yahoo_daily_prices_for_backtest(
                 strategy_code=strategy_code,
                 start=start_date,
                 end=end_date,
-                max_symbols=10,
+                max_symbols=30,
                 is_adjusted=False,
             )
         )
@@ -903,7 +1329,7 @@ def _load_backtest_price_rows(
     start_date: date,
     end_date: date,
 ) -> tuple[list[dict[str, object]], str]:
-    provider_priority = ["KRX Open API", "Yahoo Finance", "KIS Open API"]
+    provider_priority = ["KRX Open API", "KIS Open API", "Yahoo Finance"]
     rows = session.execute(
         select(
             Instrument.symbol,
@@ -935,10 +1361,26 @@ def _load_backtest_price_rows(
             }
         )
 
+    minimum_symbols = min(10, len(symbols))
+    for provider in ["KRX Open API", "KIS Open API"]:
+        provider_rows = _filter_backtest_price_rows_for_coverage(grouped_by_provider[provider])
+        if _has_minimum_price_coverage(provider_rows, minimum_symbols=minimum_symbols):
+            return provider_rows, provider
+
+    mixed_rows, mixed_provider = _build_mixed_backtest_price_rows(
+        grouped_by_provider=grouped_by_provider,
+        provider_priority=provider_priority,
+    )
+    if _has_minimum_price_coverage(mixed_rows, minimum_symbols=minimum_symbols):
+        return mixed_rows, mixed_provider
+
     for provider in provider_priority:
         provider_rows = _filter_backtest_price_rows_for_coverage(grouped_by_provider[provider])
-        if _has_minimum_price_coverage(provider_rows):
+        if _has_minimum_price_coverage(provider_rows, minimum_symbols=1):
             return provider_rows, provider
+
+    if _has_minimum_price_coverage(mixed_rows, minimum_symbols=1):
+        return mixed_rows, mixed_provider
 
     return [], ""
 
@@ -962,13 +1404,625 @@ def _filter_backtest_price_rows_for_coverage(
     return covered_rows
 
 
-def _has_minimum_price_coverage(price_rows: list[dict[str, object]]) -> bool:
+def _has_minimum_price_coverage(
+    price_rows: list[dict[str, object]],
+    *,
+    minimum_symbols: int = 1,
+) -> bool:
     symbols = {str(row["symbol"]) for row in price_rows}
     months = {
         f"{_row_trade_date(row).year}-{_row_trade_date(row).month:02d}"
         for row in price_rows
     }
-    return len(symbols) >= 1 and len(months) >= 2 and len(price_rows) >= 4
+    return len(symbols) >= minimum_symbols and len(months) >= 2 and len(price_rows) >= minimum_symbols * 4
+
+
+def _build_mixed_backtest_price_rows(
+    *,
+    grouped_by_provider: dict[str, list[dict[str, object]]],
+    provider_priority: list[str],
+) -> tuple[list[dict[str, object]], str]:
+    rows_by_symbol_provider: dict[str, dict[str, list[dict[str, object]]]] = {}
+
+    for provider, rows in grouped_by_provider.items():
+        for row in rows:
+            symbol = str(row["symbol"])
+            rows_by_symbol_provider.setdefault(symbol, {}).setdefault(provider, []).append(row)
+
+    mixed_rows: list[dict[str, object]] = []
+    used_providers: list[str] = []
+
+    for provider_rows in rows_by_symbol_provider.values():
+        for provider in provider_priority:
+            covered_rows = _filter_backtest_price_rows_for_coverage(provider_rows.get(provider, []))
+            if _has_minimum_price_coverage(covered_rows, minimum_symbols=1):
+                mixed_rows.extend(covered_rows)
+                if provider not in used_providers:
+                    used_providers.append(provider)
+                break
+
+    return mixed_rows, _mixed_provider_label(used_providers)
+
+
+def _build_daily_price_strategy_candidates_if_available(
+    strategy_code: str,
+    *,
+    limit: int = 12,
+) -> tuple[str, list[dict[str, object]]] | None:
+    safe_limit = max(1, min(limit, 100))
+    symbols = [str(item["symbol"]) for item in _seed_candidates_for_strategy(strategy_code, limit=max(safe_limit, 50))]
+    if not symbols:
+        return None
+
+    try:
+        with SessionLocal() as session:
+            price_rows, provider = _load_strategy_candidate_price_rows(
+                session=session,
+                symbols=symbols,
+                start_date=_candidate_price_start_date(),
+                end_date=today_kst(),
+            )
+            quote_snapshots = _load_latest_quote_snapshots_by_symbol(session=session, symbols=symbols)
+            supply_flows = _load_supply_flow_metrics_by_symbol(session=session, symbols=symbols)
+    except SQLAlchemyError:
+        return None
+
+    if not price_rows:
+        return None
+
+    candidates = build_strategy_candidates_from_daily_prices(
+        strategy_code=strategy_code,
+        price_rows=price_rows,
+        limit=safe_limit,
+    )
+    if not candidates:
+        return None
+
+    if quote_snapshots:
+        candidates = enrich_strategy_candidates_with_quote_snapshots(
+            candidates=candidates,
+            quote_snapshots=quote_snapshots,
+        )
+        provider = f"{provider} + KIS 현재가"
+
+    if supply_flows:
+        candidates = enrich_strategy_candidates_with_supply_flows(
+            candidates=candidates,
+            supply_flows=supply_flows,
+        )
+        provider = f"{provider} + KIS 수급"
+
+    return f"daily-price-candidates:{provider}", candidates
+
+
+def _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 30,
+) -> None:
+    try:
+        _import_yahoo_daily_prices_for_strategy_candidates(
+            YahooDailyPriceBatchImportRequest(
+                strategy_code=strategy_code,
+                start=_candidate_price_start_date(),
+                end=today_kst(),
+                max_symbols=max(1, min(max_symbols, 30)),
+                is_adjusted=False,
+            )
+        )
+    except (HTTPException, SQLAlchemyError, ValueError):
+        return
+
+
+def _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 10,
+) -> None:
+    if not is_kis_open_api_ready():
+        return
+
+    try:
+        _import_kis_daily_prices_for_strategy_candidates(
+            KisDailyPriceBatchImportRequest(
+                strategy_code=strategy_code,
+                start=_candidate_price_start_date(),
+                end=today_kst(),
+                max_symbols=max(1, min(max_symbols, 10)),
+                is_adjusted=False,
+            )
+        )
+    except (HTTPException, SQLAlchemyError, ValueError, MarketDataProviderUnavailable):
+        return
+
+
+def _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 12,
+) -> None:
+    if not is_kis_open_api_ready():
+        return
+
+    safe_limit = max(1, min(max_symbols, 30))
+    symbols = [str(item["symbol"]) for item in _seed_candidates_for_strategy(strategy_code, limit=safe_limit)]
+    if not symbols:
+        return
+
+    try:
+        with SessionLocal() as session:
+            existing_symbols = set(
+                session.scalars(
+                    select(Instrument.symbol)
+                    .join(QuoteSnapshot, QuoteSnapshot.instrument_id == Instrument.id)
+                    .where(
+                        Instrument.symbol.in_(symbols),
+                        QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
+                        QuoteSnapshot.snapshot_date == today_kst(),
+                    )
+                ).all()
+            )
+    except SQLAlchemyError:
+        return
+
+    missing_symbols = [symbol for symbol in symbols if symbol not in existing_symbols]
+    if not missing_symbols:
+        return
+
+    for candidate in _seed_candidates_for_strategy(strategy_code, limit=safe_limit):
+        symbol = str(candidate["symbol"])
+        if symbol not in missing_symbols:
+            continue
+
+        try:
+            quote = fetch_kis_current_price(symbol)
+            with SessionLocal() as session:
+                _save_kis_quote_snapshot(
+                    session=session,
+                    quote=quote,
+                    fallback_name=str(candidate["name"]),
+                    fallback_exchange=str(candidate["exchange"]),
+                )
+        except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError):
+            continue
+
+
+def _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
+    strategy_code: str,
+    *,
+    max_symbols: int = 12,
+) -> None:
+    if not is_kis_open_api_ready():
+        return
+    if _is_kis_supply_flow_in_cooldown():
+        return
+
+    safe_limit = max(1, min(max_symbols, 12))
+    candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
+    symbols = [str(item["symbol"]) for item in candidates]
+    if not symbols:
+        return
+
+    freshness_date = today_kst() - timedelta(days=5)
+    try:
+        with SessionLocal() as session:
+            fresh_symbols = set(
+                session.scalars(
+                    select(Instrument.symbol)
+                    .join(SupplyFlowDaily, SupplyFlowDaily.instrument_id == Instrument.id)
+                    .where(
+                        Instrument.symbol.in_(symbols),
+                        SupplyFlowDaily.provider == KIS_SUPPLY_FLOW_PROVIDER,
+                        SupplyFlowDaily.trade_date >= freshness_date,
+                    )
+                    .distinct()
+                ).all()
+            )
+    except SQLAlchemyError:
+        return
+
+    for candidate in candidates:
+        symbol = str(candidate["symbol"])
+        if symbol in fresh_symbols:
+            continue
+
+        try:
+            flows = fetch_kis_investor_trade_daily(symbol=symbol, base_date=today_kst(), limit=30)
+            if not flows:
+                continue
+            with SessionLocal() as session:
+                _save_kis_supply_flows(
+                    session=session,
+                    symbol=symbol,
+                    name=str(candidate["name"]),
+                    exchange=str(candidate["exchange"]),
+                    flows=flows,
+                )
+        except MarketDataProviderUnavailable:
+            _pause_kis_supply_flow_import(minutes=10)
+            break
+        except (SQLAlchemyError, ValueError):
+            continue
+
+
+def _is_kis_supply_flow_in_cooldown() -> bool:
+    return KIS_SUPPLY_FLOW_COOLDOWN_UNTIL is not None and KIS_SUPPLY_FLOW_COOLDOWN_UNTIL > now_kst_naive()
+
+
+def _pause_kis_supply_flow_import(*, minutes: int) -> None:
+    global KIS_SUPPLY_FLOW_COOLDOWN_UNTIL
+    KIS_SUPPLY_FLOW_COOLDOWN_UNTIL = now_kst_naive() + timedelta(minutes=minutes)
+
+
+def _should_try_kis_candidate_import(
+    daily_price_candidates: tuple[str, list[dict[str, object]]] | None,
+) -> bool:
+    if not is_kis_open_api_ready():
+        return False
+    if daily_price_candidates is None:
+        return True
+
+    source, _candidates = daily_price_candidates
+    return source == "daily-price-candidates:Yahoo Finance"
+
+
+def _candidate_result_count(
+    daily_price_candidates: tuple[str, list[dict[str, object]]] | None,
+) -> int:
+    if daily_price_candidates is None:
+        return 0
+    return len(daily_price_candidates[1])
+
+
+def _candidate_target_count(limit: int) -> int:
+    if limit <= 12:
+        return min(max(1, limit), 10)
+    return min(max(1, limit), 24)
+
+
+def _load_strategy_candidate_result(
+    strategy_code: str,
+    *,
+    limit: int = 12,
+) -> tuple[str, list[dict[str, object]]] | None:
+    safe_limit = max(1, min(limit, 100))
+    target_count = _candidate_target_count(safe_limit)
+    daily_price_candidates = _build_daily_price_strategy_candidates_if_available(
+        strategy_code,
+        limit=safe_limit,
+    )
+
+    if _should_try_kis_candidate_import(daily_price_candidates) or _candidate_result_count(
+        daily_price_candidates
+    ) < target_count:
+        _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=min(10, target_count),
+        )
+        refreshed_kis_candidates = _build_daily_price_strategy_candidates_if_available(
+            strategy_code,
+            limit=safe_limit,
+        )
+        if refreshed_kis_candidates is not None:
+            daily_price_candidates = refreshed_kis_candidates
+
+    if _candidate_result_count(daily_price_candidates) < target_count:
+        _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=max(target_count, min(safe_limit, 30)),
+        )
+        refreshed_yahoo_candidates = _build_daily_price_strategy_candidates_if_available(
+            strategy_code,
+            limit=safe_limit,
+        )
+        if refreshed_yahoo_candidates is not None:
+            daily_price_candidates = refreshed_yahoo_candidates
+
+    if daily_price_candidates is not None:
+        _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=min(target_count, 12),
+        )
+        _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
+            strategy_code,
+            max_symbols=target_count,
+        )
+        refreshed_snapshot_candidates = _build_daily_price_strategy_candidates_if_available(
+            strategy_code,
+            limit=safe_limit,
+        )
+        if refreshed_snapshot_candidates is not None:
+            daily_price_candidates = refreshed_snapshot_candidates
+
+    return daily_price_candidates
+
+
+def _candidate_price_start_date() -> date:
+    today = today_kst()
+    return date(max(today.year - 5, 1990), 1, 1)
+
+
+def _load_strategy_candidate_price_rows(
+    *,
+    session,
+    symbols: list[str],
+    start_date: date,
+    end_date: date,
+) -> tuple[list[dict[str, object]], str]:
+    provider_priority = ["KRX Open API", "KIS Open API", "Yahoo Finance"]
+    rows = session.execute(
+        select(
+            Instrument.symbol,
+            Instrument.name,
+            Instrument.exchange,
+            DailyPrice.trade_date,
+            DailyPrice.open_price,
+            DailyPrice.high_price,
+            DailyPrice.low_price,
+            DailyPrice.close_price,
+            DailyPrice.volume,
+            DailyPrice.trading_value,
+            DailyPrice.provider,
+        )
+        .join(Instrument, Instrument.id == DailyPrice.instrument_id)
+        .where(
+            Instrument.symbol.in_(symbols),
+            DailyPrice.trade_date >= start_date,
+            DailyPrice.trade_date <= end_date,
+            DailyPrice.is_adjusted.is_(False),
+            DailyPrice.provider.in_(provider_priority),
+        )
+        .order_by(Instrument.symbol, DailyPrice.provider, DailyPrice.trade_date)
+    ).all()
+
+    grouped_by_provider: dict[str, list[dict[str, object]]] = {provider: [] for provider in provider_priority}
+    for row in rows:
+        grouped_by_provider[row.provider].append(
+            {
+                "symbol": row.symbol,
+                "name": row.name,
+                "exchange": row.exchange,
+                "trade_date": row.trade_date,
+                "open_price": row.open_price,
+                "high_price": row.high_price,
+                "low_price": row.low_price,
+                "close_price": row.close_price,
+                "volume": row.volume,
+                "trading_value": row.trading_value,
+                "provider": row.provider,
+            }
+        )
+
+    minimum_symbols = min(10, len(symbols))
+    best_rows: list[dict[str, object]] = []
+    best_provider = ""
+    best_symbol_count = 0
+
+    for provider in ["KRX Open API", "KIS Open API"]:
+        provider_rows = _filter_candidate_price_rows_for_coverage(grouped_by_provider[provider])
+        provider_symbol_count = _candidate_price_symbol_count(provider_rows)
+        if (
+            _has_candidate_price_coverage(provider_rows, minimum_symbols=minimum_symbols)
+            and provider_symbol_count > best_symbol_count
+        ):
+            best_rows = provider_rows
+            best_provider = provider
+            best_symbol_count = provider_symbol_count
+
+    mixed_rows, mixed_provider = _build_mixed_candidate_price_rows(
+        grouped_by_provider=grouped_by_provider,
+        provider_priority=provider_priority,
+    )
+    mixed_symbol_count = _candidate_price_symbol_count(mixed_rows)
+    if (
+        _has_candidate_price_coverage(mixed_rows, minimum_symbols=minimum_symbols)
+        and mixed_symbol_count > best_symbol_count
+    ):
+        return mixed_rows, mixed_provider
+
+    if best_rows:
+        return best_rows, best_provider
+
+    return [], ""
+
+
+def _filter_candidate_price_rows_for_coverage(
+    price_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    rows_by_symbol: dict[str, list[dict[str, object]]] = {}
+    for row in price_rows:
+        rows_by_symbol.setdefault(str(row["symbol"]), []).append(row)
+
+    covered_rows: list[dict[str, object]] = []
+    for rows in rows_by_symbol.values():
+        if len(rows) >= 20:
+            covered_rows.extend(rows)
+
+    return covered_rows
+
+
+def _has_candidate_price_coverage(
+    price_rows: list[dict[str, object]],
+    *,
+    minimum_symbols: int,
+) -> bool:
+    symbols_count = _candidate_price_symbol_count(price_rows)
+    return symbols_count >= minimum_symbols and len(price_rows) >= minimum_symbols * 20
+
+
+def _candidate_price_symbol_count(price_rows: list[dict[str, object]]) -> int:
+    return len({str(row["symbol"]) for row in price_rows})
+
+
+def _build_mixed_candidate_price_rows(
+    *,
+    grouped_by_provider: dict[str, list[dict[str, object]]],
+    provider_priority: list[str],
+) -> tuple[list[dict[str, object]], str]:
+    rows_by_symbol_provider: dict[str, dict[str, list[dict[str, object]]]] = {}
+
+    for provider, rows in grouped_by_provider.items():
+        for row in rows:
+            symbol = str(row["symbol"])
+            rows_by_symbol_provider.setdefault(symbol, {}).setdefault(provider, []).append(row)
+
+    mixed_rows: list[dict[str, object]] = []
+    used_providers: list[str] = []
+
+    for provider_rows in rows_by_symbol_provider.values():
+        for provider in provider_priority:
+            covered_rows = _filter_candidate_price_rows_for_coverage(provider_rows.get(provider, []))
+            if _has_candidate_price_coverage(covered_rows, minimum_symbols=1):
+                mixed_rows.extend(covered_rows)
+                if provider not in used_providers:
+                    used_providers.append(provider)
+                break
+
+    return mixed_rows, _mixed_provider_label(used_providers)
+
+
+def _load_latest_quote_snapshots_by_symbol(
+    *,
+    session,
+    symbols: list[str],
+) -> dict[str, dict[str, object]]:
+    if not symbols:
+        return {}
+
+    rows = session.execute(
+        select(Instrument.symbol, QuoteSnapshot)
+        .join(Instrument, Instrument.id == QuoteSnapshot.instrument_id)
+        .where(
+            Instrument.symbol.in_(symbols),
+            QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
+        )
+        .order_by(Instrument.symbol, QuoteSnapshot.snapshot_date.desc(), QuoteSnapshot.id.desc())
+    ).all()
+
+    snapshots: dict[str, dict[str, object]] = {}
+    for symbol, snapshot in rows:
+        normalized_symbol = str(symbol)
+        if normalized_symbol in snapshots:
+            continue
+
+        snapshots[normalized_symbol] = {
+            "snapshot_date": snapshot.snapshot_date,
+            "provider": snapshot.provider,
+            "price": snapshot.price,
+            "change_pct": snapshot.change_pct,
+            "volume": snapshot.volume,
+            "trading_value": snapshot.trading_value,
+            "market_cap": snapshot.market_cap,
+            "per": snapshot.per,
+            "pbr": snapshot.pbr,
+            "eps": snapshot.eps,
+            "bps": snapshot.bps,
+            "turnover_pct": snapshot.turnover_pct,
+            "foreign_holding_rate": snapshot.foreign_holding_rate,
+            "foreign_net_buy_qty": snapshot.foreign_net_buy_qty,
+            "program_net_buy_qty": snapshot.program_net_buy_qty,
+            "high_52w": snapshot.high_52w,
+            "low_52w": snapshot.low_52w,
+        }
+
+    return snapshots
+
+
+def _load_supply_flow_metrics_by_symbol(
+    *,
+    session,
+    symbols: list[str],
+) -> dict[str, dict[str, object]]:
+    if not symbols:
+        return {}
+
+    rows = session.execute(
+        select(Instrument.symbol, SupplyFlowDaily)
+        .join(Instrument, Instrument.id == SupplyFlowDaily.instrument_id)
+        .where(
+            Instrument.symbol.in_(symbols),
+            SupplyFlowDaily.provider == KIS_SUPPLY_FLOW_PROVIDER,
+            SupplyFlowDaily.trade_date >= today_kst() - timedelta(days=80),
+        )
+        .order_by(Instrument.symbol, SupplyFlowDaily.trade_date.desc())
+    ).all()
+
+    rows_by_symbol: dict[str, list[SupplyFlowDaily]] = {}
+    for symbol, flow in rows:
+        rows_by_symbol.setdefault(str(symbol), []).append(flow)
+
+    metrics: dict[str, dict[str, object]] = {}
+    for symbol, flows in rows_by_symbol.items():
+        ordered = sorted(flows, key=lambda item: item.trade_date, reverse=True)
+        latest_5 = ordered[:5]
+        latest_20 = ordered[:20]
+        foreign_5 = _sum_decimal_value(latest_5, "foreign_net_buy_value")
+        institution_5 = _sum_decimal_value(latest_5, "institution_net_buy_value")
+        foreign_20 = _sum_decimal_value(latest_20, "foreign_net_buy_value")
+        institution_20 = _sum_decimal_value(latest_20, "institution_net_buy_value")
+        pension_20 = _sum_decimal_value(latest_20, "pension_net_buy_value")
+        consecutive_foreign_buy_days = 0
+        for flow in ordered:
+            value = _decimal_or_none(flow.foreign_net_buy_value)
+            if value is None or value <= 0:
+                break
+            consecutive_foreign_buy_days += 1
+
+        metrics[symbol] = {
+            "foreign_net_buy_5d": _krw_to_100m(foreign_5),
+            "institution_net_buy_5d": _krw_to_100m(institution_5),
+            "foreign_net_buy_20d": _krw_to_100m(foreign_20),
+            "institution_net_buy_20d": _krw_to_100m(institution_20),
+            "pension_net_buy_20d": _krw_to_100m(pension_20),
+            "consecutive_foreign_buy_days": consecutive_foreign_buy_days,
+            "supply_score": _supply_flow_score(
+                foreign_5=_krw_to_100m(foreign_5),
+                institution_5=_krw_to_100m(institution_5),
+                foreign_20=_krw_to_100m(foreign_20),
+                institution_20=_krw_to_100m(institution_20),
+                consecutive_foreign_buy_days=consecutive_foreign_buy_days,
+            ),
+        }
+
+    return metrics
+
+
+def _sum_decimal_value(rows: list[object], field: str) -> Decimal:
+    total = Decimal("0")
+    for row in rows:
+        value = _decimal_or_none(getattr(row, field))
+        if value is not None:
+            total += value
+    return total
+
+
+def _krw_to_100m(value: Decimal) -> int:
+    return round(value / Decimal("100000000"))
+
+
+def _supply_flow_score(
+    *,
+    foreign_5: int,
+    institution_5: int,
+    foreign_20: int,
+    institution_20: int,
+    consecutive_foreign_buy_days: int,
+) -> int:
+    score = (
+        50
+        + min(max(foreign_5, 0) / 40, 16)
+        + min(max(institution_5, 0) / 40, 16)
+        + min(max(foreign_20, 0) / 120, 10)
+        + min(max(institution_20, 0) / 120, 10)
+        + min(consecutive_foreign_buy_days * 2, 8)
+    )
+    return max(0, min(100, round(score)))
+
+
+def _mixed_provider_label(providers: list[str]) -> str:
+    if not providers:
+        return ""
+    return " + ".join(providers)
 
 
 @app.get("/api/health")
@@ -987,10 +2041,13 @@ async def list_strategies() -> list[Strategy]:
 
 
 @app.get("/api/strategies/{strategy_code}/candidates")
-async def strategy_candidates(strategy_code: str) -> StrategyCandidateResponse:
+async def strategy_candidates(strategy_code: str, limit: int = 12) -> StrategyCandidateResponse:
+    safe_limit = max(1, min(limit, 100))
     strategy = _find_system_strategy(strategy_code)
     strategy_name = strategy.name if strategy else ""
+    user_strategy = None
     source = "sample-engine"
+    candidates = []
 
     if strategy is None and strategy_code.startswith("user-"):
         user_strategy = _load_active_user_strategy(strategy_code)
@@ -1001,14 +2058,57 @@ async def strategy_candidates(strategy_code: str) -> StrategyCandidateResponse:
     if strategy is None and not strategy_name:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
+    if strategy is not None:
+        daily_price_candidates = _load_strategy_candidate_result(strategy_code, limit=safe_limit)
+        if daily_price_candidates is not None:
+            source, candidates = daily_price_candidates
+
+    if user_strategy is not None:
+        daily_price_candidates = _load_strategy_candidate_result(strategy_code, limit=safe_limit)
+        if daily_price_candidates is not None:
+            source, candidates = daily_price_candidates
+
+    if not candidates:
+        candidates = build_strategy_candidates(strategy_code=strategy_code, limit=safe_limit)
+
+    if user_strategy is not None:
+        candidates, _unsupported_conditions = apply_user_strategy_formula(
+            candidates=candidates,
+            formula=user_strategy.formula,
+        )
+        source = f"{source}:filtered"
+
     return StrategyCandidateResponse(
         strategy_code=strategy_code,
         strategy_name=strategy_name,
         source=source,
-        candidates=[
-            StrategyCandidate(**candidate)
-            for candidate in build_strategy_candidates(strategy_code=strategy_code)
-        ],
+        candidates=[StrategyCandidate(**candidate) for candidate in candidates],
+    )
+
+
+@app.post("/api/screener/search")
+async def search_screener(request: ScreenerSearchRequest) -> ScreenerSearchResponse:
+    base_response = await strategy_candidates(request.strategy_code, limit=request.limit)
+    candidates = [candidate.model_dump() for candidate in base_response.candidates]
+    unsupported_conditions: list[str] = []
+    formula = request.formula.strip()
+
+    if formula and not formula.startswith("필터를 선택하면"):
+        candidates, unsupported_conditions = apply_user_strategy_formula(
+            candidates=candidates,
+            formula=formula,
+        )
+
+    source = base_response.source
+    if formula and not formula.startswith("필터를 선택하면"):
+        source = f"{source}:screener-filtered"
+
+    return ScreenerSearchResponse(
+        strategy_code=base_response.strategy_code,
+        strategy_name=base_response.strategy_name,
+        source=source,
+        unsupported_conditions=unsupported_conditions,
+        candidates=[StrategyCandidate(**candidate) for candidate in candidates[: request.limit]],
     )
 
 
@@ -1094,10 +2194,12 @@ async def backtest_preview() -> BacktestPreview:
 async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
     strategy = _find_system_strategy(request.strategy_code)
     strategy_name = strategy.name if strategy else ""
+    candidate_formula = None
 
     if strategy is None and request.strategy_code.startswith("user-"):
         user_strategy = _load_active_user_strategy(request.strategy_code)
         strategy_name = user_strategy.name if user_strategy else ""
+        candidate_formula = user_strategy.formula if user_strategy else None
 
     if not strategy_name:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
@@ -1108,6 +2210,7 @@ async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
         start_year=request.start_year,
         end_year=request.end_year,
         initial_amount=request.initial_amount,
+        candidate_formula=candidate_formula,
     ) or build_sample_backtest(
         strategy_code=request.strategy_code,
         strategy_name=strategy_name,
@@ -1206,6 +2309,8 @@ async def data_status() -> DataStatusResponse:
                 "markets": session.scalar(select(func.count()).select_from(Market)) or 0,
                 "instruments": session.scalar(select(func.count()).select_from(Instrument)) or 0,
                 "daily_prices": session.scalar(select(func.count()).select_from(DailyPrice)) or 0,
+                "quote_snapshots": session.scalar(select(func.count()).select_from(QuoteSnapshot)) or 0,
+                "supply_flow_dailies": session.scalar(select(func.count()).select_from(SupplyFlowDaily)) or 0,
                 "data_import_jobs": session.scalar(select(func.count()).select_from(DataImportJob)) or 0,
                 "user_strategies": session.scalar(select(func.count()).select_from(UserStrategy)) or 0,
                 "backtest_runs": session.scalar(select(func.count()).select_from(BacktestRun)) or 0,
@@ -1251,6 +2356,230 @@ async def krx_instruments(
         base_date=effective_base_date,
         count=len(instruments),
         instruments=[KrxInstrumentPreview(**item) for item in instruments],
+    )
+
+
+@app.get("/api/data/kis/token/status")
+async def kis_token_status() -> KisTokenStatusResponse:
+    return KisTokenStatusResponse(**get_kis_token_status())
+
+
+@app.get("/api/data/kis/current-price")
+async def kis_current_price(symbol: str) -> KisCurrentPriceResponse:
+    try:
+        price = fetch_kis_current_price(symbol=symbol)
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisCurrentPriceResponse(**price)
+
+
+@app.get("/api/data/kis/market-cap-ranking")
+async def kis_market_cap_ranking(
+    market: str = "ALL",
+    limit: int = 50,
+) -> KisMarketCapRankingResponse:
+    safe_limit = max(1, min(limit, 100))
+
+    try:
+        items = fetch_kis_market_cap_ranking(limit=safe_limit, market=market)
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisMarketCapRankingResponse(
+        provider="KIS Open API",
+        count=len(items),
+        items=[KisMarketCapRankingItem(**item) for item in items],
+    )
+
+
+@app.get("/api/data/kis/investor-trade-daily")
+async def kis_investor_trade_daily(
+    symbol: str,
+    base_date: date | None = None,
+    limit: int = 30,
+) -> KisInvestorTradeDailyResponse:
+    safe_limit = max(1, min(limit, 100))
+
+    try:
+        items = fetch_kis_investor_trade_daily(
+            symbol=symbol,
+            base_date=base_date,
+            limit=safe_limit,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return KisInvestorTradeDailyResponse(
+        provider="KIS Open API",
+        symbol=symbol.strip().upper(),
+        count=len(items),
+        items=[KisInvestorTradeDailyItem(**item) for item in items],
+    )
+
+
+@app.get("/api/data/kis/daily-prices")
+async def kis_daily_prices(
+    symbol: str,
+    start: date | None = None,
+    end: date | None = None,
+    is_adjusted: bool = False,
+    limit: int = 120,
+) -> KisDailyPricePreviewResponse:
+    safe_limit = max(1, min(limit, 500))
+
+    try:
+        prices = fetch_kis_daily_prices(
+            symbol=symbol,
+            start=start,
+            end=end,
+            is_adjusted=is_adjusted,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limited_prices = sorted(prices, key=lambda item: str(item["trade_date"]))[-safe_limit:]
+
+    return KisDailyPricePreviewResponse(
+        provider="KIS Open API",
+        symbol=symbol.strip().upper(),
+        count=len(limited_prices),
+        prices=[YahooDailyPrice(**item) for item in limited_prices],
+    )
+
+
+@app.post("/api/data/kis/daily-prices/import", status_code=201)
+async def import_kis_daily_prices(
+    request: KisDailyPriceImportRequest,
+) -> KisDailyPriceImportResponse:
+    try:
+        prices = fetch_kis_daily_prices(
+            symbol=request.symbol,
+            start=request.start,
+            end=request.end,
+            is_adjusted=request.is_adjusted,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not prices:
+        raise HTTPException(status_code=404, detail="KIS 일봉 데이터가 없습니다.")
+
+    try:
+        with SessionLocal() as session:
+            response = _save_kis_daily_prices(session=session, request=request, prices=prices)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"KIS 일봉 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return response
+
+
+@app.post("/api/data/kis/daily-prices/import/strategy", status_code=201)
+async def import_kis_daily_prices_for_strategy(
+    request: KisDailyPriceBatchImportRequest,
+) -> KisDailyPriceBatchImportResponse:
+    strategy = _find_system_strategy(request.strategy_code)
+    user_strategy = None
+
+    if strategy is None and request.strategy_code.startswith("user-"):
+        user_strategy = _load_active_user_strategy(request.strategy_code)
+
+    if strategy is None and user_strategy is None:
+        raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
+
+    return _import_kis_daily_prices_for_strategy_candidates(request)
+
+
+def _import_kis_daily_prices_for_strategy_candidates(
+    request: KisDailyPriceBatchImportRequest,
+) -> KisDailyPriceBatchImportResponse:
+    candidates = _seed_candidates_for_strategy(request.strategy_code, limit=request.max_symbols)
+    items: list[KisDailyPriceBatchImportItem] = []
+
+    for candidate in candidates:
+        import_request = KisDailyPriceImportRequest(
+            symbol=str(candidate["symbol"]),
+            name=str(candidate["name"]),
+            exchange=str(candidate["exchange"]),
+            start=request.start,
+            end=request.end,
+            is_adjusted=request.is_adjusted,
+        )
+
+        try:
+            prices = fetch_kis_daily_prices(
+                symbol=import_request.symbol,
+                start=import_request.start,
+                end=import_request.end,
+                is_adjusted=import_request.is_adjusted,
+            )
+
+            if not prices:
+                items.append(
+                    KisDailyPriceBatchImportItem(
+                        symbol=import_request.symbol,
+                        name=import_request.name or import_request.symbol,
+                        exchange=import_request.exchange,
+                        status="failed",
+                        saved_count=0,
+                        message="KIS 일봉 데이터 없음",
+                    )
+                )
+                continue
+
+            with SessionLocal() as session:
+                saved = _save_kis_daily_prices(
+                    session=session,
+                    request=import_request,
+                    prices=prices,
+                )
+
+            items.append(
+                KisDailyPriceBatchImportItem(
+                    symbol=saved.symbol,
+                    name=import_request.name or saved.symbol,
+                    exchange=saved.exchange,
+                    status="completed",
+                    saved_count=saved.saved_count,
+                    message=saved.message,
+                )
+            )
+        except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError) as exc:
+            items.append(
+                KisDailyPriceBatchImportItem(
+                    symbol=import_request.symbol,
+                    name=import_request.name or import_request.symbol,
+                    exchange=import_request.exchange,
+                    status="failed",
+                    saved_count=0,
+                    message=str(exc),
+                )
+            )
+
+    success_count = sum(1 for item in items if item.status == "completed")
+    saved_count = sum(item.saved_count for item in items)
+
+    return KisDailyPriceBatchImportResponse(
+        provider="KIS Open API",
+        strategy_code=request.strategy_code,
+        requested_symbols=len(candidates),
+        success_count=success_count,
+        failed_count=len(items) - success_count,
+        saved_count=saved_count,
+        items=items,
     )
 
 
@@ -1333,7 +2662,7 @@ async def import_yahoo_daily_prices_for_strategy(
 def _import_yahoo_daily_prices_for_strategy_candidates(
     request: YahooDailyPriceBatchImportRequest,
 ) -> YahooDailyPriceBatchImportResponse:
-    candidates = build_strategy_candidates(request.strategy_code, limit=request.max_symbols)
+    candidates = _seed_candidates_for_strategy(request.strategy_code, limit=request.max_symbols)
     items: list[YahooDailyPriceBatchImportItem] = []
 
     for candidate in candidates:
@@ -1497,6 +2826,223 @@ def _save_yahoo_daily_prices(
         saved_count=saved_count,
         message=job.message,
     )
+
+
+def _save_kis_daily_prices(
+    *,
+    session,
+    request: KisDailyPriceImportRequest,
+    prices: list[dict[str, object]],
+) -> KisDailyPriceImportResponse:
+    symbol = request.symbol.strip().upper()
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=symbol,
+        name=request.name or symbol,
+        exchange=request.exchange.strip().upper(),
+    )
+    job = DataImportJob(
+        provider="KIS Open API",
+        job_type="daily_prices",
+        status="running",
+        message=f"{symbol} KIS 일봉 수집 중",
+    )
+    session.add(job)
+    session.flush()
+
+    saved_count = 0
+    for row in prices:
+        trade_date = _row_trade_date(row)
+        close_price = _decimal_or_none(row.get("adjusted_close") if request.is_adjusted else row.get("close"))
+        raw_close_price = _decimal_or_none(row.get("close"))
+
+        if close_price is None or raw_close_price is None:
+            continue
+
+        open_price = _decimal_or_none(row.get("open")) or raw_close_price
+        high_price = _decimal_or_none(row.get("high")) or raw_close_price
+        low_price = _decimal_or_none(row.get("low")) or raw_close_price
+        volume = int(row.get("volume") or 0)
+        trading_value = _decimal_or_none(row.get("trading_value"))
+
+        existing = session.scalar(
+            select(DailyPrice).where(
+                DailyPrice.instrument_id == instrument.id,
+                DailyPrice.trade_date == trade_date,
+                DailyPrice.provider == "KIS Open API",
+                DailyPrice.is_adjusted == request.is_adjusted,
+            )
+        )
+
+        if existing is None:
+            session.add(
+                DailyPrice(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    open_price=open_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    close_price=close_price,
+                    volume=volume,
+                    trading_value=trading_value,
+                    provider="KIS Open API",
+                    is_adjusted=request.is_adjusted,
+                )
+            )
+        else:
+            existing.open_price = open_price
+            existing.high_price = high_price
+            existing.low_price = low_price
+            existing.close_price = close_price
+            existing.volume = volume
+            existing.trading_value = trading_value
+
+        saved_count += 1
+
+    job.status = "completed"
+    job.finished_at = now_kst_naive()
+    job.message = f"{symbol} KIS 일봉 {saved_count}건 저장"
+    session.commit()
+
+    return KisDailyPriceImportResponse(
+        provider="KIS Open API",
+        job_id=job.id,
+        symbol=symbol,
+        exchange=request.exchange.strip().upper(),
+        fetched_count=len(prices),
+        saved_count=saved_count,
+        message=job.message,
+    )
+
+
+def _save_kis_quote_snapshot(
+    *,
+    session,
+    quote: dict[str, object],
+    fallback_name: str,
+    fallback_exchange: str,
+) -> None:
+    symbol = str(quote.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise ValueError("KIS 현재가 응답에 종목코드가 없습니다.")
+
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=symbol,
+        name=str(quote.get("name") or fallback_name or symbol),
+        exchange=fallback_exchange.strip().upper() or "KOSPI",
+    )
+    snapshot_date = today_kst()
+    existing = session.scalar(
+        select(QuoteSnapshot).where(
+            QuoteSnapshot.instrument_id == instrument.id,
+            QuoteSnapshot.snapshot_date == snapshot_date,
+            QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
+        )
+    )
+    values = {
+        "price": _decimal_or_none(quote.get("price")),
+        "change_pct": _decimal_or_none(quote.get("change_rate")),
+        "volume": int(quote["volume"]) if quote.get("volume") is not None else None,
+        "trading_value": _decimal_or_none(quote.get("trading_value")),
+        "market_cap": _decimal_or_none(quote.get("market_cap")),
+        "per": _decimal_or_none(quote.get("per")),
+        "pbr": _decimal_or_none(quote.get("pbr")),
+        "eps": _decimal_or_none(quote.get("eps")),
+        "bps": _decimal_or_none(quote.get("bps")),
+        "turnover_pct": _decimal_or_none(quote.get("turnover_pct")),
+        "foreign_holding_rate": _decimal_or_none(quote.get("foreign_holding_rate")),
+        "foreign_net_buy_qty": int(quote["foreign_net_buy_qty"])
+        if quote.get("foreign_net_buy_qty") is not None
+        else None,
+        "program_net_buy_qty": int(quote["program_net_buy_qty"])
+        if quote.get("program_net_buy_qty") is not None
+        else None,
+        "high_52w": _decimal_or_none(quote.get("high_52w")),
+        "low_52w": _decimal_or_none(quote.get("low_52w")),
+    }
+
+    if existing is None:
+        session.add(
+            QuoteSnapshot(
+                instrument_id=instrument.id,
+                snapshot_date=snapshot_date,
+                provider=KIS_QUOTE_SNAPSHOT_PROVIDER,
+                **values,
+            )
+        )
+    else:
+        for key, value in values.items():
+            setattr(existing, key, value)
+
+    session.commit()
+
+
+def _save_kis_supply_flows(
+    *,
+    session,
+    symbol: str,
+    name: str,
+    exchange: str,
+    flows: list[dict[str, object]],
+) -> int:
+    normalized_symbol = symbol.strip().upper()
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=normalized_symbol,
+        name=name or normalized_symbol,
+        exchange=exchange.strip().upper() or "KOSPI",
+    )
+    saved_count = 0
+
+    for flow in flows:
+        trade_date = _row_trade_date(flow)
+        values = {
+            "foreign_net_buy_qty": int(flow["foreign_net_buy_qty"])
+            if flow.get("foreign_net_buy_qty") is not None
+            else None,
+            "institution_net_buy_qty": int(flow["institution_net_buy_qty"])
+            if flow.get("institution_net_buy_qty") is not None
+            else None,
+            "pension_net_buy_qty": int(flow["pension_net_buy_qty"])
+            if flow.get("pension_net_buy_qty") is not None
+            else None,
+            "foreign_net_buy_value": _decimal_or_none(flow.get("foreign_net_buy_value")),
+            "institution_net_buy_value": _decimal_or_none(flow.get("institution_net_buy_value")),
+            "pension_net_buy_value": _decimal_or_none(flow.get("pension_net_buy_value")),
+            "individual_net_buy_value": _decimal_or_none(flow.get("individual_net_buy_value")),
+        }
+        existing = session.scalar(
+            select(SupplyFlowDaily).where(
+                SupplyFlowDaily.instrument_id == instrument.id,
+                SupplyFlowDaily.trade_date == trade_date,
+                SupplyFlowDaily.provider == KIS_SUPPLY_FLOW_PROVIDER,
+            )
+        )
+
+        if existing is None:
+            session.add(
+                SupplyFlowDaily(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    provider=KIS_SUPPLY_FLOW_PROVIDER,
+                    **values,
+                )
+            )
+        else:
+            for key, value in values.items():
+                setattr(existing, key, value)
+
+        saved_count += 1
+
+    session.commit()
+    return saved_count
 
 
 def _get_or_create_kr_market(session) -> Market:

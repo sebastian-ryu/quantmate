@@ -61,6 +61,7 @@
   let selectedStrategy = 'relative-momentum-swing';
   let registeredStrategies: UserStrategy[] = [];
   let candidateRows: StrategyCandidate[] = [];
+  let candidateSource = '';
   let candidatesLoading = false;
   let candidatesError = '';
   let candidateRequestId = 0;
@@ -365,7 +366,7 @@
       dataRequirements: ['검색기 조건식', '검색 결과 후보군', '백테스트용 가격 데이터'],
       universeFilter: ['검색기에서 선택한 누적 조건'],
       signalRules: [strategy.formula],
-      rankingRules: ['검색 결과 순서와 점수는 실제 데이터 연결 후 계산'],
+      rankingRules: ['저장 조건식으로 후보를 필터링한 뒤 실제 일봉 기반 점수로 정렬'],
       riskControls: ['리스크 조건은 전략 편집 기능에서 확장 예정'],
       riskNotes: ['현재는 검색식 기반 전략 초안'],
       backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
@@ -407,11 +408,7 @@
 
     if (!option) {
       candidateRows = [];
-      return;
-    }
-
-    if (option.sourceKind === 'custom') {
-      candidateRows = buildLocalCandidateRows(option);
+      candidateSource = '';
       return;
     }
 
@@ -421,10 +418,12 @@
       const response = await fetchStrategyCandidates(option.code);
       if (candidateRequestId !== requestId) return;
       candidateRows = response.candidates.map(toStrategyCandidate);
+      candidateSource = response.source;
     } catch (err) {
       if (candidateRequestId !== requestId) return;
       candidatesError = err instanceof Error ? err.message : '전략 후보 종목을 불러오지 못했습니다.';
       candidateRows = [];
+      candidateSource = '';
     } finally {
       if (candidateRequestId === requestId) {
         candidatesLoading = false;
@@ -557,6 +556,18 @@
     return flags;
   }
 
+  function candidateSourceLabel(source: string) {
+    if (source.startsWith('daily-price-candidates:')) {
+      const provider = source.replace('daily-price-candidates:', '').replace(':filtered', '');
+      const suffix = source.includes(':filtered') ? ' · 저장 조건 적용' : '';
+      return `실제 일봉 기반 · ${provider}${suffix}`;
+    }
+    if (source.includes('filtered')) return '사용자 저장 조건 적용';
+    if (source.includes('user-strategy')) return '사용자 저장 전략 · 샘플 후보군';
+    if (source.includes('sample')) return '샘플 후보군';
+    return source || '출처 확인 중';
+  }
+
   function formatKrw(value: number) {
     return new Intl.NumberFormat('ko-KR', {
       style: 'currency',
@@ -685,7 +696,9 @@
           <strong>{candidateRows.length}개 종목</strong>
         </div>
         <span class="muted">
-          {candidatesLoading ? '후보 계산 중' : `전략 점수 평균 ${averageScore || '-'}`}
+          {candidatesLoading
+            ? '후보 계산 중'
+            : `${candidateSourceLabel(candidateSource)} · 전략 점수 평균 ${averageScore || '-'}`}
         </span>
       </div>
       {#if candidatesError}

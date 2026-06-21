@@ -62,6 +62,8 @@ class Instrument(TimestampMixin, Base):
 
     market: Mapped[Market] = relationship(back_populates="instruments")
     daily_prices: Mapped[list[DailyPrice]] = relationship(back_populates="instrument")
+    quote_snapshots: Mapped[list[QuoteSnapshot]] = relationship(back_populates="instrument")
+    supply_flow_dailies: Mapped[list[SupplyFlowDaily]] = relationship(back_populates="instrument")
 
 
 class DailyPrice(TimestampMixin, Base):
@@ -92,6 +94,72 @@ class DailyPrice(TimestampMixin, Base):
     is_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)
 
     instrument: Mapped[Instrument] = relationship(back_populates="daily_prices")
+
+
+class QuoteSnapshot(TimestampMixin, Base):
+    __tablename__ = "quote_snapshots"
+    __table_args__ = (
+        Index("ix_quote_snapshots_snapshot_date", "snapshot_date"),
+        Index("ix_quote_snapshots_instrument_date", "instrument_id", "snapshot_date"),
+        UniqueConstraint(
+            "instrument_id",
+            "snapshot_date",
+            "provider",
+            name="uq_quote_snapshots_identity",
+        ),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    snapshot_date: Mapped[date] = mapped_column(Date)
+    provider: Mapped[str] = mapped_column(String(40))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    change_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    volume: Mapped[int | None] = mapped_column(BigInteger)
+    trading_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    market_cap: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    per: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    pbr: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    eps: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    turnover_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    foreign_holding_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+    foreign_net_buy_qty: Mapped[int | None] = mapped_column(BigInteger)
+    program_net_buy_qty: Mapped[int | None] = mapped_column(BigInteger)
+    high_52w: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    low_52w: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+
+    instrument: Mapped[Instrument] = relationship(back_populates="quote_snapshots")
+
+
+class SupplyFlowDaily(TimestampMixin, Base):
+    __tablename__ = "supply_flow_dailies"
+    __table_args__ = (
+        Index("ix_supply_flow_dailies_trade_date", "trade_date"),
+        Index("ix_supply_flow_dailies_instrument_date", "instrument_id", "trade_date"),
+        UniqueConstraint(
+            "instrument_id",
+            "trade_date",
+            "provider",
+            name="uq_supply_flow_dailies_identity",
+        ),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    trade_date: Mapped[date] = mapped_column(Date)
+    provider: Mapped[str] = mapped_column(String(40))
+    foreign_net_buy_qty: Mapped[int | None] = mapped_column(BigInteger)
+    institution_net_buy_qty: Mapped[int | None] = mapped_column(BigInteger)
+    pension_net_buy_qty: Mapped[int | None] = mapped_column(BigInteger)
+    foreign_net_buy_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    institution_net_buy_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    pension_net_buy_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    individual_net_buy_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+
+    instrument: Mapped[Instrument] = relationship(back_populates="supply_flow_dailies")
 
 
 class DataImportJob(Base):

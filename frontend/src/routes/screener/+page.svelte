@@ -433,10 +433,10 @@
   let deletingStrategyCode = '';
   let activeFilterChips: FilterChip[] = [];
   let categoryCounts: Record<string, number> = {};
-  let rows: ScreenerRow[] = fallbackRows;
+  let rows: ScreenerRow[] = [];
   let screenerLoading = true;
   let screenerError = '';
-  let screenerSource = '샘플 후보군';
+  let screenerSource = '실제 데이터 확인 중';
   let screenerReady = false;
   let lastScreenerFormula = '';
   let screenerSearchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1564,7 +1564,9 @@
           {:else}
             <tr>
               <td colspan="15">
-                <div class="empty-state">현재 조건에 맞는 종목이 없습니다.</div>
+                <div class="empty-state">
+                  {screenerLoading ? '검색기 데이터 갱신 중입니다.' : '현재 조건에 맞는 종목이 없습니다.'}
+                </div>
               </td>
             </tr>
           {/each}

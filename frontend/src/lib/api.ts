@@ -151,7 +151,21 @@ export type StrategyCandidateResponse = {
   strategy_code: string;
   strategy_name: string;
   source: string;
+  data_freshness: DataFreshness;
   candidates: StrategyCandidateResult[];
+};
+
+export type DataFreshness = {
+  latest_daily_price_date: string | null;
+  expected_daily_price_date: string | null;
+  daily_price_status: 'current' | 'stale' | 'missing' | 'unknown' | string;
+  daily_price_providers: string[];
+  latest_quote_snapshot_date: string | null;
+  latest_supply_flow_date: string | null;
+  latest_risk_indicator_date: string | null;
+  latest_fundamental_period: string | null;
+  message: string;
+  warnings: string[];
 };
 
 export type ScreenerSearchRequest = {
@@ -164,6 +178,7 @@ export type ScreenerSearchResponse = {
   strategy_code: string;
   strategy_name: string;
   source: string;
+  data_freshness: DataFreshness;
   unsupported_conditions: string[];
   candidates: StrategyCandidateResult[];
 };
@@ -210,6 +225,8 @@ export type BacktestRunRequest = {
   end_year: number;
   initial_amount: number;
   benchmark_code: string;
+  rebalance_interval_months?: number;
+  holding_count?: number;
 };
 
 export type BacktestPerformanceMetric = {
@@ -862,7 +879,7 @@ export async function importYahooDailyPricesForStrategy(
 export async function fetchStrategyCandidates(
   strategyCode: string
 ): Promise<StrategyCandidateResponse> {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/api/strategies/${strategyCode}/candidates`, {}, 15000);
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/strategies/${strategyCode}/candidates?refresh=true`, {}, 30000);
 
   if (!response.ok) {
     throw new Error(`전략 후보 종목을 불러오지 못했습니다. (${response.status})`);

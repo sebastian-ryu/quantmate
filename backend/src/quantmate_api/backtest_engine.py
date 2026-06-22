@@ -116,8 +116,9 @@ def backtest_policy_for_strategy(
     strategy_code: str,
     *,
     initial_amount: int | None = None,
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    parameters = _backtest_parameters(strategy_code)
+    parameters = _backtest_parameters(strategy_code, overrides=overrides)
     holding_count = int(parameters["holding_count"])
     rebalance_interval_months = int(parameters["rebalance_interval_months"])
     initial_rebalance_amount = (
@@ -153,6 +154,7 @@ def build_daily_price_backtest(
     price_rows: list[dict[str, Any]],
     provider: str,
     candidate_formula: str | None = None,
+    backtest_parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     first_year = min(start_year, end_year)
     last_year = max(start_year, end_year)
@@ -163,7 +165,7 @@ def build_daily_price_backtest(
     if len(month_keys) < 2:
         return None
 
-    parameters = _backtest_parameters(strategy_code)
+    parameters = _backtest_parameters(strategy_code, overrides=backtest_parameters)
     holding_count = int(parameters["holding_count"])
     rebalance_interval_months = int(parameters["rebalance_interval_months"])
     trading_cost_pct = float(parameters["trading_cost_pct"])
@@ -311,6 +313,7 @@ def build_daily_price_backtest(
         "backtest_policy": backtest_policy_for_strategy(
             strategy_code,
             initial_amount=initial_amount,
+            overrides=backtest_parameters,
         ),
         "metrics": metrics,
         "annual_returns": annual_rows,
@@ -401,6 +404,7 @@ def build_sample_backtest(
     start_year: int,
     end_year: int,
     initial_amount: int,
+    backtest_parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic sample result behind the same contract as the real engine.
 
@@ -449,6 +453,7 @@ def build_sample_backtest(
         "backtest_policy": backtest_policy_for_strategy(
             strategy_code,
             initial_amount=initial_amount,
+            overrides=backtest_parameters,
         ),
         "metrics": metrics,
         "annual_returns": annual_rows,
@@ -457,11 +462,18 @@ def build_sample_backtest(
     }
 
 
-def _backtest_parameters(strategy_code: str) -> dict[str, float]:
+def _backtest_parameters(
+    strategy_code: str,
+    *,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, float]:
     parameters = {
         **DEFAULT_BACKTEST_PARAMETERS,
         **STRATEGY_BACKTEST_PARAMETERS.get(strategy_code, {}),
     }
+    for key, value in (overrides or {}).items():
+        if value is not None and key in parameters:
+            parameters[key] = value
     return {key: float(value) for key, value in parameters.items()}
 
 

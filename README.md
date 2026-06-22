@@ -2,7 +2,7 @@
 
 QuantMate는 주식 종목 선정, 전략 연구, 백테스트를 위한 로컬 우선 웹 애플리케이션입니다.
 
-첫 대상 시장은 한국 주식입니다. 나중에 미국 주식까지 확장할 수 있게 구조는 열어두되, 초기 구현은 한국 주식 데이터, 알고리즘 기반 종목 선정, 백테스트에 집중합니다. 데이터 수집과 향후 매매 연동은 한국투자증권 KIS Open API를 우선 사용하고, KRX Open API는 승인 후 백테스트용 공식 장기 데이터 소스로 추가합니다.
+첫 대상 시장은 한국 주식입니다. 나중에 미국 주식까지 확장할 수 있게 구조는 열어두되, 초기 구현은 한국 주식 데이터, 알고리즘 기반 종목 선정, 백테스트에 집중합니다. 데이터 수집과 향후 매매 연동은 한국투자증권 KIS Open API를 우선 사용하고, KRX Open API는 서비스별 승인 후 백테스트용 공식 장기 일봉 데이터 소스로 사용합니다.
 
 ## 현재 상태
 
@@ -19,6 +19,7 @@ QuantMate는 주식 종목 선정, 전략 연구, 백테스트를 위한 로컬 
 - [로컬 설정](docs/06-local-setup.md)
 - [스킬 운영 계획](docs/07-skills.md)
 - [전략 카탈로그](docs/08-strategy-catalog.md)
+- [Synology Docker 배포](docs/10-synology-deployment.md)
 
 에이전트 작업 지침은 [AGENTS.md](AGENTS.md)를 기준으로 합니다.
 
@@ -70,6 +71,19 @@ make db-up
 make db-migrate
 make db-seed
 ```
+
+## Docker 배포
+
+Synology DS224+ 같은 NAS에는 운영용 Compose 파일을 사용한다.
+
+```bash
+make prod-build
+make prod-up
+make prod-logs
+make prod-down
+```
+
+자세한 절차와 NAS 경로 설정은 [Synology Docker 배포](docs/10-synology-deployment.md)를 본다.
 
 ## 안전 기준
 

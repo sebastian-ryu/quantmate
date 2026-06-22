@@ -5,6 +5,7 @@
     deleteUserStrategy,
     fetchUserStrategies,
     searchScreener,
+    type DataFreshness,
     type StrategyCandidateResult,
     type UserStrategy
   } from '$lib/api';
@@ -494,6 +495,7 @@
   let screenerLoading = true;
   let screenerError = '';
   let screenerSource = '실제 데이터 확인 중';
+  let screenerFreshness: DataFreshness | null = null;
   let screenerUnsupportedConditions: string[] = [];
   let screenerReady = false;
   let lastScreenerFormula = '';
@@ -1077,10 +1079,12 @@
       });
       rows = response.candidates.map(toScreenerRow);
       screenerSource = candidateSourceLabel(response.source);
+      screenerFreshness = response.data_freshness;
       screenerUnsupportedConditions = response.unsupported_conditions;
     } catch (err) {
       rows = fallbackRows;
       screenerSource = '샘플 후보군';
+      screenerFreshness = null;
       screenerUnsupportedConditions = [];
       screenerError = err instanceof Error ? err.message : '검색기 데이터를 불러오지 못했습니다.';
     } finally {
@@ -1155,6 +1159,34 @@
     }
     if (source.includes('sample')) return '샘플 후보군';
     return source || '출처 확인 중';
+  }
+
+  function freshnessLabel(freshness: DataFreshness | null) {
+    if (!freshness) return '기준일 확인 중';
+    if (freshness.daily_price_status === 'stale') {
+      return freshness.latest_daily_price_date
+        ? `일봉 지연 ${freshness.latest_daily_price_date}`
+        : '일봉 지연';
+    }
+    if (freshness.daily_price_status === 'missing') return '일봉 없음';
+    return freshness.latest_daily_price_date
+      ? `일봉 ${freshness.latest_daily_price_date}`
+      : freshness.message;
+  }
+
+  function freshnessTooltip(freshness: DataFreshness | null) {
+    if (!freshness) return '데이터 기준일을 확인하고 있습니다.';
+    return [
+      freshness.message,
+      `기대 일봉 기준일: ${freshness.expected_daily_price_date ?? '확인 안 됨'}`,
+      `일봉 상태: ${freshness.daily_price_status}`,
+      `일봉 제공처: ${freshness.daily_price_providers.length ? freshness.daily_price_providers.join(', ') : '없음'}`,
+      `현재가: ${freshness.latest_quote_snapshot_date ?? '없음'}`,
+      `수급: ${freshness.latest_supply_flow_date ?? '없음'}`,
+      `리스크: ${freshness.latest_risk_indicator_date ?? '없음'}`,
+      `재무: ${freshness.latest_fundamental_period ?? '없음'}`,
+      ...(freshness.warnings ?? [])
+    ].join('\n');
   }
 
   async function loadRegisteredStrategies() {
@@ -1657,7 +1689,15 @@
         <span>검색 결과</span>
         <strong>{filteredRows.length}개 종목</strong>
       </div>
-      <span class="muted">{screenerLoading ? '검색기 데이터 갱신 중' : `${screenerSource} · KRW 기준`}</span>
+      <div class="result-meta">
+        <span class="muted">{screenerLoading ? '검색기 데이터 갱신 중' : `${screenerSource} · KRW 기준`}</span>
+        {#if !screenerLoading && screenerFreshness}
+          <span class="status-pill tooltip-anchor" aria-label={freshnessTooltip(screenerFreshness)}>
+            {freshnessLabel(screenerFreshness)}
+            <span class="tooltip">{freshnessTooltip(screenerFreshness)}</span>
+          </span>
+        {/if}
+      </div>
     </div>
     {#if screenerError}
       <div class="empty-state error">{screenerError}</div>

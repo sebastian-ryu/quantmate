@@ -21,7 +21,7 @@ from quantmate_api.backtest_engine import (
 )
 from quantmate_api.db import SessionLocal
 from quantmate_api.kis_realtime import kis_realtime_quote_service
-from quantmate_api.market_calendar import market_calendar_range
+from quantmate_api.market_calendar import market_calendar_range, previous_market_trading_day
 from quantmate_api.market_data import (
     MarketDataProviderUnavailable,
     default_krx_base_date,
@@ -35,6 +35,7 @@ from quantmate_api.market_data import (
     fetch_kis_financial_ratios,
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
+    fetch_krx_daily_prices,
     fetch_krx_instruments,
     fetch_open_dart_corp_codes,
     fetch_open_dart_financial_statements,
@@ -80,6 +81,7 @@ from quantmate_api.strategy_engine import (
     enrich_strategy_candidates_with_quote_snapshots,
     enrich_strategy_candidates_with_risk_indicators,
     enrich_strategy_candidates_with_supply_flows,
+    refresh_candidate_scores,
 )
 from quantmate_api.time_utils import now_kst_naive, today_kst
 
@@ -183,12 +185,26 @@ class StrategyCandidate(BaseModel):
     margin_debt_change_5d: float = 0
 
 
+class DataFreshnessResponse(BaseModel):
+    latest_daily_price_date: date | None = None
+    expected_daily_price_date: date | None = None
+    daily_price_status: str = "unknown"
+    daily_price_providers: list[str] = Field(default_factory=list)
+    latest_quote_snapshot_date: date | None = None
+    latest_supply_flow_date: date | None = None
+    latest_risk_indicator_date: date | None = None
+    latest_fundamental_period: str | None = None
+    message: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 class StrategyCandidateResponse(BaseModel):
     run_id: int | None = None
     run_at: datetime | None = None
     strategy_code: str
     strategy_name: str
     source: str
+    data_freshness: DataFreshnessResponse
     candidates: list[StrategyCandidate]
 
 
@@ -245,6 +261,7 @@ class ScreenerSearchResponse(BaseModel):
     strategy_code: str
     strategy_name: str
     source: str
+    data_freshness: DataFreshnessResponse
     unsupported_conditions: list[str]
     candidates: list[StrategyCandidate]
 
@@ -291,6 +308,8 @@ class BacktestRunRequest(BaseModel):
     end_year: int = Field(ge=1990, le=2100)
     initial_amount: int = Field(gt=0)
     benchmark_code: str = "kospi200"
+    rebalance_interval_months: int | None = Field(default=None, ge=1, le=12)
+    holding_count: int | None = Field(default=None, ge=1, le=50)
 
 
 class BacktestPerformanceMetric(BaseModel):
@@ -416,6 +435,25 @@ class KrxInstrumentPreviewResponse(BaseModel):
     instruments: list[KrxInstrumentPreview]
 
 
+class KrxInstrumentImportRequest(BaseModel):
+    market: str = Field(default="ALL", max_length=20)
+    limit: int = Field(default=3000, ge=1, le=3000)
+    base_date: str | None = Field(default=None, max_length=8)
+
+
+class KrxInstrumentImportResponse(BaseModel):
+    provider: str
+    job_id: int
+    market: str
+    base_date: str
+    fetched_count: int
+    created_count: int
+    updated_count: int
+    skipped_count: int
+    instrument_count: int
+    message: str
+
+
 class YahooDailyPrice(BaseModel):
     symbol: str
     trade_date: date
@@ -426,6 +464,14 @@ class YahooDailyPrice(BaseModel):
     adjusted_close: float | None
     volume: int | None
     provider: str
+
+
+class KrxDailyPricePreviewResponse(BaseModel):
+    provider: str
+    symbol: str
+    exchange: str
+    count: int
+    prices: list[YahooDailyPrice]
 
 
 class KisTokenStatusResponse(BaseModel):
@@ -999,6 +1045,50 @@ class YahooDailyPriceImportResponse(BaseModel):
     message: str
 
 
+class KrxDailyPriceImportRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    name: str | None = Field(default=None, max_length=200)
+    exchange: str = Field(default="KOSPI", max_length=40)
+    start: date | None = None
+    end: date | None = None
+
+
+class KrxDailyPriceImportResponse(BaseModel):
+    provider: str
+    job_id: int
+    symbol: str
+    exchange: str
+    fetched_count: int
+    saved_count: int
+    message: str
+
+
+class KrxDailyPriceBatchImportRequest(BaseModel):
+    strategy_code: str = "relative-momentum-swing"
+    start: date | None = None
+    end: date | None = None
+    max_symbols: int = Field(default=5, ge=1, le=10)
+
+
+class KrxDailyPriceBatchImportItem(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+    status: str
+    saved_count: int
+    message: str
+
+
+class KrxDailyPriceBatchImportResponse(BaseModel):
+    provider: str
+    strategy_code: str
+    requested_symbols: int
+    success_count: int
+    failed_count: int
+    saved_count: int
+    items: list[KrxDailyPriceBatchImportItem]
+
+
 class KisDailyPriceImportRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     name: str | None = Field(default=None, max_length=200)
@@ -1123,6 +1213,18 @@ def _max_daily_order_count() -> int:
 
 def _max_daily_loss_krw() -> int:
     return _env_int("MAX_DAILY_LOSS_KRW", 50_000)
+
+
+def _kis_current_quote_max_age_minutes() -> int:
+    return max(0, _env_int("KIS_CURRENT_QUOTE_MAX_AGE_MINUTES", 10))
+
+
+def _kis_current_quote_refresh_max_symbols() -> int:
+    return max(1, min(_env_int("KIS_CURRENT_QUOTE_REFRESH_MAX_SYMBOLS", 30), 100))
+
+
+def _strategy_daily_price_max_staleness_days() -> int:
+    return max(0, _env_int("STRATEGY_DAILY_PRICE_MAX_STALENESS_DAYS", 1))
 
 
 def _masked_kis_account_label() -> str:
@@ -1929,6 +2031,13 @@ def _attach_saved_benchmark_curve_if_missing(
     if isinstance(existing_curve, list) and existing_curve:
         return
 
+    backtest_policy = payload.get("backtest_policy")
+    policy_rebalance_interval = None
+    policy_holding_count = None
+    if isinstance(backtest_policy, dict):
+        policy_rebalance_interval = _optional_int(backtest_policy.get("rebalance_interval_months"))
+        policy_holding_count = _optional_int(backtest_policy.get("holding_count"))
+
     _attach_benchmark_curve(
         result=payload,
         request=BacktestRunRequest(
@@ -1937,8 +2046,17 @@ def _attach_saved_benchmark_curve_if_missing(
             end_year=run.end_year,
             initial_amount=int(payload.get("initial_amount") or run.initial_amount),
             benchmark_code=benchmark_code,
+            rebalance_interval_months=policy_rebalance_interval,
+            holding_count=policy_holding_count,
         ),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _attach_benchmark_curve(
@@ -1976,6 +2094,17 @@ def _attach_benchmark_curve(
         prices=prices,
         initial_amount=request.initial_amount,
     )
+
+
+def _backtest_parameter_overrides_from_request(
+    request: BacktestRunRequest,
+) -> dict[str, int]:
+    overrides: dict[str, int] = {}
+    if request.rebalance_interval_months is not None:
+        overrides["rebalance_interval_months"] = request.rebalance_interval_months
+    if request.holding_count is not None:
+        overrides["holding_count"] = request.holding_count
+    return overrides
 
 
 def _build_benchmark_curve(
@@ -2021,6 +2150,7 @@ def _build_daily_price_backtest_if_available(
     end_year: int,
     initial_amount: int,
     candidate_formula: str | None = None,
+    backtest_parameters: dict[str, int] | None = None,
 ) -> dict[str, object] | None:
     first_year = min(start_year, end_year)
     last_year = max(start_year, end_year)
@@ -2038,6 +2168,7 @@ def _build_daily_price_backtest_if_available(
         start_date=data_start_date,
         end_date=end_date,
         candidate_formula=candidate_formula,
+        backtest_parameters=backtest_parameters,
     )
     if existing_result is not None and _backtest_result_covers_requested_start(
         result=existing_result,
@@ -2061,6 +2192,7 @@ def _build_daily_price_backtest_if_available(
         start_date=data_start_date,
         end_date=end_date,
         candidate_formula=candidate_formula,
+        backtest_parameters=backtest_parameters,
     )
     if kis_result is not None and _backtest_result_covers_requested_start(
         result=kis_result,
@@ -2084,6 +2216,7 @@ def _build_daily_price_backtest_if_available(
         start_date=data_start_date,
         end_date=end_date,
         candidate_formula=candidate_formula,
+        backtest_parameters=backtest_parameters,
     )
     return refreshed_result or kis_result or existing_result
 
@@ -2112,6 +2245,7 @@ def _build_daily_price_backtest_from_db(
     start_date: date,
     end_date: date,
     candidate_formula: str | None = None,
+    backtest_parameters: dict[str, int] | None = None,
 ) -> tuple[dict[str, object] | None, str]:
     if not candidate_symbols:
         return None, ""
@@ -2139,6 +2273,7 @@ def _build_daily_price_backtest_from_db(
         price_rows=price_rows,
         provider=provider,
         candidate_formula=candidate_formula,
+        backtest_parameters=backtest_parameters,
     )
     return result, provider if result is not None else ""
 
@@ -2604,6 +2739,7 @@ def _build_daily_price_strategy_candidates_if_available(
     limit: int = 12,
 ) -> tuple[str, list[dict[str, object]]] | None:
     safe_limit = max(1, min(limit, 100))
+    scoring_pool_limit = min(max(safe_limit * 3, 30), 100)
     symbols = [str(item["symbol"]) for item in _seed_candidates_for_strategy(strategy_code, limit=max(safe_limit, 50))]
     if not symbols:
         return None
@@ -2629,7 +2765,7 @@ def _build_daily_price_strategy_candidates_if_available(
     candidates = build_strategy_candidates_from_daily_prices(
         strategy_code=strategy_code,
         price_rows=price_rows,
-        limit=safe_limit,
+        limit=scoring_pool_limit,
     )
     if not candidates:
         return None
@@ -2663,6 +2799,7 @@ def _build_daily_price_strategy_candidates_if_available(
         )
         provider = f"{provider} + KIS 리스크"
 
+    candidates = refresh_candidate_scores(strategy_code=strategy_code, candidates=candidates)
     candidates = apply_candidate_quality_filters(strategy_code, candidates, limit=safe_limit)
 
     return f"daily-price-candidates:{provider}", candidates
@@ -2704,12 +2841,12 @@ def _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 10,
-) -> None:
+) -> bool:
     if not is_kis_open_api_ready():
-        return
+        return False
 
     try:
-        _import_kis_daily_prices_for_strategy_candidates(
+        response = _import_kis_daily_prices_for_strategy_candidates(
             KisDailyPriceBatchImportRequest(
                 strategy_code=strategy_code,
                 start=_candidate_price_start_date(),
@@ -2718,8 +2855,9 @@ def _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
                 is_adjusted=False,
             )
         )
+        return response.success_count > 0
     except (HTTPException, SQLAlchemyError, ValueError, MarketDataProviderUnavailable):
-        return
+        return False
 
 
 def _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
@@ -2727,27 +2865,45 @@ def _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
     *,
     max_symbols: int = 12,
 ) -> None:
+    candidates = _seed_candidates_for_strategy(strategy_code, limit=max_symbols)
+    _auto_import_kis_quote_snapshots_for_candidates_if_needed(
+        candidates=candidates,
+        max_symbols=max_symbols,
+    )
+
+
+def _auto_import_kis_quote_snapshots_for_candidates_if_needed(
+    *,
+    candidates: list[dict[str, object]],
+    max_symbols: int = 12,
+) -> None:
     if not is_kis_open_api_ready():
         return
 
-    safe_limit = max(1, min(max_symbols, 30))
-    symbols = [str(item["symbol"]) for item in _seed_candidates_for_strategy(strategy_code, limit=safe_limit)]
+    safe_limit = max(1, min(max_symbols, _kis_current_quote_refresh_max_symbols()))
+    target_candidates = candidates[:safe_limit]
+    symbols = [str(item["symbol"]) for item in target_candidates]
     if not symbols:
         return
 
     try:
-        with SessionLocal() as session:
-            existing_symbols = set(
-                session.scalars(
-                    select(Instrument.symbol)
-                    .join(QuoteSnapshot, QuoteSnapshot.instrument_id == Instrument.id)
-                    .where(
-                        Instrument.symbol.in_(symbols),
-                        QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
-                        QuoteSnapshot.snapshot_date == today_kst(),
-                    )
-                ).all()
-            )
+        max_age_minutes = _kis_current_quote_max_age_minutes()
+        existing_symbols: set[str] = set()
+        if max_age_minutes > 0:
+            fresh_after = now_kst_naive() - timedelta(minutes=max_age_minutes)
+            with SessionLocal() as session:
+                existing_symbols = set(
+                    session.scalars(
+                        select(Instrument.symbol)
+                        .join(QuoteSnapshot, QuoteSnapshot.instrument_id == Instrument.id)
+                        .where(
+                            Instrument.symbol.in_(symbols),
+                            QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
+                            QuoteSnapshot.snapshot_date == today_kst(),
+                            QuoteSnapshot.created_at >= fresh_after,
+                        )
+                    ).all()
+                )
     except SQLAlchemyError:
         return
 
@@ -2755,7 +2911,7 @@ def _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
     if not missing_symbols:
         return
 
-    for candidate in _seed_candidates_for_strategy(strategy_code, limit=safe_limit):
+    for candidate in target_candidates:
         symbol = str(candidate["symbol"])
         if symbol not in missing_symbols:
             continue
@@ -3145,6 +3301,8 @@ def _should_try_kis_candidate_import(
     current_provider = _source_primary_daily_price_provider(source)
     if current_provider not in provider_priority:
         return True
+    if current_provider == "KIS Open API":
+        return True
     return provider_priority.index("KIS Open API") < provider_priority.index(current_provider)
 
 
@@ -3185,19 +3343,23 @@ def _load_strategy_candidate_result(
     if not auto_import:
         return daily_price_candidates
 
-    if _should_try_kis_candidate_import(daily_price_candidates) or _candidate_result_count(
-        daily_price_candidates
-    ) < target_count:
-        _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
+    daily_price_is_stale = _candidate_daily_price_data_is_stale(daily_price_candidates)
+    if (
+        _should_try_kis_candidate_import(daily_price_candidates)
+        or _candidate_result_count(daily_price_candidates) < target_count
+        or (is_kis_open_api_ready() and daily_price_is_stale)
+    ):
+        kis_imported = _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(10, target_count),
         )
-        refreshed_kis_candidates = _build_daily_price_strategy_candidates_if_available(
-            strategy_code,
-            limit=safe_limit,
-        )
-        if refreshed_kis_candidates is not None:
-            daily_price_candidates = refreshed_kis_candidates
+        if kis_imported:
+            refreshed_kis_candidates = _build_daily_price_strategy_candidates_if_available(
+                strategy_code,
+                limit=safe_limit,
+            )
+            if refreshed_kis_candidates is not None:
+                daily_price_candidates = refreshed_kis_candidates
 
     if _candidate_result_count(daily_price_candidates) < target_count:
         _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
@@ -3228,9 +3390,9 @@ def _load_strategy_candidate_result(
             strategy_code,
             max_symbols=min(target_count, 8),
         )
-        _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
-            strategy_code,
-            max_symbols=target_count,
+        _auto_import_kis_quote_snapshots_for_candidates_if_needed(
+            candidates=daily_price_candidates[1],
+            max_symbols=min(safe_limit, _kis_current_quote_refresh_max_symbols()),
         )
         refreshed_snapshot_candidates = _build_daily_price_strategy_candidates_if_available(
             strategy_code,
@@ -3240,6 +3402,17 @@ def _load_strategy_candidate_result(
             daily_price_candidates = refreshed_snapshot_candidates
 
     return daily_price_candidates
+
+
+def _candidate_daily_price_data_is_stale(
+    daily_price_candidates: tuple[str, list[dict[str, object]]] | None,
+) -> bool:
+    if daily_price_candidates is None:
+        return True
+
+    _source, candidates = daily_price_candidates
+    freshness = _build_data_freshness_for_candidates(candidates)
+    return freshness.daily_price_status in {"missing", "stale", "unknown"}
 
 
 def _candidate_price_start_date() -> date:
@@ -3394,13 +3567,19 @@ def _load_latest_quote_snapshots_by_symbol(
     if not symbols:
         return {}
 
+    conditions = [
+        Instrument.symbol.in_(symbols),
+        QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
+        QuoteSnapshot.snapshot_date == today_kst(),
+    ]
+    max_age_minutes = _kis_current_quote_max_age_minutes()
+    if max_age_minutes > 0:
+        conditions.append(QuoteSnapshot.created_at >= now_kst_naive() - timedelta(minutes=max_age_minutes))
+
     rows = session.execute(
         select(Instrument.symbol, QuoteSnapshot)
         .join(Instrument, Instrument.id == QuoteSnapshot.instrument_id)
-        .where(
-            Instrument.symbol.in_(symbols),
-            QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
-        )
+        .where(*conditions)
         .order_by(Instrument.symbol, QuoteSnapshot.snapshot_date.desc(), QuoteSnapshot.id.desc())
     ).all()
 
@@ -3806,6 +3985,7 @@ def _resolve_strategy_candidate_response(
         strategy_code=strategy_code,
         strategy_name=strategy_name,
         source=source,
+        data_freshness=_build_data_freshness_for_candidates(candidates),
         candidates=[StrategyCandidate(**candidate) for candidate in candidates],
     )
 
@@ -3919,12 +4099,198 @@ def _search_screener_response(request: ScreenerSearchRequest) -> ScreenerSearchR
     if formula and not formula.startswith("필터를 선택하면"):
         source = f"{source}:screener-filtered"
 
+    visible_candidates = candidates[: request.limit]
+    if visible_candidates and is_kis_open_api_ready():
+        _auto_import_kis_quote_snapshots_for_candidates_if_needed(
+            candidates=visible_candidates,
+            max_symbols=min(len(visible_candidates), _kis_current_quote_refresh_max_symbols()),
+        )
+        visible_candidates, enriched_with_quotes = _enrich_candidates_with_current_quote_snapshots(
+            visible_candidates
+        )
+        if enriched_with_quotes and "KIS 현재가" not in source:
+            source = f"{source} + KIS 현재가"
+
     return ScreenerSearchResponse(
         strategy_code=base_response.strategy_code,
         strategy_name=base_response.strategy_name,
         source=source,
+        data_freshness=_build_data_freshness_for_candidates(visible_candidates),
         unsupported_conditions=unsupported_conditions,
-        candidates=[StrategyCandidate(**candidate) for candidate in candidates[: request.limit]],
+        candidates=[StrategyCandidate(**candidate) for candidate in visible_candidates],
+    )
+
+
+def _enrich_candidates_with_current_quote_snapshots(
+    candidates: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], bool]:
+    symbols = [str(candidate.get("symbol") or "").strip().upper() for candidate in candidates]
+    symbols = [symbol for symbol in symbols if symbol]
+    if not symbols:
+        return candidates, False
+
+    try:
+        with SessionLocal() as session:
+            quote_snapshots = _load_latest_quote_snapshots_by_symbol(session=session, symbols=symbols)
+    except SQLAlchemyError:
+        return candidates, False
+
+    if not quote_snapshots:
+        return candidates, False
+
+    enriched = enrich_strategy_candidates_with_quote_snapshots(
+        candidates=candidates,
+        quote_snapshots=quote_snapshots,
+    )
+    order_by_symbol = {
+        str(candidate.get("symbol") or ""): index
+        for index, candidate in enumerate(candidates)
+    }
+    enriched.sort(key=lambda candidate: order_by_symbol.get(str(candidate.get("symbol") or ""), 0))
+    return enriched, True
+
+
+def _build_data_freshness_for_candidates(
+    candidates: list[dict[str, object]] | list[StrategyCandidate],
+) -> DataFreshnessResponse:
+    symbols: list[str] = []
+    for candidate in candidates:
+        symbol = (
+            candidate.symbol
+            if isinstance(candidate, StrategyCandidate)
+            else str(candidate.get("symbol") or "")
+        )
+        normalized_symbol = symbol.strip().upper()
+        if normalized_symbol and normalized_symbol not in symbols:
+            symbols.append(normalized_symbol)
+    return _build_data_freshness(symbols)
+
+
+def _build_data_freshness(symbols: list[str]) -> DataFreshnessResponse:
+    if not symbols:
+        return DataFreshnessResponse(
+            expected_daily_price_date=_expected_latest_daily_price_date(),
+            daily_price_status="missing",
+            message="후보 종목이 없어 데이터 기준일을 계산하지 않았습니다.",
+            warnings=["후보 종목이 없어 전략 계산용 데이터 신선도를 확인하지 않았습니다."],
+        )
+
+    try:
+        with SessionLocal() as session:
+            instrument_ids = session.scalars(
+                select(Instrument.id).where(Instrument.symbol.in_(symbols))
+            ).all()
+
+            if not instrument_ids:
+                return DataFreshnessResponse(
+                    expected_daily_price_date=_expected_latest_daily_price_date(),
+                    daily_price_status="missing",
+                    message="후보 종목의 저장 데이터가 아직 없습니다.",
+                    warnings=["후보 종목의 DB 일봉이 없어 샘플 또는 제한된 데이터가 사용될 수 있습니다."],
+                )
+
+            latest_daily_price_date = session.scalar(
+                select(func.max(DailyPrice.trade_date)).where(DailyPrice.instrument_id.in_(instrument_ids))
+            )
+            provider_rows = session.execute(
+                select(DailyPrice.provider)
+                .where(DailyPrice.instrument_id.in_(instrument_ids))
+                .group_by(DailyPrice.provider)
+                .order_by(DailyPrice.provider)
+            ).all()
+            latest_quote_snapshot_date = session.scalar(
+                select(func.max(QuoteSnapshot.snapshot_date)).where(
+                    QuoteSnapshot.instrument_id.in_(instrument_ids)
+                )
+            )
+            latest_supply_flow_date = session.scalar(
+                select(func.max(SupplyFlowDaily.trade_date)).where(
+                    SupplyFlowDaily.instrument_id.in_(instrument_ids)
+                )
+            )
+            latest_risk_indicator_date = session.scalar(
+                select(func.max(RiskIndicatorDaily.trade_date)).where(
+                    RiskIndicatorDaily.instrument_id.in_(instrument_ids)
+                )
+            )
+            latest_fundamental_period = session.scalar(
+                select(func.max(FundamentalRatio.fiscal_period)).where(
+                    FundamentalRatio.instrument_id.in_(instrument_ids)
+                )
+            )
+    except SQLAlchemyError:
+        return DataFreshnessResponse(
+            expected_daily_price_date=_expected_latest_daily_price_date(),
+            daily_price_status="unknown",
+            message="데이터 기준일을 계산하지 못했습니다.",
+            warnings=["DB 오류로 데이터 신선도 상태를 확인하지 못했습니다."],
+        )
+
+    daily_price_providers = [str(row.provider) for row in provider_rows]
+    expected_daily_price_date = _expected_latest_daily_price_date()
+    daily_price_status, warnings = _daily_price_freshness_status(
+        latest_daily_price_date=latest_daily_price_date,
+        expected_daily_price_date=expected_daily_price_date,
+    )
+    return DataFreshnessResponse(
+        latest_daily_price_date=latest_daily_price_date,
+        expected_daily_price_date=expected_daily_price_date,
+        daily_price_status=daily_price_status,
+        daily_price_providers=daily_price_providers,
+        latest_quote_snapshot_date=latest_quote_snapshot_date,
+        latest_supply_flow_date=latest_supply_flow_date,
+        latest_risk_indicator_date=latest_risk_indicator_date,
+        latest_fundamental_period=str(latest_fundamental_period) if latest_fundamental_period else None,
+        message=_data_freshness_message(
+            latest_daily_price_date=latest_daily_price_date,
+            expected_daily_price_date=expected_daily_price_date,
+            daily_price_status=daily_price_status,
+        ),
+        warnings=warnings,
+    )
+
+
+def _expected_latest_daily_price_date() -> date:
+    return previous_market_trading_day("KR", today_kst())
+
+
+def _daily_price_freshness_status(
+    *,
+    latest_daily_price_date: date | None,
+    expected_daily_price_date: date,
+) -> tuple[str, list[str]]:
+    if latest_daily_price_date is None:
+        return "missing", ["전략 계산에 사용할 저장 일봉이 없습니다."]
+
+    stale_days = (expected_daily_price_date - latest_daily_price_date).days
+    if stale_days <= _strategy_daily_price_max_staleness_days():
+        return "current", []
+
+    return (
+        "stale",
+        [
+            (
+                f"전략 계산용 일봉이 {latest_daily_price_date.isoformat()} 기준입니다. "
+                f"기대 기준일은 {expected_daily_price_date.isoformat()}입니다."
+            )
+        ],
+    )
+
+
+def _data_freshness_message(
+    *,
+    latest_daily_price_date: date | None,
+    expected_daily_price_date: date,
+    daily_price_status: str,
+) -> str:
+    if latest_daily_price_date is None:
+        return "저장된 일봉 기준일이 없습니다."
+    if daily_price_status == "current":
+        return f"{latest_daily_price_date.isoformat()} 거래일 기준입니다."
+
+    return (
+        f"{latest_daily_price_date.isoformat()} 기준으로 지연된 데이터입니다. "
+        f"기대 기준일은 {expected_daily_price_date.isoformat()}입니다."
     )
 
 
@@ -3997,6 +4363,11 @@ def _saved_strategy_selection_run_response(run: StrategySelectionRun) -> Strateg
     payload.setdefault("strategy_code", run.strategy_code)
     payload.setdefault("strategy_name", run.strategy_name)
     payload.setdefault("source", run.source)
+    saved_candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    payload.setdefault(
+        "data_freshness",
+        _build_data_freshness_for_candidates(saved_candidates).model_dump(mode="json"),
+    )
 
     return StrategyCandidateResponse(**payload)
 
@@ -4051,7 +4422,7 @@ async def list_strategies() -> list[Strategy]:
 async def strategy_candidates(
     strategy_code: str,
     limit: int = 12,
-    refresh: bool = False,
+    refresh: bool = True,
 ) -> StrategyCandidateResponse:
     response = await run_in_threadpool(
         _resolve_strategy_candidate_response,
@@ -4205,6 +4576,7 @@ async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
     if not strategy_name:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
+    backtest_parameters = _backtest_parameter_overrides_from_request(request)
     result = _build_daily_price_backtest_if_available(
         strategy_code=request.strategy_code,
         strategy_name=strategy_name,
@@ -4212,12 +4584,14 @@ async def run_backtest(request: BacktestRunRequest) -> BacktestRunResponse:
         end_year=request.end_year,
         initial_amount=request.initial_amount,
         candidate_formula=candidate_formula,
+        backtest_parameters=backtest_parameters,
     ) or build_sample_backtest(
         strategy_code=request.strategy_code,
         strategy_name=strategy_name,
         start_year=request.start_year,
         end_year=request.end_year,
         initial_amount=request.initial_amount,
+        backtest_parameters=backtest_parameters,
     )
     _attach_benchmark_curve(result=result, request=request)
     result["run_id"] = _save_backtest_run(result=result, request=request)
@@ -4640,6 +5014,37 @@ async def krx_instruments(
         count=len(instruments),
         instruments=[KrxInstrumentPreview(**item) for item in instruments],
     )
+
+
+@app.post("/api/data/krx/instruments/import", status_code=201)
+async def import_krx_instruments(
+    request: KrxInstrumentImportRequest,
+) -> KrxInstrumentImportResponse:
+    normalized_market = request.market.strip().upper() or "ALL"
+    effective_base_date = request.base_date or default_krx_base_date()
+
+    try:
+        instruments = await run_in_threadpool(
+            fetch_krx_instruments,
+            market=normalized_market,
+            limit=request.limit,
+            base_date=effective_base_date,
+        )
+        return await run_in_threadpool(
+            _save_krx_instruments,
+            market=normalized_market,
+            base_date=effective_base_date,
+            rows=instruments,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"KRX 종목 목록 저장 중 DB 오류가 발생했습니다: {exc.__class__.__name__}",
+        ) from exc
 
 
 @app.get("/api/data/kis/token/status")
@@ -5382,6 +5787,160 @@ async def kis_financial_ratios(
     )
 
 
+@app.get("/api/data/krx/daily-prices")
+async def krx_daily_prices(
+    symbol: str,
+    exchange: str = "KOSPI",
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = 120,
+) -> KrxDailyPricePreviewResponse:
+    safe_limit = max(1, min(limit, 500))
+
+    try:
+        prices = fetch_krx_daily_prices(symbol=symbol, exchange=exchange, start=start, end=end)
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    limited_prices = sorted(prices, key=lambda item: str(item["trade_date"]))[-safe_limit:]
+
+    return KrxDailyPricePreviewResponse(
+        provider="KRX Open API",
+        symbol=symbol.strip().upper(),
+        exchange=exchange.strip().upper(),
+        count=len(limited_prices),
+        prices=[YahooDailyPrice(**item) for item in limited_prices],
+    )
+
+
+@app.post("/api/data/krx/daily-prices/import", status_code=201)
+async def import_krx_daily_prices(
+    request: KrxDailyPriceImportRequest,
+) -> KrxDailyPriceImportResponse:
+    try:
+        prices = fetch_krx_daily_prices(
+            symbol=request.symbol,
+            exchange=request.exchange,
+            start=request.start,
+            end=request.end,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not prices:
+        raise HTTPException(status_code=404, detail="KRX 일봉 데이터가 없습니다.")
+
+    try:
+        with SessionLocal() as session:
+            response = _save_krx_daily_prices(session=session, request=request, prices=prices)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"KRX 일봉 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return response
+
+
+@app.post("/api/data/krx/daily-prices/import/strategy", status_code=201)
+async def import_krx_daily_prices_for_strategy(
+    request: KrxDailyPriceBatchImportRequest,
+) -> KrxDailyPriceBatchImportResponse:
+    strategy = _find_system_strategy(request.strategy_code)
+    user_strategy = None
+
+    if strategy is None and request.strategy_code.startswith("user-"):
+        user_strategy = _load_active_user_strategy(request.strategy_code)
+
+    if strategy is None and user_strategy is None:
+        raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
+
+    return _import_krx_daily_prices_for_strategy_candidates(request)
+
+
+def _import_krx_daily_prices_for_strategy_candidates(
+    request: KrxDailyPriceBatchImportRequest,
+) -> KrxDailyPriceBatchImportResponse:
+    candidates = _seed_candidates_for_strategy(request.strategy_code, limit=request.max_symbols)
+    items: list[KrxDailyPriceBatchImportItem] = []
+
+    for candidate in candidates:
+        import_request = KrxDailyPriceImportRequest(
+            symbol=str(candidate["symbol"]),
+            name=str(candidate["name"]),
+            exchange=str(candidate["exchange"]),
+            start=request.start,
+            end=request.end,
+        )
+
+        try:
+            prices = fetch_krx_daily_prices(
+                symbol=import_request.symbol,
+                exchange=import_request.exchange,
+                start=import_request.start,
+                end=import_request.end,
+            )
+
+            if not prices:
+                items.append(
+                    KrxDailyPriceBatchImportItem(
+                        symbol=import_request.symbol,
+                        name=import_request.name or import_request.symbol,
+                        exchange=import_request.exchange,
+                        status="failed",
+                        saved_count=0,
+                        message="KRX 일봉 데이터 없음",
+                    )
+                )
+                continue
+
+            with SessionLocal() as session:
+                saved = _save_krx_daily_prices(
+                    session=session,
+                    request=import_request,
+                    prices=prices,
+                )
+
+            items.append(
+                KrxDailyPriceBatchImportItem(
+                    symbol=saved.symbol,
+                    name=import_request.name or saved.symbol,
+                    exchange=saved.exchange,
+                    status="completed",
+                    saved_count=saved.saved_count,
+                    message=saved.message,
+                )
+            )
+        except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError) as exc:
+            items.append(
+                KrxDailyPriceBatchImportItem(
+                    symbol=import_request.symbol,
+                    name=import_request.name or import_request.symbol,
+                    exchange=import_request.exchange,
+                    status="failed",
+                    saved_count=0,
+                    message=str(exc),
+                )
+            )
+
+    success_count = sum(1 for item in items if item.status == "completed")
+    saved_count = sum(item.saved_count for item in items)
+
+    return KrxDailyPriceBatchImportResponse(
+        provider="KRX Open API",
+        strategy_code=request.strategy_code,
+        requested_symbols=len(candidates),
+        success_count=success_count,
+        failed_count=len(items) - success_count,
+        saved_count=saved_count,
+        items=items,
+    )
+
+
 @app.get("/api/data/kis/daily-prices")
 async def kis_daily_prices(
     symbol: str,
@@ -5792,6 +6351,100 @@ def _save_yahoo_daily_prices(
     )
 
 
+def _save_krx_instruments(
+    *,
+    market: str,
+    base_date: str,
+    rows: list[dict[str, object]],
+) -> KrxInstrumentImportResponse:
+    normalized_market = market.strip().upper() or "ALL"
+
+    with SessionLocal() as session:
+        kr_market = _get_or_create_kr_market(session)
+        job = DataImportJob(
+            provider="KRX Open API",
+            job_type="instruments",
+            status="running",
+            message=f"KRX {normalized_market} 종목 목록 저장 중",
+        )
+        session.add(job)
+        session.flush()
+
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            name = str(row.get("name") or "").strip()
+            exchange = str(row.get("exchange") or "").strip().upper()
+            asset_type = str(row.get("asset_type") or "stock").strip().lower() or "stock"
+
+            if not symbol or not name:
+                skipped_count += 1
+                continue
+
+            if not exchange:
+                exchange = normalized_market if normalized_market != "ALL" else "KRX"
+
+            existing = session.scalar(
+                select(Instrument).where(
+                    Instrument.market_id == kr_market.id,
+                    Instrument.symbol == symbol,
+                )
+            )
+
+            if existing is None:
+                instrument = _get_or_create_instrument(
+                    session=session,
+                    market=kr_market,
+                    symbol=symbol,
+                    name=name,
+                    exchange=exchange,
+                )
+                instrument.asset_type = asset_type
+                created_count += 1
+                continue
+
+            changed = (
+                existing.name != name
+                or existing.exchange != exchange
+                or existing.asset_type != asset_type
+                or not existing.is_active
+            )
+            existing.name = name
+            existing.exchange = exchange
+            existing.asset_type = asset_type
+            existing.is_active = True
+            if changed:
+                updated_count += 1
+
+        instrument_count = session.scalar(
+            select(func.count()).select_from(Instrument).where(Instrument.market_id == kr_market.id)
+        ) or 0
+
+        job.status = "completed"
+        job.finished_at = now_kst_naive()
+        job.message = (
+            f"KRX {base_date} 기준 {len(rows)}건 확인, 신규 {created_count}건, "
+            f"갱신 {updated_count}건, 스킵 {skipped_count}건"
+        )
+        session.commit()
+
+        return KrxInstrumentImportResponse(
+            provider="KRX Open API",
+            job_id=job.id,
+            market=normalized_market,
+            base_date=base_date,
+            fetched_count=len(rows),
+            created_count=created_count,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            instrument_count=instrument_count,
+            message=job.message,
+        )
+
+
 def _save_kis_instruments_from_market_cap_ranking(
     *,
     market: str,
@@ -5874,6 +6527,100 @@ def _save_kis_instruments_from_market_cap_ranking(
             instrument_count=instrument_count,
             message=job.message,
         )
+
+
+def _save_krx_daily_prices(
+    *,
+    session,
+    request: KrxDailyPriceImportRequest,
+    prices: list[dict[str, object]],
+) -> KrxDailyPriceImportResponse:
+    symbol = request.symbol.strip().upper()
+    market = _get_or_create_kr_market(session)
+    instrument = _get_or_create_instrument(
+        session=session,
+        market=market,
+        symbol=symbol,
+        name=request.name or symbol,
+        exchange=request.exchange.strip().upper(),
+    )
+    job = DataImportJob(
+        provider="KRX Open API",
+        job_type="daily_prices",
+        status="running",
+        message=f"{symbol} KRX 일봉 수집 중",
+    )
+    session.add(job)
+    session.flush()
+
+    saved_count = 0
+    for row in prices:
+        trade_date = _row_trade_date(row)
+        close_price = _decimal_or_none(row.get("close"))
+
+        if close_price is None:
+            continue
+
+        open_price = _decimal_or_none(row.get("open")) or close_price
+        high_price = _decimal_or_none(row.get("high")) or close_price
+        low_price = _decimal_or_none(row.get("low")) or close_price
+        open_price, high_price, low_price, close_price = _normalize_ohlcv_prices(
+            open_price=open_price,
+            high_price=high_price,
+            low_price=low_price,
+            close_price=close_price,
+        )
+        volume = int(row.get("volume") or 0)
+        trading_value = _decimal_or_none(row.get("trading_value"))
+
+        existing = session.scalar(
+            select(DailyPrice).where(
+                DailyPrice.instrument_id == instrument.id,
+                DailyPrice.trade_date == trade_date,
+                DailyPrice.provider == "KRX Open API",
+                DailyPrice.is_adjusted.is_(False),
+            )
+        )
+
+        if existing is None:
+            session.add(
+                DailyPrice(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    open_price=open_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    close_price=close_price,
+                    volume=volume,
+                    trading_value=trading_value,
+                    provider="KRX Open API",
+                    is_adjusted=False,
+                )
+            )
+        else:
+            existing.open_price = open_price
+            existing.high_price = high_price
+            existing.low_price = low_price
+            existing.close_price = close_price
+            existing.volume = volume
+            existing.trading_value = trading_value
+
+        saved_count += 1
+
+    job.status = "completed"
+    job.finished_at = now_kst_naive()
+    job.message = f"{symbol} KRX 일봉 {saved_count}건 저장"
+    session.commit()
+
+    return KrxDailyPriceImportResponse(
+        provider="KRX Open API",
+        job_id=job.id,
+        symbol=symbol,
+        exchange=request.exchange.strip().upper(),
+        fetched_count=len(prices),
+        saved_count=saved_count,
+        message=job.message,
+    )
 
 
 def _save_kis_daily_prices(
@@ -6032,6 +6779,7 @@ def _save_kis_quote_snapshot(
     else:
         for key, value in values.items():
             setattr(existing, key, value)
+        existing.created_at = now_kst_naive()
 
     session.commit()
 

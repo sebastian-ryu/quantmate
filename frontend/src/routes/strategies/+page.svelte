@@ -128,6 +128,8 @@
   let initialAmount = 10000000;
   let initialAmountInput = formatCurrencyInput(initialAmount);
   let benchmarkCode = 'kospi200';
+  let rebalanceIntervalMonths = '1';
+  let holdingCount = '10';
   let hasBacktestResult = false;
   let backtestRunAt = '';
   let backtestNotice = '';
@@ -152,6 +154,16 @@
     { code: 'nasdaq100', name: 'Nasdaq 100' },
     { code: 'none', name: '비교 안 함' }
   ];
+
+  const rebalanceIntervalOptions = [
+    { value: '1', label: '월 1회' },
+    { value: '2', label: '2개월마다' },
+    { value: '3', label: '분기 1회' },
+    { value: '6', label: '반기 1회' },
+    { value: '12', label: '연 1회' }
+  ];
+
+  const holdingCountOptions = ['5', '10', '15', '20', '30'];
 
   const chartMinWidth = 760;
   let chartContainerWidth = 0;
@@ -216,7 +228,8 @@
   }));
   $: initialAmountValue = initialAmount || 0;
   $: activeBacktestPolicy = backtestResult?.backtest_policy ?? executionContract?.backtest_policy ?? null;
-  $: backtestPolicyCards = buildBacktestPolicyCards(activeBacktestPolicy, initialAmountValue);
+  $: visibleBacktestPolicy = buildVisibleBacktestPolicy(activeBacktestPolicy);
+  $: backtestPolicyCards = buildBacktestPolicyCards(visibleBacktestPolicy, initialAmountValue);
   $: growthValues = [
     ...(growthRows.length ? growthRows.map((row) => row.portfolio) : [initialAmountValue]),
     ...benchmarkRows.map((row) => row.benchmark)
@@ -352,6 +365,7 @@
       const result = await fetchStrategyExecutionContract(strategyCode);
       if (executionContractRequestId !== requestId) return;
       executionContract = result;
+      if (!hasBacktestResult) applyBacktestPolicyInputs(result.backtest_policy);
     } catch (err) {
       if (executionContractRequestId !== requestId) return;
       executionContract = null;
@@ -379,7 +393,9 @@
         start_year: Number(startYear),
         end_year: Number(endYear),
         initial_amount: initialAmount,
-        benchmark_code: benchmarkCode
+        benchmark_code: benchmarkCode,
+        rebalance_interval_months: Number(rebalanceIntervalMonths),
+        holding_count: Number(holdingCount)
       });
 
       applyBacktestResult(result);
@@ -402,6 +418,7 @@
       void loadExecutionContract(selectedStrategy);
       setInitialAmount(result.initial_amount);
       benchmarkCode = result.benchmark_code || 'none';
+      applyBacktestPolicyInputs(result.backtest_policy);
       const [loadedStartYear, loadedEndYear] = result.period.split(' ~ ');
       if (loadedStartYear) startYear = loadedStartYear;
       if (loadedEndYear) endYear = loadedEndYear;
@@ -428,6 +445,7 @@
     hasBacktestResult = true;
     backtestRunAt = new Date(result.run_at).toLocaleString('ko-KR');
     backtestNotice = result.notice;
+    applyBacktestPolicyInputs(result.backtest_policy);
   }
 
   function clearBacktestResult() {
@@ -448,6 +466,37 @@
   function setInitialAmount(value: number) {
     initialAmount = Math.max(0, Math.floor(Number(value) || 0));
     initialAmountInput = formatCurrencyInput(initialAmount);
+  }
+
+  function handleBacktestParameterChange() {
+    clearBacktestResult();
+  }
+
+  function applyBacktestPolicyInputs(policy: BacktestPolicy | null | undefined) {
+    if (!policy) return;
+    rebalanceIntervalMonths = String(policy.rebalance_interval_months || 1);
+    holdingCount = String(policy.holding_count || 10);
+  }
+
+  function buildVisibleBacktestPolicy(policy: BacktestPolicy | null): BacktestPolicy | null {
+    if (!policy) return null;
+
+    const selectedInterval = Math.max(1, Number(rebalanceIntervalMonths) || policy.rebalance_interval_months);
+    const selectedHoldingCount = Math.max(1, Number(holdingCount) || policy.holding_count);
+
+    return {
+      ...policy,
+      rebalance_interval_months: selectedInterval,
+      rebalance_label: rebalanceLabel(selectedInterval),
+      holding_count: selectedHoldingCount,
+      initial_rebalance_amount:
+        selectedHoldingCount > 0 ? Math.floor(initialAmountValue / selectedHoldingCount) : null
+    };
+  }
+
+  function rebalanceLabel(intervalMonths: number) {
+    const option = rebalanceIntervalOptions.find((item) => Number(item.value) === intervalMonths);
+    return option?.label ?? `${intervalMonths}개월마다`;
   }
 
   function buildBacktestPolicyCards(
@@ -1106,7 +1155,7 @@
       <div class="panel-heading inline">
         <div>
           <span>백테스트 조건</span>
-          <strong>기간과 초기 투자금</strong>
+          <strong>기간, 투자금, 리밸런싱 기준</strong>
         </div>
         <button type="button" onclick={runBacktest} disabled={backtestRunning || !selectedOption}>
           {#if backtestRunning}
@@ -1152,6 +1201,22 @@
           <select bind:value={benchmarkCode} onchange={clearBacktestResult}>
             {#each benchmarkOptions as option}
               <option value={option.code}>{option.name}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          <span>리밸런싱 주기</span>
+          <select bind:value={rebalanceIntervalMonths} onchange={handleBacktestParameterChange}>
+            {#each rebalanceIntervalOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          <span>보유 종목수</span>
+          <select bind:value={holdingCount} onchange={handleBacktestParameterChange}>
+            {#each holdingCountOptions as option}
+              <option value={option}>상위 {option}개</option>
             {/each}
           </select>
         </label>

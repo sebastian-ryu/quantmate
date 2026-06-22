@@ -425,15 +425,21 @@ def enrich_strategy_candidates_with_quote_snapshots(
         next_candidate = {**candidate}
         snapshot_price = _float_or_none(snapshot.get("price"))
         candidate_price = _float_or_none(next_candidate.get("price"))
-        reference_price = candidate_price or snapshot_price
+        reference_price = snapshot_price or candidate_price
         market_cap_100m = _float_or_none(snapshot.get("market_cap"))
         per = _float_or_none(snapshot.get("per"))
         pbr = _float_or_none(snapshot.get("pbr"))
         turnover_pct = _float_or_none(snapshot.get("turnover_pct"))
+        change_pct = _float_or_none(snapshot.get("change_pct"))
+        volume = _float_or_none(snapshot.get("volume"))
         trading_value = _float_or_none(snapshot.get("trading_value"))
         foreign_net_buy_qty = _float_or_none(snapshot.get("foreign_net_buy_qty"))
         program_net_buy_qty = _float_or_none(snapshot.get("program_net_buy_qty"))
 
+        if snapshot_price and snapshot_price > 0:
+            next_candidate["price"] = round(snapshot_price)
+        if change_pct is not None:
+            next_candidate["change_pct"] = round(change_pct, 2)
         if market_cap_100m and market_cap_100m > 0:
             next_candidate["market_cap"] = round(market_cap_100m / 10_000, 2)
         if per and per > 0:
@@ -442,6 +448,8 @@ def enrich_strategy_candidates_with_quote_snapshots(
             next_candidate["pbr"] = round(pbr, 2)
         if turnover_pct is not None:
             next_candidate["turnover_pct"] = round(turnover_pct, 2)
+        if volume and volume > 0:
+            next_candidate["avg_volume_20d_10k"] = round(volume / 10_000, 2)
         if trading_value and trading_value > 0:
             next_candidate["trading_value_krw_100m"] = round(trading_value / 100_000_000, 2)
         if foreign_net_buy_qty and reference_price and reference_price > 0:
@@ -455,7 +463,7 @@ def enrich_strategy_candidates_with_quote_snapshots(
 
         next_candidate["rationale"] = [
             *next_candidate.get("rationale", []),
-            "KIS 현재가 스냅샷으로 시총/PER/PBR 보강",
+            "KIS 현재가 스냅샷으로 가격/등락/시총/PER/PBR 보강",
         ]
         if foreign_net_buy_qty:
             next_candidate["risk_flags"] = [
@@ -465,6 +473,47 @@ def enrich_strategy_candidates_with_quote_snapshots(
         enriched.append(next_candidate)
 
     return sorted(enriched, key=lambda item: item["strategy_score"], reverse=True)
+
+
+def refresh_candidate_scores(
+    *,
+    strategy_code: str,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    refreshed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        existing_rationale = candidate.get("rationale", [])
+        existing_risk_flags = candidate.get("risk_flags", [])
+        next_candidate = _with_candidate_defaults({**candidate})
+        next_candidate["strategy_score"] = calculate_strategy_score(strategy_code, next_candidate)
+        next_candidate["rationale"] = _merge_unique_texts(
+            build_rationale(strategy_code, next_candidate),
+            existing_rationale,
+        )
+        next_candidate["risk_flags"] = _merge_unique_texts(
+            build_risk_flags(next_candidate),
+            existing_risk_flags,
+        )
+        refreshed.append(next_candidate)
+
+    return sorted(refreshed, key=lambda item: item["strategy_score"], reverse=True)
+
+
+def _merge_unique_texts(primary: list[Any], secondary: Any) -> list[str]:
+    merged: list[str] = []
+    for item in [*primary, *_as_list(secondary)]:
+        text = str(item).strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
 
 
 def enrich_strategy_candidates_with_supply_flows(

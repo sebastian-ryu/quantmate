@@ -33,6 +33,12 @@ KRX_STOCK_BASE_INFO_ENDPOINTS = {
     "KOSDAQ": "/ksq_isu_base_info",
     "KONEX": "/knx_isu_base_info",
 }
+KRX_STOCK_DAILY_PRICE_ENDPOINTS = {
+    "KOSPI": "/stk_bydd_trd",
+    "KOSDAQ": "/ksq_bydd_trd",
+    "KONEX": "/knx_bydd_trd",
+}
+KRX_OPEN_API_DEFAULT_BASE_URL = "https://data-dbg.krx.co.kr/svc/apis/sto"
 YAHOO_KOREA_SUFFIX_BY_EXCHANGE = {
     "KOSPI": ".KS",
     "KOSDAQ": ".KQ",
@@ -752,7 +758,7 @@ def fetch_krx_instruments(
     base_date: str | None = None,
 ) -> list[dict[str, Any]]:
     normalized_market = normalize_krx_market(market)
-    safe_limit = max(1, min(limit, 500))
+    safe_limit = max(1, min(limit, 3000))
 
     if normalized_market == "ALL":
         rows: list[dict[str, Any]] = []
@@ -784,6 +790,48 @@ def fetch_yahoo_daily_prices(
         return fetch_yfinance_daily_prices(symbol=symbol, exchange=exchange, start=start, end=end)
     except ImportError:
         return fetch_yahoo_chart_daily_prices(symbol=symbol, exchange=exchange, start=start, end=end)
+
+
+def fetch_krx_daily_prices(
+    symbol: str,
+    exchange: str = "KOSPI",
+    start: date | None = None,
+    end: date | None = None,
+) -> list[dict[str, Any]]:
+    today = today_kst()
+    start_date = start or (today - timedelta(days=90))
+    end_date = end or today
+
+    if end_date < start_date:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+
+    max_days = max(1, env_int("KRX_DAILY_PRICE_MAX_DAYS", 370))
+    requested_days = (end_date - start_date).days + 1
+    if requested_days > max_days:
+        raise ValueError(f"KRX 일봉 조회 기간은 한 번에 최대 {max_days}일로 제한합니다.")
+
+    normalized_symbol = normalize_kis_symbol(symbol)
+    markets = krx_daily_price_markets_for_exchange(exchange)
+    rows: list[dict[str, Any]] = []
+
+    for trade_date in iter_weekdays(start_date, end_date):
+        for market in markets:
+            payload = call_krx_open_api(
+                endpoint=KRX_STOCK_DAILY_PRICE_ENDPOINTS[market],
+                params={"basDd": trade_date.strftime("%Y%m%d")},
+            )
+            output_rows = payload.get("OutBlock_1", [])
+            if not isinstance(output_rows, list):
+                raise MarketDataProviderUnavailable("KRX 일봉 응답 형식이 예상과 다릅니다.")
+
+            for row in output_rows:
+                if not isinstance(row, dict):
+                    continue
+                item = normalize_krx_daily_price(row=row, market=market)
+                if item is not None and item["symbol"] == normalized_symbol:
+                    rows.append(item)
+
+    return sorted(rows, key=lambda item: str(item["trade_date"]))
 
 
 def fetch_yfinance_daily_prices(
@@ -1583,24 +1631,58 @@ def call_krx_open_api(endpoint: str, params: dict[str, str]) -> dict[str, Any]:
             "KRX Open API 인증키가 필요합니다. KRX_OPEN_API_AUTH_KEY를 설정하세요."
         )
 
-    base_url = os.getenv("KRX_OPEN_API_BASE_URL", "https://openapi.krx.co.kr/svc/apis/sto")
-    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    last_status = 0
+    for base_url in krx_open_api_base_urls():
+        url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
 
-    response = request_provider_response(
-        provider_key="krx",
-        failure_label="KRX Open API 호출 실패",
-        method="GET",
-        url=url,
-        headers={"AUTH_KEY": auth_key, "Accept": "application/json"},
-        params=params,
-        timeout=20,
-    )
+        response = request_provider_response(
+            provider_key="krx",
+            failure_label="KRX Open API 호출 실패",
+            method="GET",
+            url=url,
+            headers={"AUTH_KEY": auth_key, "Accept": "application/json"},
+            params=params,
+            timeout=20,
+        )
 
-    if response.status_code != 200:
-        raise MarketDataProviderUnavailable(
+        last_status = response.status_code
+        if response.status_code == 404 and base_url != KRX_OPEN_API_DEFAULT_BASE_URL:
+            continue
+
+        if response.status_code != 200:
+            raise _krx_open_api_unavailable_from_response(response)
+
+        return _parse_krx_open_api_payload(response)
+
+    raise MarketDataProviderUnavailable(f"KRX Open API 권한 또는 호출 상태 확인 필요: HTTP {last_status}")
+
+
+def krx_open_api_base_urls() -> list[str]:
+    configured = os.getenv("KRX_OPEN_API_BASE_URL", KRX_OPEN_API_DEFAULT_BASE_URL).strip()
+    urls = [configured] if configured else []
+    if KRX_OPEN_API_DEFAULT_BASE_URL not in urls:
+        urls.append(KRX_OPEN_API_DEFAULT_BASE_URL)
+    return urls
+
+
+def _krx_open_api_unavailable_from_response(response: requests.Response) -> MarketDataProviderUnavailable:
+    try:
+        payload = response.json()
+    except ValueError:
+        return MarketDataProviderUnavailable(
             f"KRX Open API 권한 또는 호출 상태 확인 필요: HTTP {response.status_code}"
         )
 
+    if isinstance(payload, dict) and payload.get("respCode"):
+        message = payload.get("respMsg") or "KRX Open API 응답 오류"
+        return MarketDataProviderUnavailable(f"{message} ({payload['respCode']})")
+
+    return MarketDataProviderUnavailable(
+        f"KRX Open API 권한 또는 호출 상태 확인 필요: HTTP {response.status_code}"
+    )
+
+
+def _parse_krx_open_api_payload(response: requests.Response) -> dict[str, Any]:
     try:
         payload = response.json()
     except ValueError as exc:
@@ -1622,6 +1704,30 @@ def normalize_krx_instrument(row: dict[str, Any], market: str) -> dict[str, Any]
     }
 
 
+def normalize_krx_daily_price(row: dict[str, Any], market: str) -> dict[str, Any] | None:
+    trade_date = str(row.get("BAS_DD") or "").strip()
+    symbol = str(row.get("ISU_SRT_CD") or row.get("ISU_CD") or "").strip().upper()
+    close_price = float_from_krx(row.get("TDD_CLSPRC"))
+
+    if not trade_date or not symbol or close_price is None:
+        return None
+
+    return {
+        "symbol": symbol,
+        "name": str(row.get("ISU_ABBRV") or row.get("ISU_NM") or symbol).strip(),
+        "exchange": str(row.get("MKT_NM") or row.get("MKT_TP_NM") or market).strip().upper(),
+        "trade_date": f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}",
+        "open": float_from_krx(row.get("TDD_OPNPRC")) or close_price,
+        "high": float_from_krx(row.get("TDD_HGPRC")) or close_price,
+        "low": float_from_krx(row.get("TDD_LWPRC")) or close_price,
+        "close": close_price,
+        "adjusted_close": None,
+        "volume": int_from_krx(row.get("ACC_TRDVOL")) or 0,
+        "trading_value": int_from_krx(row.get("ACC_TRDVAL")),
+        "provider": "KRX Open API",
+    }
+
+
 def normalize_krx_market(market: str) -> str:
     normalized = market.strip().upper()
 
@@ -1630,6 +1736,25 @@ def normalize_krx_market(market: str) -> str:
         raise ValueError(f"지원하지 않는 KRX 시장입니다: {market}. 사용 가능: {supported}")
 
     return normalized
+
+
+def krx_daily_price_markets_for_exchange(exchange: str) -> list[str]:
+    normalized = exchange.strip().upper()
+    if normalized in {"", "KR", "KRX", "ALL"}:
+        return ["KOSPI", "KOSDAQ", "KONEX"]
+    if normalized in KRX_STOCK_DAILY_PRICE_ENDPOINTS:
+        return [normalized]
+
+    supported = ", ".join(["KRX", *sorted(KRX_STOCK_DAILY_PRICE_ENDPOINTS)])
+    raise ValueError(f"지원하지 않는 KRX 일봉 시장입니다: {exchange}. 사용 가능: {supported}")
+
+
+def iter_weekdays(start: date, end: date):
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            yield current
+        current += timedelta(days=1)
 
 
 def parse_open_dart_corp_code_zip(content: bytes) -> list[dict[str, str]]:
@@ -2093,6 +2218,28 @@ def float_from_kis(value: Any) -> float | None:
 
 def int_from_kis(value: Any) -> int | None:
     parsed = float_from_kis(value)
+    if parsed is None:
+        return None
+
+    return int(parsed)
+
+
+def float_from_krx(value: Any) -> float | None:
+    if value is None:
+        return None
+
+    cleaned = str(value).strip().replace(",", "")
+    if not cleaned or cleaned in {"-", "nan", "None"}:
+        return None
+
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def int_from_krx(value: Any) -> int | None:
+    parsed = float_from_krx(value)
     if parsed is None:
         return None
 

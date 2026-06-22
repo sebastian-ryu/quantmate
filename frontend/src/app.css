@@ -140,6 +140,25 @@ h1 {
   color: #9f2f2f;
 }
 
+.result-meta,
+.freshness-strip {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.freshness-strip {
+  margin-top: -4px;
+}
+
+.result-meta .status-pill,
+.freshness-strip .status-pill {
+  cursor: default;
+  white-space: nowrap;
+}
+
 .toolbar,
 .panel,
 .state-panel {

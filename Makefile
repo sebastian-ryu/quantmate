@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-stop dev-down dev-logs backend-dev frontend-dev db-up db-down db-logs db-migrate db-revision db-seed install-backend install-frontend
+.PHONY: dev dev-up dev-stop dev-down dev-logs backend-dev frontend-dev db-up db-down db-logs db-migrate db-revision db-seed install-backend install-frontend prod-build prod-up prod-down prod-logs
 
 install-backend:
 	python3 -m pip install -e "backend[dev]"
@@ -42,3 +42,15 @@ db-revision:
 
 db-seed:
 	python3 -m quantmate_api.seed
+
+prod-build:
+	docker compose -f docker-compose.prod.yml build
+
+prod-up:
+	docker compose -f docker-compose.prod.yml up -d
+
+prod-down:
+	docker compose -f docker-compose.prod.yml down
+
+prod-logs:
+	docker compose -f docker-compose.prod.yml logs -f

@@ -5,7 +5,6 @@ from datetime import date
 from typing import Any, Protocol
 
 from quantmate_api.market_data import (
-    MarketDataProviderUnavailable,
     fetch_kis_daily_credit_balance,
     fetch_kis_daily_prices,
     fetch_kis_daily_short_sale,
@@ -14,6 +13,7 @@ from quantmate_api.market_data import (
     fetch_kis_investor_trade_daily,
     fetch_kis_market_cap_ranking,
     fetch_krx_instruments,
+    fetch_krx_daily_prices,
     fetch_open_dart_financial_statements,
     fetch_yahoo_daily_prices,
     get_kis_ws_approval_status,
@@ -177,8 +177,7 @@ class KrxOpenApiProvider:
         start: date | None = None,
         end: date | None = None,
     ) -> list[dict[str, Any]]:
-        del symbol, exchange, start, end
-        raise MarketDataProviderUnavailable("KRX 일봉 공급원은 인증 승인 후 구현합니다.")
+        return fetch_krx_daily_prices(symbol=symbol, exchange=exchange, start=start, end=end)
 
 
 @dataclass(frozen=True)

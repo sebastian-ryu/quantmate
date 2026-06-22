@@ -13,6 +13,7 @@
     fetchStrategyCandidates,
     fetchStrategyExecutionContract,
     type Dashboard,
+    type DataFreshness,
     type KisBuyableCash,
     type KisBrokerAccountStatus,
     type KisBrokerBalance,
@@ -88,6 +89,7 @@
   let registeredStrategies: UserStrategy[] = [];
   let candidateRows: StrategyCandidate[] = [];
   let candidateSource = '';
+  let candidateFreshness: DataFreshness | null = null;
   let candidatesLoading = false;
   let candidatesError = '';
   let candidateRequestId = 0;
@@ -357,6 +359,7 @@
     if (!option) {
       candidateRows = [];
       candidateSource = '';
+      candidateFreshness = null;
       return;
     }
 
@@ -368,11 +371,13 @@
       candidateRows = response.candidates.map(toStrategyCandidate);
       if (!buyableSymbol && candidateRows[0]?.symbol) buyableSymbol = candidateRows[0].symbol;
       candidateSource = response.source;
+      candidateFreshness = response.data_freshness;
     } catch (err) {
       if (candidateRequestId !== requestId) return;
       candidatesError = err instanceof Error ? err.message : '전략 후보 종목을 불러오지 못했습니다.';
       candidateRows = [];
       candidateSource = '';
+      candidateFreshness = null;
     } finally {
       if (candidateRequestId === requestId) {
         candidatesLoading = false;
@@ -637,6 +642,34 @@
     if (source.includes('user-strategy')) return '사용자 저장 전략 · 샘플 후보군';
     if (source.includes('sample')) return '샘플 후보군';
     return source || '출처 확인 중';
+  }
+
+  function freshnessLabel(freshness: DataFreshness | null) {
+    if (!freshness) return '기준일 확인 중';
+    if (freshness.daily_price_status === 'stale') {
+      return freshness.latest_daily_price_date
+        ? `일봉 지연 ${freshness.latest_daily_price_date}`
+        : '일봉 지연';
+    }
+    if (freshness.daily_price_status === 'missing') return '일봉 없음';
+    return freshness.latest_daily_price_date
+      ? `일봉 ${freshness.latest_daily_price_date}`
+      : freshness.message;
+  }
+
+  function freshnessTooltip(freshness: DataFreshness | null) {
+    if (!freshness) return '데이터 기준일을 확인하고 있습니다.';
+    return [
+      freshness.message,
+      `기대 일봉 기준일: ${freshness.expected_daily_price_date ?? '확인 안 됨'}`,
+      `일봉 상태: ${freshness.daily_price_status}`,
+      `일봉 제공처: ${freshness.daily_price_providers.length ? freshness.daily_price_providers.join(', ') : '없음'}`,
+      `현재가: ${freshness.latest_quote_snapshot_date ?? '없음'}`,
+      `수급: ${freshness.latest_supply_flow_date ?? '없음'}`,
+      `리스크: ${freshness.latest_risk_indicator_date ?? '없음'}`,
+      `재무: ${freshness.latest_fundamental_period ?? '없음'}`,
+      ...(freshness.warnings ?? [])
+    ].join('\n');
   }
 
   function formatKrw(value: number) {
@@ -1408,6 +1441,14 @@
             : `${candidateSourceLabel(candidateSource)} · 전략 점수 평균 ${averageScore || '-'}`}
         </span>
       </div>
+      {#if !candidatesLoading && candidateFreshness}
+        <div class="freshness-strip">
+          <span class="status-pill tooltip-anchor" aria-label={freshnessTooltip(candidateFreshness)}>
+            {freshnessLabel(candidateFreshness)}
+            <span class="tooltip">{freshnessTooltip(candidateFreshness)}</span>
+          </span>
+        </div>
+      {/if}
       {#if candidatesError}
         <div class="empty-state">{candidatesError}</div>
       {:else if loading && !selectedOption}

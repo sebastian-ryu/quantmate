@@ -883,8 +883,13 @@ def test_strategy_candidates_use_daily_prices_when_available(monkeypatch) -> Non
 
     assert response.status_code == 200
     assert data["source"] == "daily-price-candidates:Yahoo Finance"
+    assert data["data_freshness"]["latest_daily_price_date"] == "2026-02-09"
+    assert data["data_freshness"]["expected_daily_price_date"] == main_module.today_kst().isoformat()
+    assert data["data_freshness"]["daily_price_status"] == "stale"
+    assert data["data_freshness"]["warnings"]
+    assert data["data_freshness"]["daily_price_providers"] == ["Yahoo Finance"]
     assert len(data["candidates"]) == 10
-    assert "수익률" in data["candidates"][0]["rationale"][0]
+    assert data["candidates"][0]["rationale"]
     assert [item["strategy_score"] for item in data["candidates"]] == sorted(
         [item["strategy_score"] for item in data["candidates"]],
         reverse=True,
@@ -997,7 +1002,7 @@ def test_strategy_candidates_enrich_with_kis_quote_snapshot(monkeypatch) -> None
         session.add(
             QuoteSnapshot(
                 instrument_id=instrument.id,
-                snapshot_date=date.today(),
+                snapshot_date=main_module.today_kst(),
                 provider=main_module.KIS_QUOTE_SNAPSHOT_PROVIDER,
                 price=78000,
                 change_pct=1.2,
@@ -1024,7 +1029,9 @@ def test_strategy_candidates_enrich_with_kis_quote_snapshot(monkeypatch) -> None
 
     assert response.status_code == 200
     assert "KIS 현재가" in data["source"]
-    assert samsung["price"] != 78000
+    assert samsung["price"] == 78000
+    assert samsung["change_pct"] == 1.2
+    assert samsung["trading_value_krw_100m"] == 780
     assert samsung["per"] == 12.5
     assert samsung["pbr"] == 1.1
     assert samsung["market_cap"] == 465
@@ -1258,7 +1265,7 @@ def test_strategy_candidates_enrich_with_kis_risk_indicators(monkeypatch) -> Non
     assert "신용잔고 단기 증가" in samsung["risk_flags"]
 
 
-def test_strategy_candidates_default_does_not_auto_import(monkeypatch) -> None:
+def test_strategy_candidates_can_skip_auto_import_when_refresh_false(monkeypatch) -> None:
     use_sqlite_session(monkeypatch)
     monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
     kis_daily_called = False
@@ -1275,13 +1282,56 @@ def test_strategy_candidates_default_does_not_auto_import(monkeypatch) -> None:
 
     monkeypatch.setattr(main_module, "fetch_kis_daily_prices", fake_fetch_kis_daily_prices)
 
-    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    response = client.get("/api/strategies/relative-momentum-swing/candidates?refresh=false")
     data = response.json()
 
     assert response.status_code == 200
     assert data["source"] == "sample-engine"
     assert len(data["candidates"]) >= 10
     assert kis_daily_called is False
+
+
+def test_strategy_candidates_default_auto_imports_latest_data(monkeypatch) -> None:
+    use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+    kis_daily_called = False
+
+    def fake_fetch_kis_daily_prices(
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        is_adjusted: bool = False,
+    ) -> list[dict[str, object]]:
+        nonlocal kis_daily_called
+        kis_daily_called = True
+        base_price = 10000 + int(symbol[-2:]) * 10
+        start_day = main_module.today_kst() - timedelta(days=39)
+        return [
+            {
+                "symbol": symbol,
+                "trade_date": (start_day + timedelta(days=index)).isoformat(),
+                "open": base_price + index,
+                "high": base_price + index + 10,
+                "low": base_price + index - 10,
+                "close": base_price + index * 2,
+                "adjusted_close": None,
+                "volume": 100000 + index,
+                "trading_value": (base_price + index * 2) * (100000 + index),
+                "provider": "KIS Open API",
+            }
+            for index in range(40)
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_kis_daily_prices", fake_fetch_kis_daily_prices)
+
+    response = client.get("/api/strategies/relative-momentum-swing/candidates")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["source"] == "daily-price-candidates:KIS Open API"
+    assert data["data_freshness"]["daily_price_status"] == "current"
+    assert len(data["candidates"]) >= 10
+    assert kis_daily_called is True
 
 
 def test_strategy_candidates_auto_import_partial_kis_risk_indicators(monkeypatch) -> None:
@@ -1349,10 +1399,11 @@ def test_strategy_candidates_auto_import_kis_before_yahoo(monkeypatch) -> None:
         is_adjusted: bool = False,
     ) -> list[dict[str, object]]:
         base_price = 10000 + int(symbol[-2:]) * 10
+        start_day = main_module.today_kst() - timedelta(days=39)
         return [
             {
                 "symbol": symbol,
-                "trade_date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(),
+                "trade_date": (start_day + timedelta(days=index)).isoformat(),
                 "open": base_price + index,
                 "high": base_price + index + 10,
                 "low": base_price + index - 10,
@@ -1389,6 +1440,7 @@ def test_strategy_candidates_auto_import_kis_before_yahoo(monkeypatch) -> None:
 
 def test_screener_search_applies_formula_on_server(monkeypatch) -> None:
     session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "_auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed", lambda *_args, **_kwargs: None)
     seed_daily_prices(
         session_factory,
         symbols=CANDIDATE_UNIVERSE[:10],
@@ -1408,8 +1460,58 @@ def test_screener_search_applies_formula_on_server(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert data["source"].endswith(":screener-filtered")
+    assert data["data_freshness"]["latest_daily_price_date"] == "2026-02-09"
+    assert data["data_freshness"]["daily_price_status"] == "stale"
+    assert data["data_freshness"]["daily_price_providers"] == ["Yahoo Finance"]
     assert data["unsupported_conditions"] == []
     assert [item["symbol"] for item in data["candidates"]] == ["005930"]
+
+
+def test_screener_search_refreshes_current_quote_for_visible_rows(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "_auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed", lambda *_args, **_kwargs: None)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:10],
+        start=date(2026, 1, 1),
+        days=40,
+    )
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+
+    def fake_fetch_kis_current_price(symbol: str) -> dict[str, object]:
+        return {
+            "provider": "KIS Open API",
+            "symbol": symbol,
+            "name": "삼성전자" if symbol == "005930" else symbol,
+            "price": 78000 if symbol == "005930" else 50000,
+            "change": 1200,
+            "change_rate": 1.56 if symbol == "005930" else 0.1,
+            "volume": 1234567,
+            "trading_value": 98765432100,
+            "open": 77000,
+            "high": 78500,
+            "low": 76500,
+            "market_state": "정상",
+        }
+
+    monkeypatch.setattr(main_module, "fetch_kis_current_price", fake_fetch_kis_current_price)
+
+    response = client.post(
+        "/api/screener/search",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "formula": 'keyword contains "삼성"',
+            "limit": 20,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert "KIS 현재가" in data["source"]
+    assert [item["symbol"] for item in data["candidates"]] == ["005930"]
+    assert data["candidates"][0]["price"] == 78000
+    assert data["candidates"][0]["change_pct"] == 1.56
+    assert data["candidates"][0]["trading_value_krw_100m"] == 987.65
 
 
 def test_user_strategy_formula_accepts_korean_numeric_conditions() -> None:
@@ -1505,6 +1607,39 @@ def test_backtest_run_uses_daily_price_dynamic_rebalance(monkeypatch) -> None:
     metrics = {item["metric"]: item["value"] for item in data["metrics"]}
     assert "거래 승률" in metrics
     assert metrics["거래 수"].endswith("건")
+
+
+def test_backtest_run_accepts_rebalance_and_holding_parameters(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:20],
+        start=date(2025, 1, 1),
+        days=470,
+    )
+    stub_empty_yahoo_prices(monkeypatch)
+
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2026,
+            "end_year": 2026,
+            "initial_amount": 10000000,
+            "rebalance_interval_months": 3,
+            "holding_count": 5,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["backtest_policy"]["rebalance_interval_months"] == 3
+    assert data["backtest_policy"]["rebalance_label"] == "분기 1회"
+    assert data["backtest_policy"]["holding_count"] == 5
+    assert data["backtest_policy"]["initial_rebalance_amount"] == 2000000
+    assert "상위 5개" in data["notice"]
+    assert "분기 1회" in data["notice"]
+    assert {row["holdings"] for row in data["rebalance_history"]} == {"5종목"}
 
 
 def test_daily_price_backtest_uses_strategy_parameters() -> None:
@@ -2512,6 +2647,55 @@ def test_krx_instruments_preview_returns_503_when_provider_needs_permission(monk
     assert response.json()["detail"] == "KRX 인증 정보 필요"
 
 
+def test_krx_instruments_import_saves_to_database(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_krx_instruments(
+        market: str,
+        limit: int,
+        base_date: str | None = None,
+    ) -> list[dict[str, str]]:
+        assert market == "KOSPI"
+        assert limit == 100
+        assert base_date == "20260619"
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "exchange": "KOSPI",
+                "asset_type": "stock",
+            },
+            {
+                "symbol": "000660",
+                "name": "SK하이닉스",
+                "exchange": "KOSPI",
+                "asset_type": "stock",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_krx_instruments", fake_fetch_krx_instruments)
+
+    response = client.post(
+        "/api/data/krx/instruments/import",
+        json={"market": "KOSPI", "limit": 100, "base_date": "20260619"},
+    )
+    data = response.json()
+
+    assert response.status_code == 201
+    assert data["provider"] == "KRX Open API"
+    assert data["base_date"] == "20260619"
+    assert data["fetched_count"] == 2
+    assert data["created_count"] == 2
+    assert data["instrument_count"] == 2
+
+    with session_factory() as session:
+        samsung = session.scalar(select(Instrument).where(Instrument.symbol == "005930"))
+
+    assert samsung is not None
+    assert samsung.name == "삼성전자"
+    assert samsung.exchange == "KOSPI"
+
+
 def test_kis_token_status_does_not_expose_token(monkeypatch) -> None:
     monkeypatch.setattr(
         main_module,
@@ -3163,6 +3347,123 @@ def test_kis_daily_prices_import_saves_daily_prices(monkeypatch) -> None:
         saved_count = session.scalar(select(func.count()).select_from(DailyPrice))
         provider_count = session.scalar(
             select(func.count()).select_from(DailyPrice).where(DailyPrice.provider == "KIS Open API")
+        )
+        assert saved_count == 2
+        assert provider_count == 2
+
+
+def test_krx_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:
+    def fake_fetch_krx_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert exchange == "KOSPI"
+        assert start == date(2026, 6, 1)
+        assert end == date(2026, 6, 5)
+        return [
+            {
+                "symbol": symbol,
+                "trade_date": "2026-06-03",
+                "open": 70000.0,
+                "high": 71000.0,
+                "low": 69500.0,
+                "close": 70500.0,
+                "adjusted_close": None,
+                "volume": 1000000,
+                "trading_value": 70500000000,
+                "provider": "KRX Open API",
+            },
+            {
+                "symbol": symbol,
+                "trade_date": "2026-06-04",
+                "open": 70600.0,
+                "high": 72000.0,
+                "low": 70400.0,
+                "close": 71800.0,
+                "adjusted_close": None,
+                "volume": 1200000,
+                "trading_value": 86160000000,
+                "provider": "KRX Open API",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_krx_daily_prices", fake_fetch_krx_daily_prices)
+
+    response = client.get(
+        "/api/data/krx/daily-prices"
+        "?symbol=005930&exchange=KOSPI&start=2026-06-01&end=2026-06-05&limit=1"
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["provider"] == "KRX Open API"
+    assert data["symbol"] == "005930"
+    assert data["exchange"] == "KOSPI"
+    assert data["count"] == 1
+    assert data["prices"][0]["trade_date"] == "2026-06-04"
+
+
+def test_krx_daily_prices_import_saves_daily_prices(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_krx_daily_prices(
+        symbol: str,
+        exchange: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": symbol,
+                "trade_date": "2026-06-01",
+                "open": 100.0,
+                "high": 105.0,
+                "low": 99.0,
+                "close": 102.0,
+                "adjusted_close": None,
+                "volume": 1000,
+                "trading_value": 102000,
+                "provider": "KRX Open API",
+            },
+            {
+                "symbol": symbol,
+                "trade_date": "2026-06-30",
+                "open": 102.0,
+                "high": 110.0,
+                "low": 101.0,
+                "close": 108.0,
+                "adjusted_close": None,
+                "volume": 1200,
+                "trading_value": 129600,
+                "provider": "KRX Open API",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_krx_daily_prices", fake_fetch_krx_daily_prices)
+
+    response = client.post(
+        "/api/data/krx/daily-prices/import",
+        json={
+            "symbol": "005930",
+            "name": "삼성전자",
+            "exchange": "KOSPI",
+            "start": "2026-06-01",
+            "end": "2026-06-30",
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 201
+    assert data["provider"] == "KRX Open API"
+    assert data["saved_count"] == 2
+
+    with session_factory() as session:
+        saved_count = session.scalar(select(func.count()).select_from(DailyPrice))
+        provider_count = session.scalar(
+            select(func.count()).select_from(DailyPrice).where(DailyPrice.provider == "KRX Open API")
         )
         assert saved_count == 2
         assert provider_count == 2

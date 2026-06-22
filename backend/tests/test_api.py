@@ -44,6 +44,8 @@ def disable_kis_auto_import_by_default(monkeypatch) -> None:
     monkeypatch.delenv("DAILY_LOSS_STOP_ENABLED", raising=False)
     monkeypatch.delenv("EMERGENCY_STOP_ENABLED", raising=False)
     monkeypatch.delenv("MANUAL_ORDER_CONFIRMATION_REQUIRED", raising=False)
+    main_module.STRATEGY_PERFORMANCE_CACHE["key"] = None
+    main_module.STRATEGY_PERFORMANCE_CACHE["strategies"] = None
 
     def unavailable_kis_current_price(symbol: str) -> dict[str, object]:
         raise main_module.MarketDataProviderUnavailable(f"KIS 현재가 테스트 차단: {symbol}")
@@ -832,6 +834,32 @@ def test_dashboard_contains_initial_mvp_data() -> None:
     assert data["backtest"]["metrics"]
     assert data["modes"][0]["code"] == "research"
     assert all(mode["code"] != "paper" for mode in data["modes"])
+    first_strategy = data["strategies"][0]
+    assert "performance" in first_strategy
+    assert first_strategy["performance"] is None
+    assert len(first_strategy["summary"]) > 80
+
+
+def test_dashboard_strategy_performance_uses_daily_price_backtest(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:20],
+        start=date(2016, 1, 1),
+        days=365 * 11,
+    )
+
+    response = client.get("/api/strategies/performance?refresh=true")
+    data = response.json()
+    strategy = next(item for item in data if item["strategy_code"] == "relative-momentum-swing")
+    performance = strategy["performance"]
+    windows = {item["years"]: item for item in performance["windows"]}
+
+    assert response.status_code == 200
+    assert performance["source"] == "daily-price-backtest:Yahoo Finance"
+    assert performance["data_as_of"] is not None
+    assert windows[1]["cagr"] is not None
+    assert windows[10]["final_amount"] is not None
 
 
 def test_strategy_candidates_returns_ranked_rows() -> None:

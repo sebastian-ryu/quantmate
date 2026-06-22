@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -99,6 +100,33 @@ class HealthResponse(BaseModel):
     live_trading_enabled: bool
 
 
+class StrategyPerformanceWindow(BaseModel):
+    label: str
+    years: int
+    start_year: int
+    end_year: int
+    cagr: float | None = None
+    total_return: float | None = None
+    final_amount: int | None = None
+    status: str
+    note: str
+
+
+class StrategyPerformanceSnapshot(BaseModel):
+    as_of: date
+    data_as_of: date | None = None
+    source: str
+    initial_amount: int
+    windows: list[StrategyPerformanceWindow]
+    update_policy: str
+    note: str
+
+
+class StrategyPerformanceResponse(BaseModel):
+    strategy_code: str
+    performance: StrategyPerformanceSnapshot
+
+
 class Strategy(BaseModel):
     code: str
     name: str
@@ -116,6 +144,7 @@ class Strategy(BaseModel):
     risk_notes: list[str]
     backtest_assumptions: list[str]
     references: list[str]
+    performance: StrategyPerformanceSnapshot | None = None
     default_enabled: bool = True
 
 
@@ -1632,7 +1661,10 @@ STRATEGIES = [
         category="모멘텀",
         style="1주~3개월 스윙",
         holding_period="1주~3개월",
-        summary="최근 강한 종목 중 시장 대비 수익률과 유동성이 함께 확인되는 후보를 찾습니다.",
+        summary=(
+            "최근 3~12개월 동안 시장보다 강하게 오른 종목 중 거래대금과 추세 지속성이 함께 확인되는 후보를 찾습니다. "
+            "강한 종목이 더 강해지는 구간에 유리하지만, 단기 급등 직후 추격 매수와 시장 급락장에서는 신호 신뢰도를 낮게 봅니다."
+        ),
         rebalance_rule="주 1회 또는 월 1회 점검, 상위 후보 10~20개 교체",
         data_requirements=["일봉 OHLCV", "수정주가", "거래대금", "시장 대비 수익률"],
         universe_filter=["KOSPI/KOSDAQ 보통주", "거래정지/관리종목 제외", "거래대금 하위 종목 제외"],
@@ -1657,7 +1689,10 @@ STRATEGIES = [
         category="가치/퀄리티",
         style="수개월~1년 이상",
         holding_period="수개월~1년 이상",
-        summary="싼 가격 지표와 나쁘지 않은 재무 품질을 함께 만족하는 중장기 후보를 찾습니다.",
+        summary=(
+            "PER/PBR 같은 가격 부담은 낮고 ROE, 현금흐름, 부채비율 같은 재무 품질은 일정 수준 이상인 종목을 찾습니다. "
+            "단기 가격 흐름보다 기업의 체력과 저평가 해소 가능성을 보는 전략이라 재무 데이터 지연과 가치 함정 가능성을 함께 점검합니다."
+        ),
         rebalance_rule="분기 또는 반기 점검, 재무 데이터 갱신 시 교체",
         data_requirements=["PER/PBR", "ROE", "부채비율", "영업이익률", "영업현금흐름"],
         universe_filter=["재무 데이터 결측 종목 제외", "적자 지속 종목 감점", "유동성 부족 종목 제외"],
@@ -1682,7 +1717,10 @@ STRATEGIES = [
         category="성장/돌파",
         style="수주~수개월",
         holding_period="수주~수개월",
-        summary="실적 성장과 가격 돌파가 동시에 나타나는 주도주 후보를 찾습니다.",
+        summary=(
+            "매출 또는 이익 성장이 뚜렷하고 가격이 신고가나 박스권 상단을 돌파하는 주도주 후보를 찾습니다. "
+            "성장 기대와 수급이 동시에 붙는 구간을 노리지만, 고평가 성장주의 변동성과 돌파 실패 후 되돌림 위험을 크게 반영합니다."
+        ),
         rebalance_rule="주 1회 점검, 돌파 실패나 이동평균 이탈 시 제외",
         data_requirements=["일봉 OHLCV", "52주 신고가", "거래량", "매출/이익 성장률", "섹터 강도"],
         universe_filter=["거래대금 하위 종목 제외", "극단적 고평가 종목 감점", "적자 성장주 별도 표시"],
@@ -1707,7 +1745,10 @@ STRATEGIES = [
         category="추세/돌파",
         style="단기~중기 트레이딩",
         holding_period="며칠~수개월",
-        summary="20일 또는 55일 고가 돌파처럼 명확한 가격 채널 돌파가 나오는 종목을 찾습니다.",
+        summary=(
+            "20일 또는 55일 고가 돌파처럼 명확한 가격 채널을 넘어서는 종목을 찾고 거래대금 증가로 신호를 확인합니다. "
+            "빠른 추세 전환을 잡는 데 초점을 두므로 박스권 속임수 돌파, 갭 급등, 손절 기준 부재를 가장 큰 위험으로 봅니다."
+        ),
         rebalance_rule="신호 발생 시 진입 후보 등록, 반대 신호나 손절 기준 도달 시 제외",
         data_requirements=["일봉 고가/저가/종가", "ATR", "거래대금", "이동평균"],
         universe_filter=["거래대금 부족 종목 제외", "변동성 과도 종목 감점", "갭 급등 종목 별도 표시"],
@@ -1732,7 +1773,10 @@ STRATEGIES = [
         category="수급",
         style="며칠~수주 스윙",
         holding_period="며칠~수주",
-        summary="외국인/기관 매수세가 누적되며 가격 추세가 개선되는 종목을 찾습니다.",
+        summary=(
+            "외국인, 기관, 프로그램 매수세가 며칠 이상 누적되고 가격 추세가 함께 개선되는 종목을 찾습니다. "
+            "큰 자금의 방향 전환을 따라가는 전략이지만, 수급 데이터 지연과 뉴스성 단기 매수세의 빠른 반전 가능성을 주의합니다."
+        ),
         rebalance_rule="주 1회 점검, 수급 반전 또는 가격 추세 훼손 시 제외",
         data_requirements=["투자자별 순매수", "일봉 OHLCV", "거래대금", "이동평균"],
         universe_filter=["수급 데이터 결측 종목 제외", "거래대금 부족 종목 제외", "단기 뉴스 급등 종목 감점"],
@@ -1757,7 +1801,10 @@ STRATEGIES = [
         category="방어형",
         style="중기~장기",
         holding_period="수개월~1년 이상",
-        summary="변동성이 낮고 재무 안정성이 있는 종목을 찾아 공격형 전략의 보완 축으로 사용합니다.",
+        summary=(
+            "최근 변동성과 낙폭이 낮고 재무 안정성이 확인되는 종목을 찾아 포트폴리오의 방어 축으로 사용합니다. "
+            "급등 수익보다 손실 폭을 낮추는 데 초점을 두며, 강한 상승장에서는 공격형 전략보다 뒤처질 수 있음을 전제로 합니다."
+        ),
         rebalance_rule="월 1회 점검, 변동성 급등이나 재무 훼손 시 제외",
         data_requirements=["일봉 수익률 변동성", "MDD", "ROE", "부채비율", "거래대금"],
         universe_filter=["거래대금 부족 종목 제외", "재무 안정성 낮은 종목 제외", "저변동성 과열 종목 감점"],
@@ -1859,6 +1906,12 @@ BENCHMARKS: dict[str, dict[str, str]] = {
     "sp500": {"name": "S&P 500", "symbol": "^GSPC", "market": "US"},
     "nasdaq100": {"name": "Nasdaq 100", "symbol": "^NDX", "market": "US"},
 }
+STRATEGY_PERFORMANCE_WINDOWS = (1, 3, 5, 10)
+STRATEGY_PERFORMANCE_INITIAL_AMOUNT = 10_000_000
+STRATEGY_PERFORMANCE_CACHE: dict[str, object] = {
+    "key": None,
+    "strategies": None,
+}
 KIS_QUOTE_SNAPSHOT_PROVIDER = "KIS Current Quote"
 KIS_SUPPLY_FLOW_PROVIDER = "KIS Investor Flow"
 KIS_SUPPLY_FLOW_COOLDOWN_UNTIL: datetime | None = None
@@ -1893,6 +1946,221 @@ def _daily_price_provider_priority() -> list[str]:
 
 def _find_system_strategy(strategy_code: str) -> Strategy | None:
     return next((item for item in STRATEGIES if item.code == strategy_code), None)
+
+
+def _strategies_with_performance() -> list[Strategy]:
+    cache_key = _strategy_performance_cache_key()
+    cached_key = STRATEGY_PERFORMANCE_CACHE.get("key")
+    cached_strategies = STRATEGY_PERFORMANCE_CACHE.get("strategies")
+    if cached_key == cache_key and isinstance(cached_strategies, list):
+        return cached_strategies
+
+    enriched = [
+        strategy.model_copy(
+            update={"performance": _build_strategy_performance_snapshot(strategy)}
+        )
+        for strategy in STRATEGIES
+    ]
+    STRATEGY_PERFORMANCE_CACHE["key"] = cache_key
+    STRATEGY_PERFORMANCE_CACHE["strategies"] = enriched
+    return enriched
+
+
+def _strategy_performance_cache_key() -> str:
+    try:
+        with SessionLocal() as session:
+            latest_date = session.scalar(select(func.max(DailyPrice.trade_date)))
+            row_count = session.scalar(select(func.count()).select_from(DailyPrice)) or 0
+    except SQLAlchemyError:
+        latest_date = None
+        row_count = 0
+
+    latest_label = latest_date.isoformat() if isinstance(latest_date, date) else "none"
+    return f"{today_kst().isoformat()}:{latest_label}:{row_count}"
+
+
+def _build_strategy_performance_snapshot(strategy: Strategy) -> StrategyPerformanceSnapshot:
+    end_year = today_kst().year
+    start_year = max(1990, end_year - max(STRATEGY_PERFORMANCE_WINDOWS) + 1)
+    data_start_date = date(max(start_year - 1, 1990), 1, 1)
+    end_date = _expected_latest_daily_price_date()
+    symbols = [item["symbol"] for item in _seed_candidates_for_strategy(strategy.code, limit=50)]
+    data_as_of = _latest_daily_price_date_for_symbols(symbols)
+    windows = _empty_performance_windows(
+        end_year=end_year,
+        note="저장된 일봉 데이터가 부족해 백테스트 수익률을 계산하지 못했습니다.",
+    )
+    source = "daily-price-backtest:unavailable"
+    note = "수익률은 예상치가 아니라 저장된 일봉 DB로 계산한 백테스트 결과입니다."
+
+    try:
+        result, provider = _build_daily_price_backtest_from_db(
+            strategy_code=strategy.code,
+            strategy_name=strategy.name,
+            start_year=start_year,
+            end_year=end_year,
+            initial_amount=STRATEGY_PERFORMANCE_INITIAL_AMOUNT,
+            candidate_symbols=symbols,
+            start_date=data_start_date,
+            end_date=end_date,
+        )
+    except SQLAlchemyError:
+        result = None
+        provider = ""
+
+    if result is not None:
+        source = f"daily-price-backtest:{provider}"
+        windows = _performance_windows_from_backtest_result(
+            result=result,
+            end_year=end_year,
+        )
+
+    return StrategyPerformanceSnapshot(
+        as_of=today_kst(),
+        data_as_of=data_as_of,
+        source=source,
+        initial_amount=STRATEGY_PERFORMANCE_INITIAL_AMOUNT,
+        windows=windows,
+        update_policy="DB 일봉의 최신 거래일 또는 저장 건수가 바뀌면 한국시간 기준으로 다시 계산",
+        note=note,
+    )
+
+
+def _empty_performance_windows(*, end_year: int, note: str) -> list[StrategyPerformanceWindow]:
+    return [
+        StrategyPerformanceWindow(
+            label=f"최근 {years}년",
+            years=years,
+            start_year=max(1990, end_year - years + 1),
+            end_year=end_year,
+            status="unavailable",
+            note=note,
+        )
+        for years in STRATEGY_PERFORMANCE_WINDOWS
+    ]
+
+
+def _performance_windows_from_backtest_result(
+    *,
+    result: dict[str, object],
+    end_year: int,
+) -> list[StrategyPerformanceWindow]:
+    curve = _performance_curve_points(result.get("equity_curve", []))
+    windows: list[StrategyPerformanceWindow] = []
+
+    for years in STRATEGY_PERFORMANCE_WINDOWS:
+        requested_start_year = max(1990, end_year - years + 1)
+        if len(curve) < 2:
+            windows.append(
+                StrategyPerformanceWindow(
+                    label=f"최근 {years}년",
+                    years=years,
+                    start_year=requested_start_year,
+                    end_year=end_year,
+                    status="unavailable",
+                    note="해당 기간에 계산 가능한 백테스트 월별 자산 곡선이 없습니다.",
+                )
+            )
+            continue
+
+        last_point = curve[-1]
+        target_months = years * 12
+        target_start_index = last_point["month_index"] - target_months
+        start_point = next(
+            (point for point in curve if point["month_index"] >= target_start_index),
+            curve[0],
+        )
+        elapsed_months = last_point["month_index"] - start_point["month_index"]
+        start_balance = start_point["portfolio"]
+        final_amount = last_point["portfolio"]
+
+        if elapsed_months <= 0 or start_balance <= 0:
+            windows.append(
+                StrategyPerformanceWindow(
+                    label=f"최근 {years}년",
+                    years=years,
+                    start_year=requested_start_year,
+                    end_year=end_year,
+                    status="unavailable",
+                    note="연간 수익률 행의 금액 정보를 해석하지 못했습니다.",
+                )
+            )
+            continue
+
+        total_return = (final_amount / start_balance - 1) * 100
+        cagr = (math.pow(final_amount / start_balance, 12 / elapsed_months) - 1) * 100
+        status = "complete" if elapsed_months >= target_months else "partial"
+        note = (
+            "요청한 기간 전체를 계산했습니다."
+            if status == "complete"
+            else f"{years}년 중 DB로 계산 가능한 {elapsed_months}개월만 반영했습니다."
+        )
+        windows.append(
+            StrategyPerformanceWindow(
+                label=f"최근 {years}년",
+                years=years,
+                start_year=start_point["year"],
+                end_year=last_point["year"],
+                cagr=round(cagr, 1),
+                total_return=round(total_return, 1),
+                final_amount=final_amount,
+                status=status,
+                note=note,
+            )
+        )
+
+    return windows
+
+
+def _performance_curve_points(value: object) -> list[dict[str, int]]:
+    if not isinstance(value, list):
+        return []
+
+    points: list[dict[str, int]] = []
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        month_index = _performance_month_index(row.get("label"))
+        portfolio = _optional_int(row.get("portfolio"))
+        if month_index is None or portfolio is None or portfolio <= 0:
+            continue
+        points.append(
+            {
+                "month_index": month_index,
+                "year": month_index // 12,
+                "portfolio": portfolio,
+            }
+        )
+
+    return sorted(points, key=lambda item: item["month_index"])
+
+
+def _performance_month_index(value: object) -> int | None:
+    if not isinstance(value, str) or len(value) < 7:
+        return None
+    try:
+        year_text, month_text = value.replace("-", ".").split(".")[:2]
+        year = int(year_text)
+        month = int(month_text)
+    except ValueError:
+        return None
+    if month < 1 or month > 12:
+        return None
+    return year * 12 + month - 1
+
+
+def _latest_daily_price_date_for_symbols(symbols: list[str]) -> date | None:
+    if not symbols:
+        return None
+    try:
+        with SessionLocal() as session:
+            return session.scalar(
+                select(func.max(DailyPrice.trade_date))
+                .join(Instrument, DailyPrice.instrument_id == Instrument.id)
+                .where(Instrument.symbol.in_(symbols))
+            )
+    except SQLAlchemyError:
+        return None
 
 
 def _user_strategy_response(strategy: UserStrategy) -> UserStrategyResponse:
@@ -4638,7 +4906,15 @@ async def get_backtest_run(run_id: int) -> BacktestRunResponse:
 
 
 @app.get("/api/dashboard")
-async def dashboard() -> DashboardResponse:
+async def dashboard(
+    include_performance: bool = False,
+    refresh_performance: bool = False,
+) -> DashboardResponse:
+    if refresh_performance:
+        STRATEGY_PERFORMANCE_CACHE["key"] = None
+        STRATEGY_PERFORMANCE_CACHE["strategies"] = None
+    strategies = _strategies_with_performance() if include_performance else STRATEGIES
+
     return DashboardResponse(
         as_of=today_kst(),
         modes=[
@@ -4646,10 +4922,23 @@ async def dashboard() -> DashboardResponse:
             {"code": AppMode.LIVE_READONLY.value, "label": "실계좌 읽기", "enabled": False},
             {"code": AppMode.LIVE_TRADING.value, "label": "실거래", "enabled": _env_bool("LIVE_TRADING_ENABLED")},
         ],
-        strategies=STRATEGIES,
+        strategies=strategies,
         recommendations=RECOMMENDATIONS,
         backtest=BACKTEST,
     )
+
+
+@app.get("/api/strategies/performance")
+async def strategy_performance(refresh: bool = False) -> list[StrategyPerformanceResponse]:
+    if refresh:
+        STRATEGY_PERFORMANCE_CACHE["key"] = None
+        STRATEGY_PERFORMANCE_CACHE["strategies"] = None
+
+    return [
+        StrategyPerformanceResponse(strategy_code=strategy.code, performance=strategy.performance)
+        for strategy in _strategies_with_performance()
+        if strategy.performance is not None
+    ]
 
 
 @app.get("/api/data/status")

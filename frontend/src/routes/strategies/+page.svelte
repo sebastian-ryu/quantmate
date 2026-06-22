@@ -5,6 +5,7 @@
     fetchBacktestRun,
     fetchBacktestRuns,
     fetchStrategyExecutionContract,
+    fetchStrategyPerformance,
     fetchUserStrategies,
     runBacktest as requestBacktest,
     type BacktestBenchmarkPoint,
@@ -14,6 +15,7 @@
     type Dashboard,
     type Strategy,
     type StrategyExecutionContract,
+    type StrategyPerformanceSnapshot,
     type UserStrategy
   } from '$lib/api';
   import {
@@ -41,6 +43,7 @@
     riskNotes: string[];
     backtestAssumptions: string[];
     references: string[];
+    performance: StrategyPerformanceSnapshot | null;
     formula?: string;
     resultCount?: number;
   };
@@ -112,6 +115,7 @@
   let dashboard: Dashboard | null = null;
   let selectedStrategy = 'relative-momentum-swing';
   let registeredStrategies: UserStrategy[] = [];
+  let strategyPerformanceByCode: Record<string, StrategyPerformanceSnapshot> = {};
   let loading = true;
   let error = '';
 
@@ -200,6 +204,7 @@
       loading = false;
       void loadRecentBacktests();
       void loadExecutionContract(selectedStrategy);
+      void loadStrategyPerformance();
     } catch (err) {
       error = err instanceof Error ? err.message : '전략과 백테스트 데이터를 불러오지 못했습니다.';
       loading = false;
@@ -208,7 +213,7 @@
 
   $: baseStrategies = dashboard?.strategies ?? [];
   $: strategyOptions = [
-    ...baseStrategies.map(toBaseStrategyOption),
+    ...baseStrategies.map((strategy) => toBaseStrategyOption(strategy, strategyPerformanceByCode)),
     ...registeredStrategies.map(toDraftStrategyOption)
   ];
   $: systemStrategyOptions = strategyOptions.filter((item) => item.sourceKind === 'system');
@@ -262,7 +267,19 @@
     selectedSavedRunId = String(recentBacktests[0].id);
   }
 
-  function toBaseStrategyOption(strategy: Strategy): StrategyOption {
+  async function loadStrategyPerformance() {
+    try {
+      const rows = await fetchStrategyPerformance();
+      strategyPerformanceByCode = Object.fromEntries(rows.map((row) => [row.strategy_code, row.performance]));
+    } catch {
+      strategyPerformanceByCode = {};
+    }
+  }
+
+  function toBaseStrategyOption(
+    strategy: Strategy,
+    performanceByCode: Record<string, StrategyPerformanceSnapshot>
+  ): StrategyOption {
     return {
       code: strategy.code,
       name: strategy.name,
@@ -280,7 +297,8 @@
       riskControls: strategy.risk_controls ?? [],
       riskNotes: strategy.risk_notes ?? [],
       backtestAssumptions: strategy.backtest_assumptions ?? [],
-      references: strategy.references ?? []
+      references: strategy.references ?? [],
+      performance: performanceByCode[strategy.code] ?? strategy.performance ?? null
     };
   }
 
@@ -303,6 +321,7 @@
       riskNotes: ['현재는 검색식 기반 전략 초안'],
       backtestAssumptions: ['검색식 결과를 후보군으로 사용', '리밸런싱 주기는 백테스트 조건에서 지정 예정'],
       references: [],
+      performance: null,
       formula: strategy.formula,
       resultCount: strategy.result_count
     };
@@ -979,6 +998,22 @@
     return `${value.toFixed(1)}%`;
   }
 
+  function formatPerformancePercent(value: number | null) {
+    if (value === null || value === undefined) return '-';
+    return `${value > 0 ? '+' : ''}${value.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}%`;
+  }
+
+  function performanceTooltip(performance: StrategyPerformanceSnapshot) {
+    return [
+      performance.note,
+      `계산 기준일: ${performance.as_of}`,
+      `일봉 기준일: ${performance.data_as_of ?? '확인 안 됨'}`,
+      `초기금액: ${formatKrw(performance.initial_amount)}`,
+      `출처: ${performance.source}`,
+      performance.update_policy
+    ].join('\n');
+  }
+
   function formatPolicyPercent(value: number) {
     return `${value.toFixed(2)}%`;
   }
@@ -1060,6 +1095,29 @@
               <strong>{selectedOption.rebalanceRule}</strong>
             </div>
           </div>
+          {#if selectedOption.performance}
+            <div class="strategy-performance-panel">
+              <div class="performance-heading">
+                <strong>최근 백테스트 수익률</strong>
+                <span class="tooltip-anchor" aria-label={performanceTooltip(selectedOption.performance)}>
+                  {selectedOption.performance.data_as_of ?? selectedOption.performance.as_of} 기준
+                  <span class="tooltip">{performanceTooltip(selectedOption.performance)}</span>
+                </span>
+              </div>
+              <div class="performance-grid">
+                {#each selectedOption.performance.windows as perfWindow}
+                  <div class:muted-card={perfWindow.status === 'unavailable'}>
+                    <span>{perfWindow.label}</span>
+                    <strong>{formatPerformancePercent(perfWindow.cagr)}</strong>
+                    <p>
+                      총 {formatPerformancePercent(perfWindow.total_return)}
+                      {#if perfWindow.status === 'partial'} · 일부 기간{/if}
+                    </p>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
           <div class="execution-contract-panel">
             <div class="contract-heading">
               <strong>실행 연결</strong>

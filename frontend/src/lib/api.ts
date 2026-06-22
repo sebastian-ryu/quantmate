@@ -43,7 +43,35 @@ export type Strategy = {
   risk_notes: string[];
   backtest_assumptions: string[];
   references: string[];
+  performance: StrategyPerformanceSnapshot | null;
   default_enabled: boolean;
+};
+
+export type StrategyPerformanceWindow = {
+  label: string;
+  years: number;
+  start_year: number;
+  end_year: number;
+  cagr: number | null;
+  total_return: number | null;
+  final_amount: number | null;
+  status: 'complete' | 'partial' | 'unavailable' | string;
+  note: string;
+};
+
+export type StrategyPerformanceSnapshot = {
+  as_of: string;
+  data_as_of: string | null;
+  source: string;
+  initial_amount: number;
+  windows: StrategyPerformanceWindow[];
+  update_policy: string;
+  note: string;
+};
+
+export type StrategyPerformanceResponse = {
+  strategy_code: string;
+  performance: StrategyPerformanceSnapshot;
 };
 
 export type StrategyExecutionModeContract = {
@@ -624,6 +652,19 @@ export async function fetchDashboard(): Promise<Dashboard> {
 
   if (!response.ok) {
     throw new Error(`대시보드 데이터를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchStrategyPerformance(refresh = false): Promise<StrategyPerformanceResponse[]> {
+  const search = new URLSearchParams();
+  if (refresh) search.set('refresh', 'true');
+  const suffix = search.toString() ? `?${search}` : '';
+  const response = await fetchWithTimeout(`${API_BASE_URL}/api/strategies/performance${suffix}`, {}, 45000);
+
+  if (!response.ok) {
+    throw new Error(`전략 성과 데이터를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

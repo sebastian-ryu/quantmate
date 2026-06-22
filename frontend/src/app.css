@@ -397,6 +397,65 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.strategy-performance-panel {
+  background: #ffffff;
+  border: 1px solid #e5ecef;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+.performance-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.performance-heading strong {
+  color: #213137;
+  font-size: 12px;
+}
+
+.performance-heading span {
+  color: #6f7f86;
+  font-size: 11px;
+}
+
+.performance-grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.performance-grid div {
+  background: #f8fbfb;
+  border: 1px solid #e1e9ec;
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.performance-grid div.muted-card {
+  opacity: 0.65;
+}
+
+.performance-grid span,
+.performance-grid p {
+  color: #6f7f86;
+  font-size: 11px;
+  margin: 0;
+}
+
+.performance-grid strong {
+  color: #1f6b4e;
+  font-size: 13px;
+}
+
 .strategy-rule-grid .compact-list {
   color: #4f6067;
   font-size: 12px;

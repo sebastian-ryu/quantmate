@@ -121,7 +121,7 @@ MAX_DAILY_LOSS_KRW=50000
 
 시장 데이터 호출은 기본적으로 429/5xx 응답과 일시 네트워크 오류에 짧게 재시도한다. 필요하면 `.env`에서 아래 값을 조정한다.
 
-데이터 공급원은 백엔드 provider registry에서 역할별로 관리한다. 현재 일봉 우선순위는 `KRX Open API -> KIS Open API -> Yahoo Finance`이며, KRX 일봉 미리보기/DB 적재 API는 구현되어 있다. 다만 KRX는 인증키 발급과 서비스별 승인 상태가 모두 충족되어야 실제 호출이 성공한다.
+데이터 공급원은 백엔드 provider registry에서 역할별로 관리한다. 현재 일봉 우선순위는 `KRX Open API -> KIS Open API -> Yahoo Finance`이며, KRX 일봉 미리보기/DB 적재 API는 구현되어 있다. KRX는 인증키 발급과 서비스별 승인 상태가 모두 충족되어야 실제 호출이 성공한다. 승인 완료 후에는 KRX 종목기본정보와 일별매매정보를 공식 한국 주식 마스터/장기 일봉 공급원으로 사용한다.
 OpenDART 공시/재무제표 연동을 준비할 경우 `.env`에 아래 값을 입력한다. 서버는 고유번호 ZIP을 받아 `.run/opendart_corp_codes.json`에 캐시하고, 단일회사 전체 재무제표 조회 API로 종목별 재무제표 행과 매출/이익/마진/부채비율/ROE/ROA 요약 지표를 확인할 수 있다. 저장 API를 호출하거나 전략 후보를 열면 OpenDART 요약이 `fundamental_ratios`에 저장되어 검색기/전략 후보 재무 필드 보강에 사용된다.
 
 ```env
@@ -197,7 +197,7 @@ curl http://127.0.0.1:8000/api/broker/kis/orders
 
 모의주문 제출 API는 `/api/broker/kis/paper/orders`다. 기본은 차단 상태이며, 주문 전후 감사 로그가 DB의 `broker_audit_logs`에 저장된다. 최근 주문체결 내역은 `/api/broker/kis/orders`로 읽기 전용 조회한다. 실제 주문 테스트는 주문 시점에 별도 확인 후 진행한다.
 
-전략 후보와 백테스트 화면은 사용자가 별도 적재 버튼을 누르지 않아도 DB 일봉을 우선 사용한다. 전략 후보 API는 기본적으로 `refresh=true`로 동작해 조회 시 KIS 일봉, 현재가, 재무, 수급, 리스크 보조 데이터를 가능한 범위에서 먼저 갱신한다. 전략 후보 계산용 일봉이 기대 거래일보다 `STRATEGY_DAILY_PRICE_MAX_STALENESS_DAYS` 이상 지연되어 있으면 KIS 일봉 갱신을 먼저 시도하고, 응답의 `data_freshness.daily_price_status`와 `warnings`에 지연 여부를 남긴다. 검색기 API도 화면에 표시되는 개별 종목 가격/등락/거래대금이 과거 일봉에 머물지 않도록 현재가 스냅샷을 갱신한다. KIS 현재가 스냅샷이 있으면 가격, 당일 등락률, 거래대금, 거래량, 시가총액, PER, PBR은 현재가 스냅샷을 우선 표시하고, 갱신 후 전략 점수와 선정 사유를 다시 계산한다. `KIS_CURRENT_QUOTE_MAX_AGE_MINUTES`가 지난 스냅샷은 다시 조회하며, 한 번에 자동 갱신할 후보 수는 `KIS_CURRENT_QUOTE_REFRESH_MAX_SYMBOLS`로 제한한다. 데이터가 부족하면 서버가 KIS 시가총액 랭킹과 저장된 일봉 종목을 후보 시드로 삼아 KIS 일봉을 먼저 자동 수집하고, KIS 커버리지가 부족한 종목과 기간은 Yahoo/yfinance 일봉으로 보완해 `daily_prices`에 저장한 뒤 계산한다. `/api/data/kis/instruments/import`는 KIS 시가총액 랭킹으로 확인한 종목 코드와 종목명을 `instruments`에 저장한다. `/api/data/krx/instruments/import`는 KRX 종목기본정보 승인 후 KRX 종목 마스터를 `instruments`에 저장한다. `/api/data/krx/daily-prices/import`는 KRX 일별매매정보 승인 후 KRX 원천 일봉을 `daily_prices`에 저장한다. 전략 후보 조회 시에는 KIS 재무비율을 `fundamental_ratios`에 저장해 ROE, 성장률, 부채비율을 보강하고, KIS 투자자별 매매동향이 있으면 외국인/기관/연기금 수급 필드를 보강하며, 공매도/신용잔고 일별 지표를 `risk_indicator_dailies`에 저장해 리스크 필드를 보강한다. 공급원 우선순위는 종목별로 `KRX Open API -> KIS Open API -> Yahoo Finance`이지만, 백테스트는 요청한 시작연도와 종료연도를 더 길게 커버하는 공급원을 먼저 선택한다. 따라서 KIS 데이터가 짧고 Yahoo 데이터가 더 길면 백테스트는 Yahoo를 사용하고, KRX 승인 후 충분한 KRX 일봉이 저장되면 KRX를 우선 사용한다.
+전략 후보와 백테스트 화면은 사용자가 별도 적재 버튼을 누르지 않아도 DB 일봉을 우선 사용한다. 전략 후보 API는 기본적으로 `refresh=true`로 동작해 조회 시 KIS 일봉, 현재가, 재무, 수급, 리스크 보조 데이터를 가능한 범위에서 먼저 갱신한다. 전략 후보 계산용 일봉이 기대 거래일보다 `STRATEGY_DAILY_PRICE_MAX_STALENESS_DAYS` 이상 지연되어 있으면 KIS 일봉 갱신을 먼저 시도하고, 응답의 `data_freshness.daily_price_status`와 `warnings`에 지연 여부를 남긴다. 검색기 API도 화면에 표시되는 개별 종목 가격/등락/거래대금이 과거 일봉에 머물지 않도록 현재가 스냅샷을 갱신한다. KIS 현재가 스냅샷이 있으면 가격, 당일 등락률, 거래대금, 거래량, 시가총액, PER, PBR은 현재가 스냅샷을 우선 표시하고, 갱신 후 전략 점수와 선정 사유를 다시 계산한다. `KIS_CURRENT_QUOTE_MAX_AGE_MINUTES`가 지난 스냅샷은 다시 조회하며, 한 번에 자동 갱신할 후보 수는 `KIS_CURRENT_QUOTE_REFRESH_MAX_SYMBOLS`로 제한한다. 데이터가 부족하면 서버가 KIS 시가총액 랭킹과 저장된 일봉 종목을 후보 시드로 삼아 KIS 일봉을 먼저 자동 수집하고, KIS 커버리지가 부족한 종목과 기간은 Yahoo/yfinance 일봉으로 보완해 `daily_prices`에 저장한 뒤 계산한다. `/api/data/kis/instruments/import`는 KIS 시가총액 랭킹으로 확인한 종목 코드와 종목명을 `instruments`에 저장한다. `/api/data/krx/instruments/import`는 KRX 종목기본정보로 KRX 종목 마스터를 `instruments`에 저장한다. `/api/data/krx/daily-prices/import`는 단일 종목 KRX 원천 일봉을 `daily_prices`에 저장하고, `/api/data/krx/daily-prices/import/market`은 KOSPI/KOSDAQ/KONEX 또는 ALL 시장의 일자별 전체 일봉을 한 번에 저장한다. 전략 후보 조회 시에는 KIS 재무비율을 `fundamental_ratios`에 저장해 ROE, 성장률, 부채비율을 보강하고, KIS 투자자별 매매동향이 있으면 외국인/기관/연기금 수급 필드를 보강하며, 공매도/신용잔고 일별 지표를 `risk_indicator_dailies`에 저장해 리스크 필드를 보강한다. 공급원 우선순위는 종목별로 `KRX Open API -> KIS Open API -> Yahoo Finance`이지만, 백테스트는 요청한 시작연도와 종료연도를 더 길게 커버하는 공급원을 먼저 선택한다. 따라서 KIS 데이터가 짧고 Yahoo 데이터가 더 길면 백테스트는 Yahoo를 사용하고, KRX 승인 후 충분한 KRX 일봉이 저장되면 KRX를 우선 사용한다.
 
 DB를 가능한 최신으로 유지하는 운영 전략은 세 단계다. 장 시작 전에는 종목 마스터와 전일 일봉을 갱신하고, 장중에는 전략/검색기 조회 시 화면 후보의 KIS 현재가 스냅샷을 짧은 TTL로 갱신하며, 장 종료 후에는 KIS 또는 KRX 일봉을 다시 적재해 다음 백테스트와 전략 계산의 기준 DB를 최신화한다. Synology Docker 배포 후에는 Container Manager 예약 작업이나 NAS 스케줄러에서 이 적재 API를 호출하는 방식으로 자동화한다.
 
@@ -234,6 +234,9 @@ curl -X POST http://127.0.0.1:8000/api/data/krx/instruments/import \
 curl -X POST http://127.0.0.1:8000/api/data/krx/daily-prices/import \
   -H "Content-Type: application/json" \
   -d '{"symbol":"005930","name":"삼성전자","exchange":"KOSPI","start":"2026-06-01","end":"2026-06-30"}'
+curl -X POST http://127.0.0.1:8000/api/data/krx/daily-prices/import/market \
+  -H "Content-Type: application/json" \
+  -d '{"market":"KOSPI","start":"2026-06-01","end":"2026-06-30"}'
 ```
 
 개발 서버 실행:

@@ -834,6 +834,53 @@ def fetch_krx_daily_prices(
     return sorted(rows, key=lambda item: str(item["trade_date"]))
 
 
+def fetch_krx_market_daily_prices(
+    market: str = "KOSPI",
+    start: date | None = None,
+    end: date | None = None,
+) -> list[dict[str, Any]]:
+    today = today_kst()
+    start_date = start or (today - timedelta(days=7))
+    end_date = end or today
+
+    if end_date < start_date:
+        raise ValueError("종료일은 시작일보다 빠를 수 없습니다.")
+
+    max_days = max(1, env_int("KRX_DAILY_PRICE_MAX_DAYS", 370))
+    requested_days = (end_date - start_date).days + 1
+    if requested_days > max_days:
+        raise ValueError(f"KRX 일봉 조회 기간은 한 번에 최대 {max_days}일로 제한합니다.")
+
+    normalized_market = normalize_krx_market(market)
+    if normalized_market == "ALL":
+        rows: list[dict[str, Any]] = []
+        for item_market in ("KOSPI", "KOSDAQ", "KONEX"):
+            rows.extend(fetch_krx_market_daily_prices(item_market, start=start_date, end=end_date))
+        return sorted(rows, key=lambda item: (str(item["trade_date"]), str(item["symbol"])))
+
+    if normalized_market not in KRX_STOCK_DAILY_PRICE_ENDPOINTS:
+        raise ValueError(f"지원하지 않는 KRX 일봉 시장입니다: {market}")
+
+    rows: list[dict[str, Any]] = []
+    for trade_date in iter_weekdays(start_date, end_date):
+        payload = call_krx_open_api(
+            endpoint=KRX_STOCK_DAILY_PRICE_ENDPOINTS[normalized_market],
+            params={"basDd": trade_date.strftime("%Y%m%d")},
+        )
+        output_rows = payload.get("OutBlock_1", [])
+        if not isinstance(output_rows, list):
+            raise MarketDataProviderUnavailable("KRX 일봉 응답 형식이 예상과 다릅니다.")
+
+        for row in output_rows:
+            if not isinstance(row, dict):
+                continue
+            item = normalize_krx_daily_price(row=row, market=normalized_market)
+            if item is not None:
+                rows.append(item)
+
+    return sorted(rows, key=lambda item: (str(item["trade_date"]), str(item["symbol"])))
+
+
 def fetch_yfinance_daily_prices(
     symbol: str,
     exchange: str = "KOSPI",
@@ -2414,7 +2461,7 @@ def percent_ratio(numerator: int | None, denominator: int | None) -> float | Non
 
 
 def default_krx_base_date() -> str:
-    candidate = today_kst()
+    candidate = today_kst() - timedelta(days=1)
 
     while candidate.weekday() >= 5:
         candidate -= timedelta(days=1)

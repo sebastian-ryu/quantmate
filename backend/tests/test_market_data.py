@@ -232,6 +232,53 @@ def test_fetch_krx_daily_prices_rejects_large_range(monkeypatch) -> None:
         raise AssertionError("긴 KRX 일봉 조회 기간은 차단되어야 합니다.")
 
 
+def test_fetch_krx_market_daily_prices_normalizes_all_rows(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setenv("KRX_DAILY_PRICE_MAX_DAYS", "10")
+
+    def fake_call_krx_open_api(endpoint: str, params: dict[str, str]) -> dict[str, object]:
+        calls.append((endpoint, params))
+        return {
+            "OutBlock_1": [
+                {
+                    "BAS_DD": params["basDd"],
+                    "ISU_SRT_CD": "005930",
+                    "ISU_ABBRV": "삼성전자",
+                    "MKT_NM": "KOSPI",
+                    "TDD_OPNPRC": "70,000",
+                    "TDD_HGPRC": "71,000",
+                    "TDD_LWPRC": "69,500",
+                    "TDD_CLSPRC": "70,500",
+                    "ACC_TRDVOL": "1,000,000",
+                    "ACC_TRDVAL": "70,500,000,000",
+                },
+                {
+                    "BAS_DD": params["basDd"],
+                    "ISU_SRT_CD": "000660",
+                    "ISU_ABBRV": "SK하이닉스",
+                    "MKT_NM": "KOSPI",
+                    "TDD_CLSPRC": "200,000",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(market_data, "call_krx_open_api", fake_call_krx_open_api)
+
+    rows = market_data.fetch_krx_market_daily_prices(
+        market="KOSPI",
+        start=date(2026, 6, 18),
+        end=date(2026, 6, 19),
+    )
+
+    assert calls == [
+        ("/stk_bydd_trd", {"basDd": "20260618"}),
+        ("/stk_bydd_trd", {"basDd": "20260619"}),
+    ]
+    assert len(rows) == 4
+    assert {row["symbol"] for row in rows} == {"005930", "000660"}
+    assert rows[0]["provider"] == "KRX Open API"
+
+
 def test_parse_open_dart_corp_code_zip() -> None:
     content = BytesIO()
     with zipfile.ZipFile(content, "w") as archive:

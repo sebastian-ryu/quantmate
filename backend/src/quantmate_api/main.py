@@ -38,6 +38,7 @@ from quantmate_api.market_data import (
     fetch_kis_market_cap_ranking,
     fetch_krx_daily_prices,
     fetch_krx_instruments,
+    fetch_krx_market_daily_prices,
     fetch_open_dart_corp_codes,
     fetch_open_dart_financial_statements,
     fetch_yahoo_daily_prices,
@@ -1087,6 +1088,23 @@ class KrxDailyPriceImportResponse(BaseModel):
     job_id: int
     symbol: str
     exchange: str
+    fetched_count: int
+    saved_count: int
+    message: str
+
+
+class KrxMarketDailyPriceImportRequest(BaseModel):
+    market: str = Field(default="KOSPI", max_length=20)
+    start: date
+    end: date
+
+
+class KrxMarketDailyPriceImportResponse(BaseModel):
+    provider: str
+    job_id: int
+    market: str
+    start: date
+    end: date
     fetched_count: int
     saved_count: int
     message: str
@@ -6135,6 +6153,37 @@ async def import_krx_daily_prices(
     return response
 
 
+@app.post("/api/data/krx/daily-prices/import/market", status_code=201)
+async def import_krx_market_daily_prices(
+    request: KrxMarketDailyPriceImportRequest,
+) -> KrxMarketDailyPriceImportResponse:
+    try:
+        prices = await run_in_threadpool(
+            fetch_krx_market_daily_prices,
+            market=request.market,
+            start=request.start,
+            end=request.end,
+        )
+    except MarketDataProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not prices:
+        raise HTTPException(status_code=404, detail="KRX 시장 일봉 데이터가 없습니다.")
+
+    try:
+        with SessionLocal() as session:
+            response = _save_krx_market_daily_prices(session=session, request=request, prices=prices)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"KRX 시장 일봉 DB 저장 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return response
+
+
 @app.post("/api/data/krx/daily-prices/import/strategy", status_code=201)
 async def import_krx_daily_prices_for_strategy(
     request: KrxDailyPriceBatchImportRequest,
@@ -6906,6 +6955,129 @@ def _save_krx_daily_prices(
         job_id=job.id,
         symbol=symbol,
         exchange=request.exchange.strip().upper(),
+        fetched_count=len(prices),
+        saved_count=saved_count,
+        message=job.message,
+    )
+
+
+def _save_krx_market_daily_prices(
+    *,
+    session,
+    request: KrxMarketDailyPriceImportRequest,
+    prices: list[dict[str, object]],
+) -> KrxMarketDailyPriceImportResponse:
+    normalized_market = request.market.strip().upper() or "KOSPI"
+    market = _get_or_create_kr_market(session)
+    job = DataImportJob(
+        provider="KRX Open API",
+        job_type="market_daily_prices",
+        status="running",
+        message=f"{normalized_market} KRX 시장 일봉 수집 중",
+    )
+    session.add(job)
+    session.flush()
+
+    symbols = sorted({str(row.get("symbol") or "").strip().upper() for row in prices if row.get("symbol")})
+    existing_instruments = {
+        instrument.symbol: instrument
+        for instrument in session.scalars(select(Instrument).where(Instrument.symbol.in_(symbols))).all()
+    }
+    for symbol in symbols:
+        if symbol in existing_instruments:
+            continue
+        source_row = next(row for row in prices if str(row.get("symbol") or "").strip().upper() == symbol)
+        instrument = _get_or_create_instrument(
+            session=session,
+            market=market,
+            symbol=symbol,
+            name=str(source_row.get("name") or symbol),
+            exchange=_normalize_exchange(str(source_row.get("exchange") or normalized_market)),
+        )
+        existing_instruments[symbol] = instrument
+    session.flush()
+
+    instrument_ids = [instrument.id for instrument in existing_instruments.values()]
+    existing_prices = {
+        (row.instrument_id, row.trade_date): row
+        for row in session.scalars(
+            select(DailyPrice).where(
+                DailyPrice.instrument_id.in_(instrument_ids),
+                DailyPrice.trade_date >= request.start,
+                DailyPrice.trade_date <= request.end,
+                DailyPrice.provider == "KRX Open API",
+                DailyPrice.is_adjusted.is_(False),
+            )
+        ).all()
+    }
+
+    saved_count = 0
+    for row in prices:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+
+        instrument = existing_instruments.get(symbol)
+        if instrument is None:
+            continue
+
+        trade_date = _row_trade_date(row)
+        close_price = _decimal_or_none(row.get("close"))
+        if close_price is None:
+            continue
+
+        open_price = _decimal_or_none(row.get("open")) or close_price
+        high_price = _decimal_or_none(row.get("high")) or close_price
+        low_price = _decimal_or_none(row.get("low")) or close_price
+        open_price, high_price, low_price, close_price = _normalize_ohlcv_prices(
+            open_price=open_price,
+            high_price=high_price,
+            low_price=low_price,
+            close_price=close_price,
+        )
+        volume = int(row.get("volume") or 0)
+        trading_value = _decimal_or_none(row.get("trading_value"))
+
+        existing = existing_prices.get((instrument.id, trade_date))
+
+        if existing is None:
+            existing = DailyPrice(
+                instrument_id=instrument.id,
+                trade_date=trade_date,
+                open_price=open_price,
+                high_price=high_price,
+                low_price=low_price,
+                close_price=close_price,
+                volume=volume,
+                trading_value=trading_value,
+                provider="KRX Open API",
+                is_adjusted=False,
+            )
+            session.add(existing)
+            existing_prices[(instrument.id, trade_date)] = existing
+        existing.open_price = open_price
+        existing.high_price = high_price
+        existing.low_price = low_price
+        existing.close_price = close_price
+        existing.volume = volume
+        existing.trading_value = trading_value
+
+        saved_count += 1
+
+    job.status = "completed"
+    job.finished_at = now_kst_naive()
+    job.message = (
+        f"{normalized_market} KRX 시장 일봉 {saved_count}건 저장 "
+        f"({request.start.isoformat()} ~ {request.end.isoformat()})"
+    )
+    session.commit()
+
+    return KrxMarketDailyPriceImportResponse(
+        provider="KRX Open API",
+        job_id=job.id,
+        market=normalized_market,
+        start=request.start,
+        end=request.end,
         fetched_count=len(prices),
         saved_count=saved_count,
         message=job.message,

@@ -3497,6 +3497,68 @@ def test_krx_daily_prices_import_saves_daily_prices(monkeypatch) -> None:
         assert provider_count == 2
 
 
+def test_krx_market_daily_prices_import_saves_market_rows(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    def fake_fetch_krx_market_daily_prices(
+        market: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert market == "KOSPI"
+        assert start == date(2026, 6, 1)
+        assert end == date(2026, 6, 2)
+        return [
+            {
+                "symbol": "005930",
+                "name": "삼성전자",
+                "exchange": "KOSPI",
+                "trade_date": "2026-06-01",
+                "open": 100.0,
+                "high": 105.0,
+                "low": 99.0,
+                "close": 102.0,
+                "adjusted_close": None,
+                "volume": 1000,
+                "trading_value": 102000,
+                "provider": "KRX Open API",
+            },
+            {
+                "symbol": "000660",
+                "name": "SK하이닉스",
+                "exchange": "KOSPI",
+                "trade_date": "2026-06-01",
+                "open": 200.0,
+                "high": 205.0,
+                "low": 198.0,
+                "close": 202.0,
+                "adjusted_close": None,
+                "volume": 2000,
+                "trading_value": 404000,
+                "provider": "KRX Open API",
+            },
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_krx_market_daily_prices", fake_fetch_krx_market_daily_prices)
+
+    response = client.post(
+        "/api/data/krx/daily-prices/import/market",
+        json={"market": "KOSPI", "start": "2026-06-01", "end": "2026-06-02"},
+    )
+    data = response.json()
+
+    assert response.status_code == 201
+    assert data["provider"] == "KRX Open API"
+    assert data["market"] == "KOSPI"
+    assert data["saved_count"] == 2
+
+    with session_factory() as session:
+        saved_count = session.scalar(select(func.count()).select_from(DailyPrice))
+        instrument_count = session.scalar(select(func.count()).select_from(Instrument))
+        assert saved_count == 2
+        assert instrument_count == 2
+
+
 def test_yahoo_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:
     def fake_fetch_yahoo_daily_prices(
         symbol: str,

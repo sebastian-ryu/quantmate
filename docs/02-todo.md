@@ -154,7 +154,8 @@
 - [x] KIS 재무비율 데이터 후보 API 매핑
 - [x] KRX 승인 후 백테스트용 일봉 공급원을 KRX로 교체할 수 있게 provider 전환 설정 추가
 - [x] KRX 일별매매정보 미리보기와 `daily_prices` 저장 API 추가
-- [ ] KRX 서비스별 승인 완료 후 KRX 종목기본정보/일별매매정보 실제 호출 검증
+- [x] KRX 서비스별 승인 완료 후 KRX 종목기본정보/일별매매정보 실제 호출 검증
+- [x] KRX 시장 단위 일별매매정보를 `daily_prices`에 저장하는 API 추가
 - [x] KRX 승인 지연 시 사용할 Yahoo/yfinance 일봉 미리보기 API 추가
 - [x] Yahoo/yfinance 일봉을 `daily_prices`에 저장하는 임시 적재 API 추가
 - [x] Yahoo/yfinance 일봉 수집 데이터를 MySQL `daily_prices`에 저장

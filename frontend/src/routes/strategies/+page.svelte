@@ -1111,6 +1111,7 @@
                     <strong>{formatPerformancePercent(perfWindow.cagr)}</strong>
                     <p>
                       총 {formatPerformancePercent(perfWindow.total_return)}
+                      · MDD {formatPerformancePercent(perfWindow.mdd)}
                       {#if perfWindow.status === 'partial'} · 일부 기간{/if}
                     </p>
                   </div>

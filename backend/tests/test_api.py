@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import date, timedelta
 
 import pytest
@@ -859,6 +860,7 @@ def test_dashboard_strategy_performance_uses_daily_price_backtest(monkeypatch) -
     assert performance["source"] == "daily-price-backtest:Yahoo Finance"
     assert performance["data_as_of"] is not None
     assert windows[1]["cagr"] is not None
+    assert windows[1]["mdd"] is not None
     assert windows[10]["final_amount"] is not None
 
 
@@ -3557,6 +3559,79 @@ def test_krx_market_daily_prices_import_saves_market_rows(monkeypatch) -> None:
         instrument_count = session.scalar(select(func.count()).select_from(Instrument))
         assert saved_count == 2
         assert instrument_count == 2
+
+
+def test_manual_data_refresh_job_imports_krx_market_data(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    main_module.MANUAL_DATA_REFRESH_JOBS.clear()
+    monkeypatch.setattr(main_module, "default_krx_base_date", lambda: "20260622")
+    monkeypatch.setattr(main_module, "_expected_latest_daily_price_date", lambda: date(2026, 6, 22))
+
+    def fake_fetch_krx_instruments(
+        market: str,
+        limit: int = 3000,
+        base_date: str | None = None,
+    ) -> list[dict[str, object]]:
+        assert market == "ALL"
+        assert base_date == "20260622"
+        return [
+            {"symbol": "005930", "name": "삼성전자", "exchange": "KOSPI", "asset_type": "stock"},
+            {"symbol": "091990", "name": "셀트리온헬스케어", "exchange": "KOSDAQ", "asset_type": "stock"},
+        ]
+
+    def fake_fetch_krx_market_daily_prices(
+        market: str,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> list[dict[str, object]]:
+        assert start == date(2026, 6, 19)
+        assert end == date(2026, 6, 22)
+        symbol = "005930" if market == "KOSPI" else "091990"
+        name = "삼성전자" if market == "KOSPI" else "셀트리온헬스케어"
+        return [
+            {
+                "symbol": symbol,
+                "name": name,
+                "exchange": market,
+                "trade_date": "2026-06-22",
+                "open": 100.0,
+                "high": 110.0,
+                "low": 95.0,
+                "close": 105.0,
+                "volume": 1000,
+                "trading_value": 105000,
+                "provider": "KRX Open API",
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_krx_instruments", fake_fetch_krx_instruments)
+    monkeypatch.setattr(main_module, "fetch_krx_market_daily_prices", fake_fetch_krx_market_daily_prices)
+
+    response = client.post(
+        "/api/data/manual-refresh",
+        json={"refresh_instruments": True, "refresh_daily_prices": True, "markets": ["KOSPI", "KOSDAQ"], "lookback_days": 3},
+    )
+    data = response.json()
+
+    assert response.status_code == 202
+    assert data["status"] in {"queued", "running"}
+
+    job_data = data
+    for _ in range(30):
+        status_response = client.get(f"/api/data/manual-refresh/{data['job_id']}")
+        job_data = status_response.json()
+        if job_data["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert job_data["status"] == "completed"
+    assert job_data["progress_pct"] == 100
+    assert job_data["saved_count"] == 2
+    assert job_data["latest_daily_price_date"] == "2026-06-22"
+
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Instrument)) == 2
+        assert session.scalar(select(func.count()).select_from(DailyPrice)) == 2
 
 
 def test_yahoo_daily_prices_preview_uses_market_data_provider(monkeypatch) -> None:

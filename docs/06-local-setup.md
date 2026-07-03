@@ -201,9 +201,11 @@ curl http://127.0.0.1:8000/api/broker/kis/orders
 
 DB를 가능한 최신으로 유지하는 운영 전략은 세 단계다. 장 시작 전에는 종목 마스터와 전일 일봉을 갱신하고, 장중에는 전략/검색기 조회 시 화면 후보의 KIS 현재가 스냅샷을 짧은 TTL로 갱신하며, 장 종료 후에는 KIS 또는 KRX 일봉을 다시 적재해 다음 백테스트와 전략 계산의 기준 DB를 최신화한다. Synology Docker 배포 후에는 Container Manager 예약 작업이나 NAS 스케줄러에서 이 적재 API를 호출하는 방식으로 자동화한다.
 
+자동 예약 전에는 전략/검색기 화면 상단의 `최신 데이터 갱신` 버튼으로 KRX 종목 마스터와 KOSPI/KOSDAQ 최근 일봉을 수동 갱신한다. 버튼을 누르면 `/api/data/manual-refresh`가 백그라운드 Job을 만들고, 화면은 `/api/data/manual-refresh/{job_id}`를 주기적으로 조회해 현재 단계, 진행률, 저장 건수, 경과 시간, 예상 남은 시간을 표시한다. 완료 후에는 현재 화면의 전략 후보 또는 검색기 결과를 다시 조회해 데이터 기준일과 공급원 표시를 갱신한다. 현재 1차 구현은 KRX 종목 마스터와 KRX 최근 일봉 갱신이 대상이며, KIS 현재가/재무/수급/리스크와 배당 데이터 범위 선택은 후속 작업이다.
+
 전략 후보 API가 실제 일봉을 사용하면 응답의 `source`가 `daily-price-candidates:KIS Open API + Yahoo Finance`처럼 표시된다. KIS 현재가 스냅샷으로 PER/PBR/시가총액/회전율을 보강한 경우 `+ KIS 현재가`, 재무비율을 보강한 경우 `+ KIS 재무`가 함께 표시된다. 백테스트 결과도 `daily-price-backtest:<공급원>` 형식의 `source`를 저장한다.
 
-전략 설명 카드의 최근 1년/3년/5년/10년 성과는 `/api/strategies/performance`에서 별도 계산한다. 이 값은 기대수익률 예측이 아니라 저장된 DB 일봉 기준 백테스트 CAGR과 총수익률이며, 한국시간 날짜, 최신 일봉 거래일, `daily_prices` 저장 건수가 바뀌면 캐시를 무효화한다. 강제 재계산이 필요하면 `/api/strategies/performance?refresh=true`를 호출한다.
+전략 설명 카드의 최근 1년/3년/5년/10년 성과는 `/api/strategies/performance`에서 별도 계산한다. 이 값은 기대수익률 예측이 아니라 저장된 DB 일봉 기준 백테스트 CAGR, 총수익률, MDD이며, 한국시간 날짜, 최신 일봉 거래일, `daily_prices` 저장 건수가 바뀌면 캐시를 무효화한다. 강제 재계산이 필요하면 `/api/strategies/performance?refresh=true`를 호출한다.
 
 백테스트 자산 곡선과 비교군 곡선의 첫 월은 사용자가 입력한 초기투자금으로 표시한다. 비교군은 선택 기간의 첫 거래일 종가를 기준가로 삼고, 이후 각 월말 종가를 `초기투자금 * 월말종가 / 첫 거래일 종가`로 환산한다.
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import DataRefreshPanel from '$lib/DataRefreshPanel.svelte';
   import {
     createKisOrderProposal,
     fetchDashboard,
@@ -247,9 +248,9 @@
         : '주문 잠김'
     : '상태 확인 중';
 
-  async function loadStrategyPerformance() {
+  async function loadStrategyPerformance(refresh = false) {
     try {
-      const rows = await fetchStrategyPerformance();
+      const rows = await fetchStrategyPerformance(refresh);
       strategyPerformanceByCode = Object.fromEntries(rows.map((row) => [row.strategy_code, row.performance]));
     } catch {
       strategyPerformanceByCode = {};
@@ -341,6 +342,11 @@
   async function loadCandidateRowsForSelectedStrategy() {
     await tick();
     await loadCandidateRows(selectedOption);
+  }
+
+  async function reloadAfterDataRefresh() {
+    await loadCandidateRowsForSelectedStrategy();
+    await loadStrategyPerformance(true);
   }
 
   async function loadExecutionContract(strategyCode: string) {
@@ -841,6 +847,7 @@
                     <strong>{formatPerformancePercent(perfWindow.cagr)}</strong>
                     <p>
                       총 {formatPerformancePercent(perfWindow.total_return)}
+                      · MDD {formatPerformancePercent(perfWindow.mdd)}
                       {#if perfWindow.status === 'partial'} · 일부 기간{/if}
                     </p>
                   </div>
@@ -1486,6 +1493,11 @@
     </section>
 
     <section class="panel screener-results">
+      <DataRefreshPanel
+        freshness={candidateFreshness}
+        source={candidateSourceLabel(candidateSource)}
+        onCompleted={reloadAfterDataRefresh}
+      />
       <div class="panel-heading inline">
         <div>
           <span>전략 검색 결과</span>

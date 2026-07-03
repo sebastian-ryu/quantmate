@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -88,6 +89,10 @@ from quantmate_api.strategy_engine import (
 from quantmate_api.time_utils import now_kst_naive, today_kst
 
 
+MANUAL_DATA_REFRESH_JOBS: dict[str, dict[str, object]] = {}
+MANUAL_DATA_REFRESH_LOCK = threading.Lock()
+
+
 class AppMode(StrEnum):
     RESEARCH = "research"
     LIVE_READONLY = "live-readonly"
@@ -108,6 +113,7 @@ class StrategyPerformanceWindow(BaseModel):
     end_year: int
     cagr: float | None = None
     total_return: float | None = None
+    mdd: float | None = None
     final_amount: int | None = None
     status: str
     note: str
@@ -431,6 +437,33 @@ class DataQualityResponse(BaseModel):
     generated_at: datetime
     summary_status: str
     checks: list[DataQualityCheck]
+
+
+class ManualDataRefreshRequest(BaseModel):
+    refresh_instruments: bool = True
+    refresh_daily_prices: bool = True
+    markets: list[str] = Field(default_factory=lambda: ["KOSPI", "KOSDAQ"], max_length=3)
+    lookback_days: int = Field(default=10, ge=1, le=365)
+
+
+class ManualDataRefreshJobResponse(BaseModel):
+    job_id: str
+    status: str
+    stage: str
+    progress_pct: int
+    current_step: int
+    total_steps: int
+    success_count: int = 0
+    failed_count: int = 0
+    saved_count: int = 0
+    started_at: datetime
+    finished_at: datetime | None = None
+    elapsed_seconds: int = 0
+    estimated_remaining_seconds: int | None = None
+    latest_daily_price_date: date | None = None
+    expected_daily_price_date: date | None = None
+    message: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class MarketCalendarDayResponse(BaseModel):
@@ -2088,6 +2121,7 @@ def _performance_windows_from_backtest_result(
             (point for point in curve if point["month_index"] >= target_start_index),
             curve[0],
         )
+        window_curve = [point for point in curve if point["month_index"] >= start_point["month_index"]]
         elapsed_months = last_point["month_index"] - start_point["month_index"]
         start_balance = start_point["portfolio"]
         final_amount = last_point["portfolio"]
@@ -2107,6 +2141,7 @@ def _performance_windows_from_backtest_result(
 
         total_return = (final_amount / start_balance - 1) * 100
         cagr = (math.pow(final_amount / start_balance, 12 / elapsed_months) - 1) * 100
+        mdd = _performance_window_mdd(window_curve)
         status = "complete" if elapsed_months >= target_months else "partial"
         note = (
             "요청한 기간 전체를 계산했습니다."
@@ -2121,6 +2156,7 @@ def _performance_windows_from_backtest_result(
                 end_year=last_point["year"],
                 cagr=round(cagr, 1),
                 total_return=round(total_return, 1),
+                mdd=round(mdd, 1),
                 final_amount=final_amount,
                 status=status,
                 note=note,
@@ -2128,6 +2164,19 @@ def _performance_windows_from_backtest_result(
         )
 
     return windows
+
+
+def _performance_window_mdd(curve: list[dict[str, int]]) -> float:
+    peak = 0
+    max_drawdown = 0.0
+    for point in curve:
+        value = point["portfolio"]
+        if value <= 0:
+            continue
+        peak = max(peak, value)
+        if peak > 0:
+            max_drawdown = min(max_drawdown, (value / peak - 1) * 100)
+    return max_drawdown
 
 
 def _performance_curve_points(value: object) -> list[dict[str, int]]:
@@ -4580,6 +4629,166 @@ def _data_freshness_message(
     )
 
 
+def _manual_refresh_job_response(job: dict[str, object]) -> ManualDataRefreshJobResponse:
+    started_at = job["started_at"]
+    if not isinstance(started_at, datetime):
+        started_at = now_kst_naive()
+    finished_at = job.get("finished_at")
+    if not isinstance(finished_at, datetime):
+        finished_at = None
+
+    now = finished_at or now_kst_naive()
+    elapsed_seconds = max(0, int((now - started_at).total_seconds()))
+    progress_pct = int(job.get("progress_pct") or 0)
+    estimated_remaining_seconds = None
+    if job.get("status") == "running" and progress_pct > 0:
+        estimated_total = int(elapsed_seconds * 100 / progress_pct)
+        estimated_remaining_seconds = max(0, estimated_total - elapsed_seconds)
+
+    return ManualDataRefreshJobResponse(
+        job_id=str(job["job_id"]),
+        status=str(job.get("status") or "unknown"),
+        stage=str(job.get("stage") or "대기 중"),
+        progress_pct=progress_pct,
+        current_step=int(job.get("current_step") or 0),
+        total_steps=int(job.get("total_steps") or 0),
+        success_count=int(job.get("success_count") or 0),
+        failed_count=int(job.get("failed_count") or 0),
+        saved_count=int(job.get("saved_count") or 0),
+        started_at=started_at,
+        finished_at=finished_at,
+        elapsed_seconds=elapsed_seconds,
+        estimated_remaining_seconds=estimated_remaining_seconds,
+        latest_daily_price_date=job.get("latest_daily_price_date") if isinstance(job.get("latest_daily_price_date"), date) else None,
+        expected_daily_price_date=job.get("expected_daily_price_date") if isinstance(job.get("expected_daily_price_date"), date) else None,
+        message=str(job.get("message") or ""),
+        warnings=[str(item) for item in job.get("warnings", []) if item],
+    )
+
+
+def _get_manual_refresh_job(job_id: str) -> dict[str, object] | None:
+    with MANUAL_DATA_REFRESH_LOCK:
+        job = MANUAL_DATA_REFRESH_JOBS.get(job_id)
+        return dict(job) if job is not None else None
+
+
+def _update_manual_refresh_job(job_id: str, **updates: object) -> None:
+    with MANUAL_DATA_REFRESH_LOCK:
+        job = MANUAL_DATA_REFRESH_JOBS.get(job_id)
+        if job is None:
+            return
+        job.update(updates)
+
+
+def _latest_daily_price_date() -> date | None:
+    try:
+        with SessionLocal() as session:
+            return session.scalar(select(func.max(DailyPrice.trade_date)))
+    except SQLAlchemyError:
+        return None
+
+
+def _run_manual_data_refresh(job_id: str, request: ManualDataRefreshRequest) -> None:
+    markets = [market.strip().upper() for market in request.markets if market.strip()]
+    markets = [market for market in markets if market in {"KOSPI", "KOSDAQ", "KONEX"}]
+    if not markets:
+        markets = ["KOSPI", "KOSDAQ"]
+
+    total_steps = (1 if request.refresh_instruments else 0) + (len(markets) if request.refresh_daily_prices else 0)
+    total_steps = max(total_steps, 1)
+    current_step = 0
+    saved_count = 0
+    success_count = 0
+    failed_count = 0
+    warnings: list[str] = []
+    expected_date = _expected_latest_daily_price_date()
+    start_date = expected_date - timedelta(days=request.lookback_days)
+
+    def advance(stage: str, message: str) -> None:
+        progress_pct = min(99, int(current_step / total_steps * 100))
+        _update_manual_refresh_job(
+            job_id,
+            status="running",
+            stage=stage,
+            progress_pct=progress_pct,
+            current_step=current_step,
+            total_steps=total_steps,
+            saved_count=saved_count,
+            success_count=success_count,
+            failed_count=failed_count,
+            expected_daily_price_date=expected_date,
+            message=message,
+            warnings=warnings,
+        )
+
+    try:
+        if request.refresh_instruments:
+            advance("KRX 종목 마스터 갱신", "KRX 종목 목록을 가져오는 중입니다.")
+            base_date = default_krx_base_date()
+            rows = fetch_krx_instruments(market="ALL", limit=3000, base_date=base_date)
+            response = _save_krx_instruments(market="ALL", base_date=base_date, rows=rows)
+            current_step += 1
+            success_count += 1
+            advance("KRX 종목 마스터 저장", response.message)
+
+        if request.refresh_daily_prices:
+            for market in markets:
+                advance(f"KRX {market} 일봉 갱신", f"{market} {start_date.isoformat()} ~ {expected_date.isoformat()} 일봉을 가져오는 중입니다.")
+                prices = fetch_krx_market_daily_prices(market=market, start=start_date, end=expected_date)
+                if not prices:
+                    failed_count += 1
+                    warnings.append(f"{market} KRX 일봉 데이터가 없습니다.")
+                    current_step += 1
+                    continue
+                with SessionLocal() as session:
+                    response = _save_krx_market_daily_prices(
+                        session=session,
+                        request=KrxMarketDailyPriceImportRequest(
+                            market=market,
+                            start=start_date,
+                            end=expected_date,
+                        ),
+                        prices=prices,
+                    )
+                saved_count += response.saved_count
+                success_count += 1
+                current_step += 1
+                advance(f"KRX {market} 일봉 저장", response.message)
+
+        latest_date = _latest_daily_price_date()
+        _update_manual_refresh_job(
+            job_id,
+            status="completed",
+            stage="완료",
+            progress_pct=100,
+            current_step=total_steps,
+            total_steps=total_steps,
+            saved_count=saved_count,
+            success_count=success_count,
+            failed_count=failed_count,
+            finished_at=now_kst_naive(),
+            latest_daily_price_date=latest_date,
+            expected_daily_price_date=expected_date,
+            message=f"최신 데이터 갱신 완료: 저장 {saved_count:,}건",
+            warnings=warnings,
+        )
+    except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError) as exc:
+        _update_manual_refresh_job(
+            job_id,
+            status="failed",
+            stage="실패",
+            progress_pct=max(1, int(current_step / total_steps * 100)),
+            current_step=current_step,
+            total_steps=total_steps,
+            failed_count=failed_count + 1,
+            finished_at=now_kst_naive(),
+            latest_daily_price_date=_latest_daily_price_date(),
+            expected_daily_price_date=expected_date,
+            message=f"최신 데이터 갱신 실패: {exc}",
+            warnings=warnings,
+        )
+
+
 def _save_strategy_selection_run(response: StrategyCandidateResponse) -> tuple[int | None, datetime | None]:
     payload = response.model_dump(mode="json")
     payload.pop("run_id", None)
@@ -4994,6 +5203,42 @@ async def data_status() -> DataStatusResponse:
         table_counts=table_counts,
         message="로컬 MySQL 연결 정상",
     )
+
+
+@app.post("/api/data/manual-refresh", status_code=202)
+async def start_manual_data_refresh(request: ManualDataRefreshRequest) -> ManualDataRefreshJobResponse:
+    job_id = uuid4().hex
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "대기 중",
+        "progress_pct": 0,
+        "current_step": 0,
+        "total_steps": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "saved_count": 0,
+        "started_at": now_kst_naive(),
+        "finished_at": None,
+        "expected_daily_price_date": _expected_latest_daily_price_date(),
+        "latest_daily_price_date": _latest_daily_price_date(),
+        "message": "최신 데이터 갱신 작업을 시작합니다.",
+        "warnings": [],
+    }
+    with MANUAL_DATA_REFRESH_LOCK:
+        MANUAL_DATA_REFRESH_JOBS[job_id] = job
+
+    thread = threading.Thread(target=_run_manual_data_refresh, args=(job_id, request), daemon=True)
+    thread.start()
+    return _manual_refresh_job_response(job)
+
+
+@app.get("/api/data/manual-refresh/{job_id}")
+async def get_manual_data_refresh(job_id: str) -> ManualDataRefreshJobResponse:
+    job = _get_manual_refresh_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="데이터 갱신 작업을 찾을 수 없습니다.")
+    return _manual_refresh_job_response(job)
 
 
 @app.get("/api/data/quality")

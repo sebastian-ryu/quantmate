@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import DataRefreshPanel from '$lib/DataRefreshPanel.svelte';
   import {
     createUserStrategy,
     deleteUserStrategy,
@@ -1092,6 +1093,10 @@
     }
   }
 
+  async function reloadAfterDataRefresh() {
+    await loadScreenerRows(formulaPreview);
+  }
+
   function toScreenerRow(candidate: StrategyCandidateResult): ScreenerRow {
     const fallback = fallbackRows.find((row) => row.symbol === candidate.symbol) ?? fallbackRows[0];
 
@@ -1274,6 +1279,12 @@
 </header>
 
 <section class="screener-workbench">
+  <DataRefreshPanel
+    freshness={screenerFreshness}
+    source={screenerSource}
+    onCompleted={reloadAfterDataRefresh}
+  />
+
   <section class="panel popular-screeners" aria-label="인기 종목검색기">
     <div class="preset-strip">
       <div class="panel-heading inline">

@@ -54,6 +54,7 @@ export type StrategyPerformanceWindow = {
   end_year: number;
   cagr: number | null;
   total_return: number | null;
+  mdd: number | null;
   final_amount: number | null;
   status: 'complete' | 'partial' | 'unavailable' | string;
   note: string;
@@ -332,6 +333,33 @@ export type DataStatus = {
   provider_status: Array<{ name: string; scope: string; status: string; ready: boolean }>;
   table_counts: Record<string, number>;
   message: string;
+};
+
+export type ManualDataRefreshRequest = {
+  refresh_instruments?: boolean;
+  refresh_daily_prices?: boolean;
+  markets?: string[];
+  lookback_days?: number;
+};
+
+export type ManualDataRefreshJob = {
+  job_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | string;
+  stage: string;
+  progress_pct: number;
+  current_step: number;
+  total_steps: number;
+  success_count: number;
+  failed_count: number;
+  saved_count: number;
+  started_at: string;
+  finished_at: string | null;
+  elapsed_seconds: number;
+  estimated_remaining_seconds: number | null;
+  latest_daily_price_date: string | null;
+  expected_daily_price_date: string | null;
+  message: string;
+  warnings: string[];
 };
 
 export type KisBrokerAccountStatus = {
@@ -675,6 +703,36 @@ export async function fetchDataStatus(): Promise<DataStatus> {
 
   if (!response.ok) {
     throw new Error(`데이터 상태를 불러오지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function startManualDataRefresh(
+  request: ManualDataRefreshRequest = {}
+): Promise<ManualDataRefreshJob> {
+  const response = await fetch(`${API_BASE_URL}/api/data/manual-refresh`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(request)
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `최신 데이터 갱신을 시작하지 못했습니다. (${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchManualDataRefreshJob(jobId: string): Promise<ManualDataRefreshJob> {
+  const response = await fetch(`${API_BASE_URL}/api/data/manual-refresh/${jobId}`);
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `최신 데이터 갱신 상태를 불러오지 못했습니다. (${response.status})`);
   }
 
   return response.json();

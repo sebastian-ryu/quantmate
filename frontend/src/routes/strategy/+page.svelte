@@ -137,7 +137,7 @@
   let error = '';
 
   const showPaperTradingUi =
-    (env.PUBLIC_SHOW_PAPER_TRADING_UI ?? 'true').trim().toLowerCase() !== 'false';
+    (env.PUBLIC_SHOW_PAPER_TRADING_UI ?? 'false').trim().toLowerCase() === 'true';
 
   const candidateColumns = [
     { label: '종목', description: '종목명, 종목코드, 업종을 함께 표시합니다.' },

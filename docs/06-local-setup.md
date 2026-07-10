@@ -104,6 +104,7 @@ KIS_WS_URL=ws://ops.koreainvestment.com:31000
 KIS_WS_APPROVAL_KEY=
 KIS_WS_APPROVAL_CACHE_PATH=
 KIS_REALTIME_MAX_SYMBOLS=20
+PUBLIC_SHOW_PAPER_TRADING_UI=true
 PAPER_TRADING_ENABLED=false
 LIVE_TRADING_ENABLED=false
 EMERGENCY_STOP_ENABLED=false
@@ -114,7 +115,7 @@ MAX_DAILY_ORDER_COUNT=10
 MAX_DAILY_LOSS_KRW=50000
 ```
 
-`PAPER_TRADING_ENABLED=false`는 모의투자 주문 제출 잠금이다. 계좌 상태와 잔고 조회는 이 값과 무관하게 읽기 전용으로 동작한다. 모의주문 제출은 이 값을 `true`로 바꾸고, 요청 본문에 `confirm_submit=true`를 넣은 경우에만 동작한다.
+`PUBLIC_SHOW_PAPER_TRADING_UI=false`는 전략 화면에서 KIS 모의투자 계좌, 주문 제안, 모의 일괄 주문 영역을 아예 숨긴다. `PAPER_TRADING_ENABLED=false`는 화면 표시 여부와 별개인 서버 주문 제출 잠금이다. 계좌 상태와 잔고 조회는 이 값과 무관하게 읽기 전용으로 동작한다. 모의주문 제출은 이 값을 `true`로 바꾸고, 요청 본문에 `confirm_submit=true`를 넣은 경우에만 동작한다.
 주문 제출 전 서버는 `MAX_ORDER_AMOUNT_KRW`, `MAX_DAILY_ORDER_COUNT`, `EMERGENCY_STOP_ENABLED`, `MANUAL_ORDER_CONFIRMATION_REQUIRED`를 검사한다. 기본 1회 주문 한도는 `5,000,000원`이며, 시장가 주문은 KIS 현재가로 예상 주문금액을 계산한다. `DAILY_LOSS_STOP_ENABLED=true`면 주문 제출 직전에 KIS 잔고를 조회해 전일 대비 자산 감소액이 `MAX_DAILY_LOSS_KRW` 이상인지 확인한다.
 
 실전투자는 값을 교체하되 `LIVE_TRADING_ENABLED=false`를 유지하고, 실전 주문은 별도 안전장치 검토 전까지 사용하지 않는다.

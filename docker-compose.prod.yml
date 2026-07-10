@@ -57,6 +57,7 @@ services:
     restart: unless-stopped
     environment:
       PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}
+      PUBLIC_SHOW_PAPER_TRADING_UI: ${PUBLIC_SHOW_PAPER_TRADING_UI:-true}
       HOST: 0.0.0.0
       PORT: 5173
     depends_on:

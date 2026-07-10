@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { env } from '$env/dynamic/public';
   import DataRefreshPanel from '$lib/DataRefreshPanel.svelte';
   import {
     createKisOrderProposal,
@@ -135,6 +136,9 @@
   let loading = true;
   let error = '';
 
+  const showPaperTradingUi =
+    (env.PUBLIC_SHOW_PAPER_TRADING_UI ?? 'true').trim().toLowerCase() !== 'false';
+
   const candidateColumns = [
     { label: '종목', description: '종목명, 종목코드, 업종을 함께 표시합니다.' },
     { label: '전략 점수', description: '선택한 전략의 조건을 종합해 0~100점으로 환산한 순위 점수입니다.' },
@@ -168,7 +172,9 @@
       await tick();
       void loadExecutionContract(selectedStrategy);
       void loadCandidateRowsForSelectedStrategy();
-      void loadBrokerStatus();
+      if (showPaperTradingUi) {
+        void loadBrokerStatus();
+      }
       void loadRealtimeStatus();
       void loadStrategyPerformance();
     } catch (err) {
@@ -247,6 +253,20 @@
         ? '모의주문 가능'
         : '주문 잠김'
     : '상태 확인 중';
+  $: visibleExecutionModes =
+    executionContract?.modes.filter(
+      (mode) =>
+        showPaperTradingUi ||
+        ![
+          'paper-trading',
+          'live-trading',
+          'paper_order',
+          'live_order',
+          'paper-order-proposal',
+          'paper-order-submit',
+          'live-order-submit'
+        ].includes(mode.code)
+    ) ?? [];
 
   async function loadStrategyPerformance(refresh = false) {
     try {
@@ -411,6 +431,8 @@
   }
 
   async function loadBrokerStatus() {
+    if (!showPaperTradingUi) return;
+
     brokerLoading = true;
     brokerError = '';
     brokerOrderError = '';
@@ -434,6 +456,8 @@
   }
 
   async function loadTradingSafetyStatus() {
+    if (!showPaperTradingUi) return;
+
     try {
       tradingSafety = await fetchKisTradingSafetyStatus();
       tradingSafetyError = '';
@@ -498,6 +522,8 @@
   }
 
   async function loadBrokerAccount() {
+    if (!showPaperTradingUi) return;
+
     brokerLoading = true;
     brokerError = '';
     brokerOrderError = '';
@@ -535,6 +561,8 @@
   }
 
   async function checkBuyableCash() {
+    if (!showPaperTradingUi) return;
+
     const normalizedSymbol = buyableSymbol.trim();
     if (!normalizedSymbol) {
       buyableError = '종목코드를 입력해 주세요.';
@@ -559,6 +587,8 @@
   }
 
   async function createOrderProposal() {
+    if (!showPaperTradingUi) return;
+
     if (!selectedOption) {
       proposalError = '전략을 먼저 선택해 주세요.';
       return;
@@ -604,6 +634,8 @@
   }
 
   async function submitBatchOrders() {
+    if (!showPaperTradingUi) return;
+
     if (!orderProposal || !canSubmitBatchOrders) return;
 
     batchSubmitting = true;
@@ -858,7 +890,11 @@
           <div class="execution-contract-panel">
             <div class="contract-heading">
               <strong>실행 연결</strong>
-              <span>같은 전략 코드로 후보 검색, 백테스트, 주문 제안을 연결합니다.</span>
+              <span>
+                {showPaperTradingUi
+                  ? '같은 전략 코드로 후보 검색, 백테스트, 주문 제안을 연결합니다.'
+                  : '같은 전략 코드로 후보 검색과 백테스트를 연결합니다.'}
+              </span>
             </div>
             {#if executionContractLoading && !executionContract}
               <div class="contract-status-row">
@@ -870,7 +906,7 @@
               </div>
             {:else if executionContract}
               <div class="contract-status-row">
-                {#each executionContract.modes as mode}
+                {#each visibleExecutionModes as mode}
                   <span
                     class="status-pill execution-mode-pill tooltip-anchor"
                     class:ready={mode.enabled}
@@ -949,7 +985,8 @@
       {/if}
     </section>
 
-    <section class="panel broker-panel">
+    {#if showPaperTradingUi}
+      <section class="panel broker-panel">
       <div class="panel-heading inline">
         <div>
           <span>{brokerEnvironmentTitle}</span>
@@ -1229,7 +1266,8 @@
           {/if}
         {/if}
       {/if}
-    </section>
+      </section>
+    {/if}
 
     <section class="panel realtime-panel">
       <div class="panel-heading inline">
@@ -1320,7 +1358,8 @@
       {/if}
     </section>
 
-    <section class="panel order-proposal-panel">
+    {#if showPaperTradingUi}
+      <section class="panel order-proposal-panel">
       <div class="panel-heading inline">
         <div>
           <span>전략 주문 제안</span>
@@ -1490,7 +1529,8 @@
           </table>
         </div>
       {/if}
-    </section>
+      </section>
+    {/if}
 
     <section class="panel screener-results">
       <DataRefreshPanel

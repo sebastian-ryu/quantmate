@@ -3561,6 +3561,56 @@ def test_krx_market_daily_prices_import_saves_market_rows(monkeypatch) -> None:
         assert instrument_count == 2
 
 
+def test_krx_daily_price_coverage_reports_complete_market_range(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=[
+            {"symbol": "005930", "name": "삼성전자", "exchange": "KOSPI"},
+            {"symbol": "000660", "name": "SK하이닉스", "exchange": "KOSPI"},
+        ],
+        provider="KRX Open API",
+        start=date(2026, 6, 1),
+        days=5,
+    )
+
+    response = client.get(
+        "/api/data/krx/daily-prices/coverage",
+        params={"market": "KOSPI", "start": "2026-06-01", "end": "2026-06-05"},
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["market"] == "KOSPI"
+    assert data["expected_weekdays"] == 5
+    assert data["stored_trade_dates"] == 5
+    assert data["instrument_count"] == 2
+    assert data["complete"] is True
+
+
+def test_krx_daily_price_coverage_reports_incomplete_market_range(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=[{"symbol": "005930", "name": "삼성전자", "exchange": "KOSPI"}],
+        provider="KRX Open API",
+        start=date(2026, 6, 1),
+        days=2,
+    )
+
+    response = client.get(
+        "/api/data/krx/daily-prices/coverage",
+        params={"market": "KOSPI", "start": "2026-06-01", "end": "2026-06-05"},
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["expected_weekdays"] == 5
+    assert data["stored_trade_dates"] == 2
+    assert data["coverage_ratio"] == 0.4
+    assert data["complete"] is False
+
+
 def test_manual_data_refresh_job_imports_krx_market_data(monkeypatch) -> None:
     session_factory = use_sqlite_session(monkeypatch)
     main_module.MANUAL_DATA_REFRESH_JOBS.clear()

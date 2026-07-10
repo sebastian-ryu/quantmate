@@ -265,6 +265,21 @@ class BacktestPolicyResponse(BaseModel):
     slippage_pct: float
 
 
+class KrxDailyPriceCoverageResponse(BaseModel):
+    provider: str
+    market: str
+    start: date
+    end: date
+    expected_weekdays: int
+    stored_trade_dates: int
+    stored_rows: int
+    instrument_count: int
+    coverage_ratio: float
+    complete: bool
+    min_trade_date: date | None = None
+    max_trade_date: date | None = None
+
+
 class StrategyExecutionContractResponse(BaseModel):
     strategy_code: str
     strategy_name: str
@@ -4688,6 +4703,14 @@ def _latest_daily_price_date() -> date | None:
         return None
 
 
+def _iter_weekdays_local(start: date, end: date):
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            yield current
+        current += timedelta(days=1)
+
+
 def _run_manual_data_refresh(job_id: str, request: ManualDataRefreshRequest) -> None:
     markets = [market.strip().upper() for market in request.markets if market.strip()]
     markets = [market for market in markets if market in {"KOSPI", "KOSDAQ", "KONEX"}]
@@ -6364,6 +6387,90 @@ async def krx_daily_prices(
         exchange=exchange.strip().upper(),
         count=len(limited_prices),
         prices=[YahooDailyPrice(**item) for item in limited_prices],
+    )
+
+
+@app.get("/api/data/krx/daily-prices/coverage")
+async def krx_daily_price_coverage(
+    market: str,
+    start: date,
+    end: date,
+    min_ratio: float = 0.9,
+) -> KrxDailyPriceCoverageResponse:
+    normalized_market = market.strip().upper() or "KOSPI"
+    if normalized_market not in {"KOSPI", "KOSDAQ", "KONEX"}:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 KRX 시장입니다: {market}")
+    if end < start:
+        raise HTTPException(status_code=400, detail="종료일은 시작일보다 빠를 수 없습니다.")
+
+    safe_min_ratio = max(0.0, min(1.0, min_ratio))
+    expected_weekdays = sum(1 for current in _iter_weekdays_local(start, end))
+
+    try:
+        with SessionLocal() as session:
+            base_query = (
+                select(DailyPrice.trade_date)
+                .join(Instrument, DailyPrice.instrument_id == Instrument.id)
+                .where(
+                    DailyPrice.provider == "KRX Open API",
+                    DailyPrice.trade_date >= start,
+                    DailyPrice.trade_date <= end,
+                    Instrument.exchange == normalized_market,
+                )
+            )
+            stored_trade_dates = (
+                session.scalar(select(func.count()).select_from(base_query.distinct().subquery())) or 0
+            )
+            stored_rows = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(DailyPrice)
+                    .join(Instrument, DailyPrice.instrument_id == Instrument.id)
+                    .where(
+                        DailyPrice.provider == "KRX Open API",
+                        DailyPrice.trade_date >= start,
+                        DailyPrice.trade_date <= end,
+                        Instrument.exchange == normalized_market,
+                    )
+                )
+                or 0
+            )
+            instrument_count = (
+                session.scalar(
+                    select(func.count(func.distinct(DailyPrice.instrument_id)))
+                    .select_from(DailyPrice)
+                    .join(Instrument, DailyPrice.instrument_id == Instrument.id)
+                    .where(
+                        DailyPrice.provider == "KRX Open API",
+                        DailyPrice.trade_date >= start,
+                        DailyPrice.trade_date <= end,
+                        Instrument.exchange == normalized_market,
+                    )
+                )
+                or 0
+            )
+            min_trade_date = session.scalar(select(func.min(base_query.subquery().c.trade_date)))
+            max_trade_date = session.scalar(select(func.max(base_query.subquery().c.trade_date)))
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"KRX 일봉 커버리지 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    coverage_ratio = stored_trade_dates / expected_weekdays if expected_weekdays > 0 else 0
+    return KrxDailyPriceCoverageResponse(
+        provider="KRX Open API",
+        market=normalized_market,
+        start=start,
+        end=end,
+        expected_weekdays=expected_weekdays,
+        stored_trade_dates=stored_trade_dates,
+        stored_rows=stored_rows,
+        instrument_count=instrument_count,
+        coverage_ratio=round(coverage_ratio, 4),
+        complete=expected_weekdays > 0 and coverage_ratio >= safe_min_ratio and stored_rows > 0,
+        min_trade_date=min_trade_date,
+        max_trade_date=max_trade_date,
     )
 
 

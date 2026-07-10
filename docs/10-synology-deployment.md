@@ -131,7 +131,7 @@ cd /volume1/docker/quantmate/app
 sudo env HOME=/volume1/docker/quantmate/docker-home docker compose -f docker-compose.prod.yml ps
 ```
 
-기본 실행은 2010년부터 현재까지 KOSPI/KOSDAQ 일봉을 연도별로 나누어 적재한다.
+기본 실행은 2010년부터 현재까지 KOSPI/KOSDAQ 일봉을 월별 시장 단위로 나누어 적재한다.
 
 ```bash
 cd /volume1/docker/quantmate/app
@@ -153,11 +153,13 @@ BACKFILL_MARKETS="KOSPI KOSDAQ" \
 - `BACKFILL_END_YEAR`: 종료 연도, 기본값 현재 연도
 - `BACKFILL_MARKETS`: 적재 시장, 기본값 `KOSPI KOSDAQ`
 - `BACKFILL_IMPORT_INSTRUMENTS`: 시작 전 KRX 종목 마스터 갱신 여부, 기본값 `true`
+- `BACKFILL_FORCE_UPDATE`: 이미 적재된 월/시장도 다시 호출할지 여부, 기본값 `false`
+- `BACKFILL_SKIP_MIN_RATIO`: 이미 적재된 것으로 볼 거래일 커버리지 기준, 기본값 `0.9`
 - `BACKFILL_CONTINUE_ON_ERROR`: 실패 구간이 있어도 다음 구간을 계속 진행할지 여부, 기본값 `false`
 - `BACKFILL_DRY_RUN`: 실제 호출 없이 실행 계획만 출력, 기본값 `false`
 - `BACKFILL_LOG_DIR`: 로그 저장 폴더, 기본값 `./runtime/logs/backfill`
 
-스크립트는 KRX API의 1회 조회 제한을 피하기 위해 연도별로 API를 호출한다. 실패하면 로그의 마지막 `오류` 항목에 시장과 기간이 남으므로, 해당 기간만 다시 실행한다. 이 작업은 KRX 일별매매정보 서비스 권한과 `KRX_OPEN_API_AUTH_KEY`가 정상이어야 성공한다.
+스크립트는 KRX API의 1회 조회 제한을 피하고 중단 후 재개를 쉽게 하기 위해 월별 시장 단위로 API를 호출한다. 시작 시 전체 단계 수를 계산하고 `[현재/전체 완료율]` 형식으로 진행률을 남긴다. 기본값은 DB의 `daily_prices` 커버리지를 확인해 이미 충분히 적재된 월/시장을 건너뛰며, 다시 덮어 갱신하려면 `BACKFILL_FORCE_UPDATE=true`를 붙인다. 각 월/시장 호출은 `data_import_jobs`에도 작업 이력으로 남는다. 실패하면 로그의 마지막 `오류` 항목에 시장과 기간이 남으므로, 동일 명령을 다시 실행하면 완료된 월은 건너뛰고 부족한 월부터 이어서 진행된다. 이 작업은 KRX 일별매매정보 서비스 권한과 `KRX_OPEN_API_AUTH_KEY`가 정상이어야 성공한다.
 
 ## 백업
 

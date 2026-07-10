@@ -1579,6 +1579,20 @@ def test_strategy_candidates_unknown_strategy_returns_404() -> None:
     assert response.status_code == 404
 
 
+def test_backtest_run_rejects_year_before_krx_supported_range() -> None:
+    response = client.post(
+        "/api/backtests/run",
+        json={
+            "strategy_code": "relative-momentum-swing",
+            "start_year": 2009,
+            "end_year": 2010,
+            "initial_amount": 10000000,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_backtest_run_returns_monthly_equity_curve(monkeypatch) -> None:
     stub_empty_yahoo_prices(monkeypatch)
 

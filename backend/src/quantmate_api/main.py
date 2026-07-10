@@ -91,6 +91,7 @@ from quantmate_api.time_utils import now_kst_naive, today_kst
 
 MANUAL_DATA_REFRESH_JOBS: dict[str, dict[str, object]] = {}
 MANUAL_DATA_REFRESH_LOCK = threading.Lock()
+BACKTEST_MIN_START_YEAR = 2010
 
 
 class AppMode(StrEnum):
@@ -355,8 +356,8 @@ class BacktestPreview(BaseModel):
 
 class BacktestRunRequest(BaseModel):
     strategy_code: str
-    start_year: int = Field(ge=1990, le=2100)
-    end_year: int = Field(ge=1990, le=2100)
+    start_year: int = Field(ge=BACKTEST_MIN_START_YEAR, le=2100)
+    end_year: int = Field(ge=BACKTEST_MIN_START_YEAR, le=2100)
     initial_amount: int = Field(gt=0)
     benchmark_code: str = "kospi200"
     rebalance_interval_months: int | None = Field(default=None, ge=1, le=12)
@@ -2116,8 +2117,8 @@ def _strategy_performance_cache_key() -> str:
 
 def _build_strategy_performance_snapshot(strategy: Strategy) -> StrategyPerformanceSnapshot:
     end_year = today_kst().year
-    start_year = max(1990, end_year - max(STRATEGY_PERFORMANCE_WINDOWS) + 1)
-    data_start_date = date(max(start_year - 1, 1990), 1, 1)
+    start_year = max(BACKTEST_MIN_START_YEAR, end_year - max(STRATEGY_PERFORMANCE_WINDOWS) + 1)
+    data_start_date = date(max(start_year - 1, BACKTEST_MIN_START_YEAR), 1, 1)
     end_date = _expected_latest_daily_price_date()
     symbols = [item["symbol"] for item in _seed_candidates_for_strategy(strategy.code, limit=50)]
     data_as_of = _latest_daily_price_date_for_symbols(symbols)
@@ -2166,7 +2167,7 @@ def _empty_performance_windows(*, end_year: int, note: str) -> list[StrategyPerf
         StrategyPerformanceWindow(
             label=f"최근 {years}년",
             years=years,
-            start_year=max(1990, end_year - years + 1),
+            start_year=max(BACKTEST_MIN_START_YEAR, end_year - years + 1),
             end_year=end_year,
             status="unavailable",
             note=note,
@@ -2184,7 +2185,7 @@ def _performance_windows_from_backtest_result(
     windows: list[StrategyPerformanceWindow] = []
 
     for years in STRATEGY_PERFORMANCE_WINDOWS:
-        requested_start_year = max(1990, end_year - years + 1)
+        requested_start_year = max(BACKTEST_MIN_START_YEAR, end_year - years + 1)
         if len(curve) < 2:
             windows.append(
                 StrategyPerformanceWindow(
@@ -2573,7 +2574,7 @@ def _build_daily_price_backtest_if_available(
 ) -> dict[str, object] | None:
     first_year = min(start_year, end_year)
     last_year = max(start_year, end_year)
-    data_start_date = date(max(first_year - 1, 1990), 1, 1)
+    data_start_date = date(max(first_year - 1, BACKTEST_MIN_START_YEAR), 1, 1)
     end_date = date(last_year, 12, 31)
     candidate_symbols = [item["symbol"] for item in _seed_candidates_for_strategy(strategy_code, limit=50)]
 
@@ -3836,7 +3837,7 @@ def _candidate_daily_price_data_is_stale(
 
 def _candidate_price_start_date() -> date:
     today = today_kst()
-    return date(max(today.year - 5, 1990), 1, 1)
+    return date(max(today.year - 5, BACKTEST_MIN_START_YEAR), 1, 1)
 
 
 def _load_strategy_candidate_price_rows(

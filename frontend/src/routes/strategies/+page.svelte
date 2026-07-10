@@ -119,11 +119,11 @@
   let loading = true;
   let error = '';
 
-  const yahooStartYear = 1990;
+  const backtestStartYear = 2010;
   const currentYear = new Date().getFullYear();
-  const defaultStartYear = Math.max(yahooStartYear, currentYear - 5);
+  const defaultStartYear = Math.max(backtestStartYear, currentYear - 5);
   const yearOptions = Array.from(
-    { length: currentYear - yahooStartYear + 1 },
+    { length: currentYear - backtestStartYear + 1 },
     (_, index) => currentYear - index
   );
 

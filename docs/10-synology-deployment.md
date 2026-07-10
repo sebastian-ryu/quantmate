@@ -98,6 +98,45 @@ make prod-down
 
 운영에서 `docker compose down -v`는 사용하지 않는다. MySQL 볼륨이 삭제될 수 있다.
 
+## 초기 KRX 장기 일봉 적재
+
+NAS에 처음 배포한 뒤 장기 백테스트용 일봉을 채우려면 웹 버튼이 아니라 1회성 스크립트를 사용한다. 웹의 `최신 데이터 갱신` 버튼은 최근 데이터 유지용이며, 기본적으로 최근 10일만 갱신한다.
+
+앱이 실행 중인지 먼저 확인한다.
+
+```bash
+cd /volume1/docker/quantmate/app
+sudo env HOME=/volume1/docker/quantmate/docker-home docker compose -f docker-compose.prod.yml ps
+```
+
+기본 실행은 2010년부터 현재까지 KOSPI/KOSDAQ 일봉을 연도별로 나누어 적재한다.
+
+```bash
+cd /volume1/docker/quantmate/app
+sh scripts/krx-backfill-daily-prices.sh
+```
+
+특정 기간만 다시 적재하려면 아래처럼 실행한다.
+
+```bash
+BACKFILL_START_YEAR=2020 \
+BACKFILL_END_YEAR=2021 \
+BACKFILL_MARKETS="KOSPI KOSDAQ" \
+  sh scripts/krx-backfill-daily-prices.sh
+```
+
+주요 옵션:
+
+- `BACKFILL_START_YEAR`: 시작 연도, 기본값 `2010`
+- `BACKFILL_END_YEAR`: 종료 연도, 기본값 현재 연도
+- `BACKFILL_MARKETS`: 적재 시장, 기본값 `KOSPI KOSDAQ`
+- `BACKFILL_IMPORT_INSTRUMENTS`: 시작 전 KRX 종목 마스터 갱신 여부, 기본값 `true`
+- `BACKFILL_CONTINUE_ON_ERROR`: 실패 구간이 있어도 다음 구간을 계속 진행할지 여부, 기본값 `false`
+- `BACKFILL_DRY_RUN`: 실제 호출 없이 실행 계획만 출력, 기본값 `false`
+- `BACKFILL_LOG_DIR`: 로그 저장 폴더, 기본값 `./runtime/logs/backfill`
+
+스크립트는 KRX API의 1회 조회 제한을 피하기 위해 연도별로 API를 호출한다. 실패하면 로그의 마지막 `오류` 항목에 시장과 기간이 남으므로, 해당 기간만 다시 실행한다. 이 작업은 KRX 일별매매정보 서비스 권한과 `KRX_OPEN_API_AUTH_KEY`가 정상이어야 성공한다.
+
 ## 백업
 
 최소 백업 대상은 아래 세 가지다.

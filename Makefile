@@ -23,7 +23,7 @@ backend-dev:
 	python3 -m uvicorn quantmate_api.main:app --app-dir backend/src --reload --host 127.0.0.1 --port 8000
 
 frontend-dev:
-	npm --prefix frontend run dev -- --host 127.0.0.1
+	env $$(grep "^PUBLIC_" .env 2>/dev/null || true) npm --prefix frontend run dev -- --host 127.0.0.1
 
 db-up:
 	docker compose up -d mysql

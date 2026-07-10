@@ -39,6 +39,40 @@ wait_for_mysql() {
   exit 1
 }
 
+start_mysql() {
+  echo "MySQL을 시작합니다."
+  if docker compose up -d mysql; then
+    wait_for_mysql
+    return
+  fi
+
+  if port_in_use 3306; then
+    echo "Docker MySQL 시작 확인은 실패했지만 3306 포트가 열려 있어 기존 MySQL을 사용합니다."
+    return
+  fi
+
+  echo "MySQL을 시작하지 못했습니다. Docker 권한 또는 MySQL 실행 상태를 확인하세요."
+  exit 1
+}
+
+load_public_env_from_dotenv() {
+  local env_file="$ROOT_DIR/.env"
+  [[ -f "$env_file" ]] || return
+
+  while IFS='=' read -r key value; do
+    [[ "$key" =~ ^PUBLIC_[A-Za-z0-9_]*$ ]] || continue
+    value="${value%$'\r'}"
+
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+
+    export "$key=$value"
+  done < "$env_file"
+}
+
 start_managed_process() {
   local name="$1"
   local port="$2"
@@ -94,9 +128,7 @@ PY
 
 cd "$ROOT_DIR"
 
-echo "MySQL을 시작합니다."
-docker compose up -d mysql
-wait_for_mysql
+start_mysql
 
 echo "DB 마이그레이션을 적용합니다."
 python3 -m alembic -c "$ROOT_DIR/backend/alembic.ini" upgrade head
@@ -107,6 +139,8 @@ start_managed_process \
   "$RUN_DIR/backend.pid" \
   "$LOG_DIR/backend.log" \
   python3 -m uvicorn quantmate_api.main:app --app-dir "$ROOT_DIR/backend/src" --host 127.0.0.1 --port 8000
+
+load_public_env_from_dotenv
 
 start_managed_process \
   "프론트엔드 웹" \

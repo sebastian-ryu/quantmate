@@ -61,6 +61,8 @@ TOTAL_STEPS=0
 CURRENT_STEP=0
 STEP_STARTED_AT=0
 COVERAGE_SUMMARY=""
+FAILED_STEPS=""
+FAILED_STEP_COUNT=0
 
 log() {
   printf "%s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE"
@@ -306,9 +308,15 @@ run_step() {
   fi
 
   finish_step "$label" "오류"
+  FAILED_STEP_COUNT=$((FAILED_STEP_COUNT + 1))
+  FAILED_STEPS="${FAILED_STEPS}
+- $label"
   if [ "$CONTINUE_ON_ERROR" = "true" ]; then
     return 0
   fi
+  log "실패 구간 요약"
+  printf "%s\n" "$FAILED_STEPS" | tee -a "$LOG_FILE"
+  log "동일 명령을 다시 실행하면 완료된 월/시장은 스킵하고 부족한 구간부터 이어서 진행합니다."
   return 1
 }
 
@@ -366,4 +374,12 @@ while [ "$year" -le "$END_YEAR" ]; do
   year=$((year + 1))
 done
 
-log "KRX 장기 일봉 적재 완료 · 처리 단계 $CURRENT_STEP/$TOTAL_STEPS · 로그=$LOG_FILE"
+if [ "$FAILED_STEP_COUNT" -gt 0 ]; then
+  log "KRX 장기 일봉 적재 완료 · 처리 단계 $CURRENT_STEP/$TOTAL_STEPS · 실패 $FAILED_STEP_COUNT건 · 로그=$LOG_FILE"
+  log "실패 구간 요약"
+  printf "%s\n" "$FAILED_STEPS" | tee -a "$LOG_FILE"
+  log "재실행 안내: 동일 명령을 다시 실행하면 완료된 월/시장은 스킵하고 부족한 구간부터 이어서 진행합니다."
+  exit 1
+fi
+
+log "KRX 장기 일봉 적재 완료 · 처리 단계 $CURRENT_STEP/$TOTAL_STEPS · 실패 0건 · 로그=$LOG_FILE"

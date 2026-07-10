@@ -10,6 +10,8 @@ QuantMate는 주식 종목 선정, 전략 연구, 백테스트를 위한 로컬 
 
 NAS 초기 배포 후 장기 백테스트용 KRX 일봉은 `scripts/krx-backfill-daily-prices.sh`로 적재합니다. 기본값은 2010년부터 현재까지 KOSPI/KOSDAQ 일봉이며, KRX API 제한과 중단 후 재개를 고려해 월별 시장 단위로 나누어 저장합니다.
 
+KRX 장기 일봉 적재 후에는 `scripts/initial-enrichment.py`로 KIS 현재가, KIS 재무/수급/리스크, OpenDART 재무요약 보조 데이터를 채울 수 있습니다. 이 스크립트도 월별 종목 단위 진행률과 실패 구간 요약을 출력하며, DB 커버리지를 확인해 이미 충분히 적재된 종목/월은 건너뜁니다.
+
 먼저 볼 문서:
 
 - [프로젝트 개요](docs/00-project-brief.md)

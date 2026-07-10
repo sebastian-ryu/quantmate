@@ -3188,6 +3188,353 @@ def test_kis_financial_ratios_uses_market_data_provider(monkeypatch) -> None:
     assert data["items"][0]["roe"] == 15.7
 
 
+def test_local_instruments_returns_db_symbols(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    with session_factory() as session:
+        market = Market(code="KR", name="한국 주식", country="KR", currency="KRW", timezone="Asia/Seoul")
+        session.add(market)
+        session.flush()
+        session.add_all(
+            [
+                Instrument(
+                    market_id=market.id,
+                    symbol="005930",
+                    name="삼성전자",
+                    exchange="KOSPI",
+                    asset_type="stock",
+                    is_active=True,
+                ),
+                Instrument(
+                    market_id=market.id,
+                    symbol="247540",
+                    name="에코프로비엠",
+                    exchange="KOSDAQ",
+                    asset_type="stock",
+                    is_active=True,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/data/instruments/local?market=KOSPI&limit=10")
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["market"] == "KOSPI"
+    assert data["total"] == 1
+    assert data["items"][0]["symbol"] == "005930"
+    assert data["items"][0]["name"] == "삼성전자"
+
+
+def test_enrichment_import_saves_kis_auxiliary_data(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    monkeypatch.setattr(main_module, "is_kis_open_api_ready", lambda: True)
+    monkeypatch.setattr(main_module, "is_open_dart_ready", lambda: False)
+
+    def fake_fetch_kis_current_price(symbol: str) -> dict[str, object]:
+        assert symbol == "005930"
+        return {
+            "provider": "KIS Open API",
+            "symbol": "005930",
+            "name": "삼성전자",
+            "price": 78000,
+            "change": 1000,
+            "change_rate": 1.2,
+            "volume": 1000000,
+            "trading_value": 78000000000,
+            "open": 77000,
+            "high": 79000,
+            "low": 76000,
+            "market_state": "정규장",
+            "market_cap": 465000000000000,
+            "per": 12.5,
+            "pbr": 1.1,
+        }
+
+    def fake_fetch_kis_financial_ratios(
+        symbol: str,
+        period_type: str = "annual",
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert period_type == "annual"
+        assert limit == 8
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "fiscal_period": "202512",
+                "period_type": "annual",
+                "revenue_growth": 12.4,
+                "operating_income_growth": 23.5,
+                "net_income_growth": 34.6,
+                "roe": 15.7,
+                "debt_ratio": 42.1,
+            }
+        ]
+
+    def fake_fetch_kis_investor_trade_daily(
+        symbol: str,
+        base_date: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert base_date == date(2026, 6, 30)
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "trade_date": "2026-06-28",
+                "foreign_net_buy_qty": 1000,
+                "institution_net_buy_qty": 500,
+                "pension_net_buy_qty": 100,
+                "foreign_net_buy_value": 1000000000,
+                "institution_net_buy_value": 500000000,
+                "pension_net_buy_value": 100000000,
+                "individual_net_buy_value": -1600000000,
+            },
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "trade_date": "2026-05-31",
+                "foreign_net_buy_qty": 999,
+            },
+        ]
+
+    def fake_fetch_kis_daily_short_sale(
+        symbol: str,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert start == date(2026, 6, 1)
+        assert end == date(2026, 6, 30)
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "trade_date": "2026-06-28",
+                "short_sale_volume": 1000,
+                "short_sale_volume_ratio": 3.2,
+                "short_sale_value": 800000000,
+                "short_sale_value_ratio": 2.8,
+            }
+        ]
+
+    def fake_fetch_kis_daily_credit_balance(
+        symbol: str,
+        base_date: date | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        assert symbol == "005930"
+        assert base_date == date(2026, 6, 30)
+        return [
+            {
+                "provider": "KIS Open API",
+                "symbol": "005930",
+                "trade_date": "2026-06-28",
+                "margin_loan_balance": 100000000000,
+                "margin_loan_balance_rate": 1.2,
+                "margin_loan_new_amount": 12000000000,
+                "margin_loan_redeem_amount": 8000000000,
+                "stock_loan_balance": 1000000000,
+                "stock_loan_balance_rate": 0.1,
+            }
+        ]
+
+    monkeypatch.setattr(main_module, "fetch_kis_current_price", fake_fetch_kis_current_price)
+    monkeypatch.setattr(main_module, "fetch_kis_financial_ratios", fake_fetch_kis_financial_ratios)
+    monkeypatch.setattr(main_module, "fetch_kis_investor_trade_daily", fake_fetch_kis_investor_trade_daily)
+    monkeypatch.setattr(main_module, "fetch_kis_daily_short_sale", fake_fetch_kis_daily_short_sale)
+    monkeypatch.setattr(main_module, "fetch_kis_daily_credit_balance", fake_fetch_kis_daily_credit_balance)
+
+    response = client.post(
+        "/api/data/enrichment/import",
+        json={
+            "symbol": "005930",
+            "name": "삼성전자",
+            "exchange": "KOSPI",
+            "start": "2026-06-01",
+            "end": "2026-06-30",
+            "include_open_dart": False,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["quote_saved"] is True
+    assert data["kis_fundamental_saved_count"] == 1
+    assert data["supply_flow_saved_count"] == 1
+    assert data["risk_indicator_saved_count"] == 1
+
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(QuoteSnapshot)) == 1
+        assert session.scalar(select(func.count()).select_from(FundamentalRatio)) == 1
+        assert session.scalar(select(func.count()).select_from(SupplyFlowDaily)) == 1
+        assert session.scalar(select(func.count()).select_from(RiskIndicatorDaily)) == 1
+
+
+def test_enrichment_coverage_reports_complete_auxiliary_data(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    with session_factory() as session:
+        market = Market(code="KR", name="한국 주식", country="KR", currency="KRW", timezone="Asia/Seoul")
+        session.add(market)
+        session.flush()
+        instrument = Instrument(
+            market_id=market.id,
+            symbol="005930",
+            name="삼성전자",
+            exchange="KOSPI",
+            asset_type="stock",
+            is_active=True,
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(
+            QuoteSnapshot(
+                instrument_id=instrument.id,
+                snapshot_date=main_module.today_kst(),
+                provider=main_module.KIS_QUOTE_SNAPSHOT_PROVIDER,
+                price=78000,
+                change_pct=1.2,
+                volume=1000000,
+                trading_value=78000000000,
+                market_cap=465000000000000,
+                per=12.5,
+                pbr=1.1,
+                eps=None,
+                bps=None,
+                turnover_pct=None,
+                foreign_holding_rate=None,
+                foreign_net_buy_qty=None,
+                program_net_buy_qty=None,
+                high_52w=None,
+                low_52w=None,
+            )
+        )
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period="202512",
+                period_type="annual",
+                provider=main_module.KIS_FUNDAMENTAL_PROVIDER,
+                revenue_growth=12.4,
+                operating_income_growth=23.5,
+                net_income_growth=34.6,
+                roe=15.7,
+            )
+        )
+        session.add(
+            FundamentalRatio(
+                instrument_id=instrument.id,
+                fiscal_period="202512",
+                period_type="annual",
+                provider=main_module.OPEN_DART_FUNDAMENTAL_PROVIDER,
+                revenue_growth=20.0,
+            )
+        )
+        for offset in range(5):
+            trade_date = date(2026, 6, 1) + timedelta(days=offset)
+            session.add(
+                SupplyFlowDaily(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    provider=main_module.KIS_SUPPLY_FLOW_PROVIDER,
+                    foreign_net_buy_qty=1000,
+                    institution_net_buy_qty=500,
+                    pension_net_buy_qty=100,
+                    foreign_net_buy_value=1000000000,
+                    institution_net_buy_value=500000000,
+                    pension_net_buy_value=100000000,
+                    individual_net_buy_value=-1600000000,
+                )
+            )
+            session.add(
+                RiskIndicatorDaily(
+                    instrument_id=instrument.id,
+                    trade_date=trade_date,
+                    provider=main_module.KIS_RISK_INDICATOR_PROVIDER,
+                    short_sale_volume=1000,
+                    short_sale_volume_ratio=3.2,
+                    short_sale_value=800000000,
+                    short_sale_value_ratio=2.8,
+                    margin_loan_balance=100000000000,
+                    margin_loan_balance_rate=1.2,
+                    margin_loan_new_amount=12000000000,
+                    margin_loan_redeem_amount=8000000000,
+                    stock_loan_balance=1000000000,
+                    stock_loan_balance_rate=0.1,
+                )
+            )
+        session.commit()
+
+    response = client.post(
+        "/api/data/enrichment/coverage",
+        json={
+            "symbol": "005930",
+            "name": "삼성전자",
+            "exchange": "KOSPI",
+            "start": "2026-06-01",
+            "end": "2026-06-05",
+            "open_dart_business_years": [2025],
+            "min_ratio": 0.8,
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["complete"] is True
+    assert data["static_complete"] is True
+    assert data["monthly_complete"] is True
+    assert data["quote_exists"] is True
+    assert data["kis_fundamental_count"] == 1
+    assert data["open_dart_stored_years"] == [2025]
+    assert data["supply_flow_coverage_ratio"] == 1.0
+    assert data["risk_indicator_coverage_ratio"] == 1.0
+    assert data["missing_parts"] == []
+
+
+def test_enrichment_coverage_reports_missing_auxiliary_data(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    with session_factory() as session:
+        market = Market(code="KR", name="한국 주식", country="KR", currency="KRW", timezone="Asia/Seoul")
+        session.add(market)
+        session.flush()
+        session.add(
+            Instrument(
+                market_id=market.id,
+                symbol="005930",
+                name="삼성전자",
+                exchange="KOSPI",
+                asset_type="stock",
+                is_active=True,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/data/enrichment/coverage",
+        json={
+            "symbol": "005930",
+            "name": "삼성전자",
+            "exchange": "KOSPI",
+            "start": "2026-06-01",
+            "end": "2026-06-05",
+            "open_dart_business_years": [2025],
+        },
+    )
+    data = response.json()
+
+    assert response.status_code == 200
+    assert data["complete"] is False
+    assert "KIS 현재가" in data["missing_parts"]
+    assert "KIS 재무비율" in data["missing_parts"]
+    assert "OpenDART 재무요약" in data["missing_parts"]
+    assert "KIS 수급" in data["missing_parts"]
+    assert "KIS 리스크" in data["missing_parts"]
+
+
 def test_kis_access_token_reuses_file_cache(monkeypatch, tmp_path) -> None:
     token_path = tmp_path / "kis_token_cache.json"
     issue_count = 0

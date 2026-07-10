@@ -1103,6 +1103,75 @@ class KisFinancialRatioResponse(BaseModel):
     items: list[KisFinancialRatioItem]
 
 
+class LocalInstrumentItem(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+
+
+class LocalInstrumentListResponse(BaseModel):
+    market: str
+    total: int
+    offset: int
+    limit: int
+    count: int
+    items: list[LocalInstrumentItem]
+
+
+class EnrichmentImportRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    name: str | None = Field(default=None, max_length=200)
+    exchange: str = Field(default="KOSPI", max_length=40)
+    start: date | None = None
+    end: date | None = None
+    include_quote: bool = True
+    include_kis_fundamentals: bool = True
+    include_supply_flow: bool = True
+    include_risk_indicators: bool = True
+    include_open_dart: bool = True
+    open_dart_business_years: list[int] | None = None
+
+
+class EnrichmentCoverageRequest(EnrichmentImportRequest):
+    min_ratio: float = Field(default=0.8, ge=0, le=1)
+
+
+class EnrichmentImportResponse(BaseModel):
+    provider: str
+    symbol: str
+    name: str
+    exchange: str
+    start: date
+    end: date
+    quote_saved: bool
+    kis_fundamental_saved_count: int
+    supply_flow_saved_count: int
+    risk_indicator_saved_count: int
+    open_dart_saved_count: int
+    warnings: list[str]
+
+
+class EnrichmentCoverageResponse(BaseModel):
+    symbol: str
+    name: str
+    exchange: str
+    start: date
+    end: date
+    complete: bool
+    static_complete: bool
+    monthly_complete: bool
+    quote_exists: bool
+    kis_fundamental_count: int
+    open_dart_expected_years: list[int]
+    open_dart_stored_years: list[int]
+    expected_weekdays: int
+    supply_flow_trade_dates: int
+    risk_indicator_trade_dates: int
+    supply_flow_coverage_ratio: float
+    risk_indicator_coverage_ratio: float
+    missing_parts: list[str]
+
+
 class YahooDailyPriceImportRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     name: str | None = Field(default=None, max_length=200)
@@ -4711,6 +4780,23 @@ def _iter_weekdays_local(start: date, end: date):
         current += timedelta(days=1)
 
 
+def _filter_rows_by_trade_date(
+    rows: list[dict[str, object]],
+    *,
+    start: date,
+    end: date,
+) -> list[dict[str, object]]:
+    filtered_rows: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            trade_date = _row_trade_date(row)
+        except (TypeError, ValueError):
+            continue
+        if start <= trade_date <= end:
+            filtered_rows.append(row)
+    return filtered_rows
+
+
 def _run_manual_data_refresh(job_id: str, request: ManualDataRefreshRequest) -> None:
     markets = [market.strip().upper() for market in request.markets if market.strip()]
     markets = [market for market in markets if market in {"KOSPI", "KOSDAQ", "KONEX"}]
@@ -6362,6 +6448,67 @@ async def kis_financial_ratios(
     )
 
 
+@app.get("/api/data/instruments/local")
+async def local_instruments(
+    market: str = "ALL",
+    limit: int = 100,
+    offset: int = 0,
+    active_only: bool = True,
+) -> LocalInstrumentListResponse:
+    normalized_market = market.strip().upper() or "ALL"
+    safe_limit = max(1, min(limit, 500))
+    safe_offset = max(0, offset)
+    market_filter = {"KOSPI", "KOSDAQ", "KONEX"}
+    if normalized_market != "ALL":
+        market_filter = {normalized_market}
+
+    try:
+        with SessionLocal() as session:
+            conditions = [Instrument.exchange.in_(market_filter)]
+            if active_only:
+                conditions.append(Instrument.is_active.is_(True))
+            total = session.scalar(select(func.count()).select_from(Instrument).where(*conditions)) or 0
+            rows = (
+                session.scalars(
+                    select(Instrument)
+                    .where(*conditions)
+                    .order_by(Instrument.exchange.asc(), Instrument.symbol.asc())
+                    .offset(safe_offset)
+                    .limit(safe_limit)
+                )
+                .all()
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"로컬 종목 목록 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    return LocalInstrumentListResponse(
+        market=normalized_market,
+        total=total,
+        offset=safe_offset,
+        limit=safe_limit,
+        count=len(rows),
+        items=[
+            LocalInstrumentItem(symbol=row.symbol, name=row.name, exchange=row.exchange)
+            for row in rows
+        ],
+    )
+
+
+@app.post("/api/data/enrichment/import")
+async def import_enrichment_data(request: EnrichmentImportRequest) -> EnrichmentImportResponse:
+    response = await run_in_threadpool(_import_enrichment_data, request)
+    return response
+
+
+@app.post("/api/data/enrichment/coverage")
+async def enrichment_coverage(request: EnrichmentCoverageRequest) -> EnrichmentCoverageResponse:
+    response = await run_in_threadpool(_enrichment_coverage, request)
+    return response
+
+
 @app.get("/api/data/krx/daily-prices")
 async def krx_daily_prices(
     symbol: str,
@@ -7528,6 +7675,314 @@ def _save_kis_daily_prices(
         fetched_count=len(prices),
         saved_count=saved_count,
         message=job.message,
+    )
+
+
+def _import_enrichment_data(request: EnrichmentImportRequest) -> EnrichmentImportResponse:
+    symbol = request.symbol.strip().upper()
+    name = request.name or symbol
+    exchange = request.exchange.strip().upper() or "KOSPI"
+    end_date = request.end or today_kst()
+    start_date = request.start or (end_date - timedelta(days=30))
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="종료일은 시작일보다 빠를 수 없습니다.")
+
+    quote_saved = False
+    kis_fundamental_saved_count = 0
+    supply_flow_saved_count = 0
+    risk_indicator_saved_count = 0
+    open_dart_saved_count = 0
+    warnings: list[str] = []
+
+    if request.include_quote:
+        if is_kis_open_api_ready():
+            try:
+                quote = fetch_kis_current_price(symbol=symbol)
+                with SessionLocal() as session:
+                    _save_kis_quote_snapshot(
+                        session=session,
+                        quote=quote,
+                        fallback_name=name,
+                        fallback_exchange=exchange,
+                    )
+                quote_saved = True
+            except (MarketDataProviderUnavailable, ValueError, SQLAlchemyError) as exc:
+                warnings.append(f"KIS 현재가 저장 실패: {exc}")
+        else:
+            warnings.append("KIS 인증 정보가 없어 현재가를 건너뜁니다.")
+
+    if request.include_kis_fundamentals:
+        if is_kis_open_api_ready():
+            try:
+                ratios = fetch_kis_financial_ratios(symbol=symbol, period_type="annual", limit=8)
+                with SessionLocal() as session:
+                    kis_fundamental_saved_count = _save_kis_fundamental_ratios(
+                        session=session,
+                        symbol=symbol,
+                        name=name,
+                        exchange=exchange,
+                        ratios=ratios,
+                    )
+            except (MarketDataProviderUnavailable, ValueError, SQLAlchemyError) as exc:
+                warnings.append(f"KIS 재무비율 저장 실패: {exc}")
+        else:
+            warnings.append("KIS 인증 정보가 없어 재무비율을 건너뜁니다.")
+
+    if request.include_supply_flow:
+        if is_kis_open_api_ready():
+            try:
+                expected_weekdays = max(1, sum(1 for _ in _iter_weekdays_local(start_date, end_date)))
+                flows = fetch_kis_investor_trade_daily(
+                    symbol=symbol,
+                    base_date=end_date,
+                    limit=min(100, expected_weekdays + 10),
+                )
+                flows = _filter_rows_by_trade_date(flows, start=start_date, end=end_date)
+                with SessionLocal() as session:
+                    supply_flow_saved_count = _save_kis_supply_flows(
+                        session=session,
+                        symbol=symbol,
+                        name=name,
+                        exchange=exchange,
+                        flows=flows,
+                    )
+            except (MarketDataProviderUnavailable, ValueError, SQLAlchemyError) as exc:
+                warnings.append(f"KIS 수급 저장 실패: {exc}")
+        else:
+            warnings.append("KIS 인증 정보가 없어 수급 데이터를 건너뜁니다.")
+
+    if request.include_risk_indicators:
+        if is_kis_open_api_ready():
+            try:
+                expected_weekdays = max(1, sum(1 for _ in _iter_weekdays_local(start_date, end_date)))
+                short_sale_rows = fetch_kis_daily_short_sale(
+                    symbol=symbol,
+                    start=start_date,
+                    end=end_date,
+                    limit=min(100, expected_weekdays + 10),
+                )
+                credit_balance_rows = fetch_kis_daily_credit_balance(
+                    symbol=symbol,
+                    base_date=end_date,
+                    limit=min(100, expected_weekdays + 10),
+                )
+                short_sale_rows = _filter_rows_by_trade_date(short_sale_rows, start=start_date, end=end_date)
+                credit_balance_rows = _filter_rows_by_trade_date(
+                    credit_balance_rows,
+                    start=start_date,
+                    end=end_date,
+                )
+                with SessionLocal() as session:
+                    risk_indicator_saved_count = _save_kis_risk_indicators(
+                        session=session,
+                        symbol=symbol,
+                        name=name,
+                        exchange=exchange,
+                        short_sale_rows=short_sale_rows,
+                        credit_balance_rows=credit_balance_rows,
+                    )
+            except (MarketDataProviderUnavailable, ValueError, SQLAlchemyError) as exc:
+                warnings.append(f"KIS 리스크 지표 저장 실패: {exc}")
+        else:
+            warnings.append("KIS 인증 정보가 없어 리스크 지표를 건너뜁니다.")
+
+    if request.include_open_dart:
+        if is_open_dart_ready():
+            for business_year in _open_dart_expected_years_for_enrichment(request, end_date):
+                try:
+                    items = fetch_open_dart_financial_statements(
+                        symbol=symbol,
+                        business_year=business_year,
+                        report_code="11011",
+                        fs_div="CFS",
+                        force_refresh_corp_codes=False,
+                    )
+                    summary = summarize_open_dart_financial_statements(items)
+                    fallback_name = str(items[0].get("corp_name") or name) if items else name
+                    with SessionLocal() as session:
+                        open_dart_saved_count += _save_open_dart_fundamental_summary(
+                            session=session,
+                            symbol=symbol,
+                            name=fallback_name,
+                            exchange=exchange,
+                            business_year=business_year,
+                            summary=summary,
+                        )
+                except (MarketDataProviderUnavailable, ValueError, SQLAlchemyError) as exc:
+                    warnings.append(f"OpenDART {business_year} 재무요약 저장 실패: {exc}")
+        else:
+            warnings.append("OpenDART API 키가 없어 재무요약을 건너뜁니다.")
+
+    return EnrichmentImportResponse(
+        provider="KIS Open API + OpenDART",
+        symbol=symbol,
+        name=name,
+        exchange=exchange,
+        start=start_date,
+        end=end_date,
+        quote_saved=quote_saved,
+        kis_fundamental_saved_count=kis_fundamental_saved_count,
+        supply_flow_saved_count=supply_flow_saved_count,
+        risk_indicator_saved_count=risk_indicator_saved_count,
+        open_dart_saved_count=open_dart_saved_count,
+        warnings=warnings,
+    )
+
+
+def _open_dart_expected_years_for_enrichment(request: EnrichmentImportRequest, end_date: date) -> list[int]:
+    years = request.open_dart_business_years or [end_date.year - offset for offset in range(1, 4)]
+    return sorted(set(years), reverse=True)
+
+
+def _enrichment_coverage(request: EnrichmentCoverageRequest) -> EnrichmentCoverageResponse:
+    symbol = request.symbol.strip().upper()
+    name = request.name or symbol
+    exchange = request.exchange.strip().upper() or "KOSPI"
+    end_date = request.end or today_kst()
+    start_date = request.start or (end_date - timedelta(days=30))
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="종료일은 시작일보다 빠를 수 없습니다.")
+
+    expected_weekdays = sum(1 for _ in _iter_weekdays_local(start_date, end_date))
+    safe_expected_weekdays = max(1, expected_weekdays)
+    expected_open_dart_years = _open_dart_expected_years_for_enrichment(request, end_date)
+    quote_exists = False
+    kis_fundamental_count = 0
+    open_dart_stored_years: list[int] = []
+    supply_flow_trade_dates = 0
+    risk_indicator_trade_dates = 0
+    missing_parts: list[str] = []
+
+    try:
+        with SessionLocal() as session:
+            instrument = session.scalar(select(Instrument).where(Instrument.symbol == symbol))
+            if instrument is None:
+                missing_parts.append("종목 마스터 없음")
+            else:
+                if request.include_quote:
+                    quote_exists = (
+                        session.scalar(
+                            select(func.count())
+                            .select_from(QuoteSnapshot)
+                            .where(
+                                QuoteSnapshot.instrument_id == instrument.id,
+                                QuoteSnapshot.snapshot_date == today_kst(),
+                                QuoteSnapshot.provider == KIS_QUOTE_SNAPSHOT_PROVIDER,
+                            )
+                        )
+                        or 0
+                    ) > 0
+
+                if request.include_kis_fundamentals:
+                    kis_fundamental_count = (
+                        session.scalar(
+                            select(func.count())
+                            .select_from(FundamentalRatio)
+                            .where(
+                                FundamentalRatio.instrument_id == instrument.id,
+                                FundamentalRatio.provider == KIS_FUNDAMENTAL_PROVIDER,
+                            )
+                        )
+                        or 0
+                    )
+
+                if request.include_open_dart:
+                    stored_periods = (
+                        session.scalars(
+                            select(FundamentalRatio.fiscal_period)
+                            .where(
+                                FundamentalRatio.instrument_id == instrument.id,
+                                FundamentalRatio.provider == OPEN_DART_FUNDAMENTAL_PROVIDER,
+                            )
+                            .distinct()
+                        )
+                        .all()
+                    )
+                    stored_years = {
+                        int(period[:4])
+                        for period in stored_periods
+                        if isinstance(period, str) and len(period) >= 4 and period[:4].isdigit()
+                    }
+                    open_dart_stored_years = [
+                        business_year for business_year in expected_open_dart_years if business_year in stored_years
+                    ]
+
+                if request.include_supply_flow:
+                    supply_flow_trade_dates = (
+                        session.scalar(
+                            select(func.count(func.distinct(SupplyFlowDaily.trade_date)))
+                            .select_from(SupplyFlowDaily)
+                            .where(
+                                SupplyFlowDaily.instrument_id == instrument.id,
+                                SupplyFlowDaily.provider == KIS_SUPPLY_FLOW_PROVIDER,
+                                SupplyFlowDaily.trade_date >= start_date,
+                                SupplyFlowDaily.trade_date <= end_date,
+                            )
+                        )
+                        or 0
+                    )
+
+                if request.include_risk_indicators:
+                    risk_indicator_trade_dates = (
+                        session.scalar(
+                            select(func.count(func.distinct(RiskIndicatorDaily.trade_date)))
+                            .select_from(RiskIndicatorDaily)
+                            .where(
+                                RiskIndicatorDaily.instrument_id == instrument.id,
+                                RiskIndicatorDaily.provider == KIS_RISK_INDICATOR_PROVIDER,
+                                RiskIndicatorDaily.trade_date >= start_date,
+                                RiskIndicatorDaily.trade_date <= end_date,
+                            )
+                        )
+                        or 0
+                    )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"보조 데이터 커버리지 조회 실패: {exc.__class__.__name__}",
+        ) from exc
+
+    supply_flow_ratio = supply_flow_trade_dates / safe_expected_weekdays
+    risk_indicator_ratio = risk_indicator_trade_dates / safe_expected_weekdays
+
+    static_complete = True
+    if request.include_quote and not quote_exists:
+        static_complete = False
+        missing_parts.append("KIS 현재가")
+    if request.include_kis_fundamentals and kis_fundamental_count <= 0:
+        static_complete = False
+        missing_parts.append("KIS 재무비율")
+    if request.include_open_dart and len(open_dart_stored_years) < len(expected_open_dart_years):
+        static_complete = False
+        missing_parts.append("OpenDART 재무요약")
+
+    monthly_complete = True
+    if request.include_supply_flow and supply_flow_ratio < request.min_ratio:
+        monthly_complete = False
+        missing_parts.append("KIS 수급")
+    if request.include_risk_indicators and risk_indicator_ratio < request.min_ratio:
+        monthly_complete = False
+        missing_parts.append("KIS 리스크")
+
+    return EnrichmentCoverageResponse(
+        symbol=symbol,
+        name=name,
+        exchange=exchange,
+        start=start_date,
+        end=end_date,
+        complete=static_complete and monthly_complete and "종목 마스터 없음" not in missing_parts,
+        static_complete=static_complete and "종목 마스터 없음" not in missing_parts,
+        monthly_complete=monthly_complete and "종목 마스터 없음" not in missing_parts,
+        quote_exists=quote_exists,
+        kis_fundamental_count=kis_fundamental_count,
+        open_dart_expected_years=expected_open_dart_years,
+        open_dart_stored_years=open_dart_stored_years,
+        expected_weekdays=expected_weekdays,
+        supply_flow_trade_dates=supply_flow_trade_dates,
+        risk_indicator_trade_dates=risk_indicator_trade_dates,
+        supply_flow_coverage_ratio=round(supply_flow_ratio, 4),
+        risk_indicator_coverage_ratio=round(risk_indicator_ratio, 4),
+        missing_parts=missing_parts,
     )
 
 

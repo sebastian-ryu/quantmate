@@ -161,6 +161,41 @@ BACKFILL_MARKETS="KOSPI KOSDAQ" \
 
 스크립트는 KRX API의 1회 조회 제한을 피하고 중단 후 재개를 쉽게 하기 위해 월별 시장 단위로 API를 호출한다. 시작 시 전체 단계 수를 계산하고 `[현재/전체 완료율]` 형식으로 진행률을 남긴다. 기본값은 DB의 `daily_prices` 커버리지를 확인해 이미 충분히 적재된 월/시장을 건너뛰며, 다시 덮어 갱신하려면 `BACKFILL_FORCE_UPDATE=true`를 붙인다. 각 월/시장 호출은 `data_import_jobs`에도 작업 이력으로 남는다. 실패하면 로그의 마지막 `오류` 항목에 시장과 기간이 남으므로, 동일 명령을 다시 실행하면 완료된 월은 건너뛰고 부족한 월부터 이어서 진행된다. 이 작업은 KRX 일별매매정보 서비스 권한과 `KRX_OPEN_API_AUTH_KEY`가 정상이어야 성공한다.
 
+## 초기 보조 데이터 적재
+
+KRX 장기 일봉 적재 후 전략/검색기 품질을 높이려면 KIS와 OpenDART 보조 데이터를 채운다. 이 작업은 웹 버튼이 아니라 NAS 터미널에서 실행한다.
+
+```bash
+cd /volume1/docker/quantmate/app
+python3 scripts/initial-enrichment.py
+```
+
+기본 실행은 DB에 저장된 KOSPI/KOSDAQ 종목을 대상으로 최근 1년의 월별 수급/리스크 데이터를 적재하고, 종목별 현재가/재무 보조 데이터도 함께 적재한다. 처음에는 호출량을 확인하기 위해 일부 종목만 실행하는 것을 권장한다.
+
+```bash
+ENRICHMENT_SYMBOL_LIMIT=20 \
+ENRICHMENT_START_DATE=2026-01-01 \
+ENRICHMENT_END_DATE=2026-03-31 \
+python3 scripts/initial-enrichment.py
+```
+
+주요 옵션:
+
+- `ENRICHMENT_API_BASE_URL`: API 주소, 기본값 `http://127.0.0.1:8000`
+- `ENRICHMENT_MARKETS`: 대상 시장, 기본값 `KOSPI KOSDAQ`
+- `ENRICHMENT_START_DATE`: 월별 수급/리스크 시작일, 기본값 실행일 기준 최근 1년
+- `ENRICHMENT_END_DATE`: 월별 수급/리스크 종료일, 기본값 실행일
+- `ENRICHMENT_SYMBOL_LIMIT`: 테스트용 최대 종목 수, 기본값 `0`은 제한 없음
+- `ENRICHMENT_SLEEP_SECONDS`: API 호출 사이 대기 시간, 기본값 `0.2`
+- `ENRICHMENT_CONTINUE_ON_ERROR`: 실패 종목이 있어도 계속 진행할지 여부, 기본값 `true`
+- `ENRICHMENT_FORCE_UPDATE`: 이미 적재된 종목/월도 다시 호출할지 여부, 기본값 `false`
+- `ENRICHMENT_SKIP_MIN_RATIO`: 수급/리스크 월별 커버리지 완료 기준, 기본값 `0.8`
+- `ENRICHMENT_INCLUDE_STATIC`: 현재가/재무 같은 정적 보조 데이터 적재 여부, 기본값 `true`
+- `ENRICHMENT_INCLUDE_MONTHLY`: 수급/리스크 월별 적재 여부, 기본값 `true`
+- `ENRICHMENT_OPEN_DART_YEARS`: OpenDART 사업연도 직접 지정, 예: `2025 2024 2023`
+
+스크립트는 `[현재/전체 완료율]` 형식으로 진행률을 출력한다. 각 단계 전에 DB 커버리지를 확인해 이미 충분히 적재된 정적 종목 데이터나 월별 수급/리스크 구간은 스킵한다. 실패 구간이 있으면 마지막에 종목, 기간, 오류를 모아 보여준다. KIS 또는 OpenDART 호출 제한에 걸리면 `ENRICHMENT_SLEEP_SECONDS`를 늘리거나 `ENRICHMENT_SYMBOL_LIMIT`로 나누어 실행한다. 데이터가 있어도 다시 갱신하려면 `ENRICHMENT_FORCE_UPDATE=true`를 붙인다.
+
 ## 백업
 
 최소 백업 대상은 아래 세 가지다.

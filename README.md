@@ -76,7 +76,7 @@ make db-seed
 
 ## Docker 배포
 
-Synology DS224+ 같은 NAS에는 운영용 Compose 파일을 사용한다.
+Synology NAS에는 운영용 Compose 파일을 사용한다.
 
 ```bash
 make prod-build

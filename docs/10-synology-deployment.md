@@ -35,6 +35,7 @@ MYSQL_DATABASE=quantmate
 MYSQL_USER=quantmate
 MYSQL_PASSWORD=운영_DB_비밀번호
 MYSQL_ROOT_PASSWORD=운영_ROOT_비밀번호
+MYSQL_PUBLIC_PORT=3306
 
 QM_MYSQL_DATA_PATH=/volume1/docker/quantmate/mysql
 QM_BACKEND_RUNTIME_PATH=/volume1/docker/quantmate/backend-runtime
@@ -55,6 +56,8 @@ LIVE_TRADING_ENABLED=false
 ```
 
 `NAS_IP`는 실제 NAS 접속 주소로 바꾼다. 브라우저가 직접 API를 호출하므로 `PUBLIC_API_BASE_URL`은 컨테이너 이름이 아니라 사용자의 브라우저에서 접근 가능한 주소여야 한다.
+
+`MYSQL_PUBLIC_PORT`는 내부망 GUI DB 클라이언트 접속용이다. Synology 방화벽에서 Mac IP 또는 내부망 대역만 TCP 3306을 허용하고, 공유기 포트포워딩으로 3306을 외부에 열지 않는다.
 
 ## 실행
 
@@ -97,6 +100,25 @@ make prod-down
 - 백엔드 로그는 `QM_BACKEND_LOG_PATH`에 저장한다.
 
 운영에서 `docker compose down -v`는 사용하지 않는다. MySQL 볼륨이 삭제될 수 있다.
+
+## MySQL GUI 클라이언트 접속
+
+운영 Compose는 MySQL을 `MYSQL_PUBLIC_PORT`로 NAS에 노출한다. 내부망에서 GUI 클라이언트로 접속할 때는 아래 값을 사용한다.
+
+```text
+Host: NAS_IP
+Port: 3306
+Database: quantmate
+User: quantmate
+Password: .env의 MYSQL_PASSWORD
+```
+
+보안 기준:
+
+- Synology 방화벽에서 TCP 3306은 Mac IP 또는 신뢰하는 내부망 대역만 허용한다.
+- 공유기에서 3306 포트포워딩을 설정하지 않는다.
+- DB 클라이언트는 `root`가 아니라 `MYSQL_USER` 계정을 사용한다.
+- `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`는 운영용 강한 비밀번호를 사용한다.
 
 ## 초기 KRX 장기 일봉 적재
 

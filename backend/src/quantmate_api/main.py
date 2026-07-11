@@ -6627,7 +6627,8 @@ async def import_krx_daily_prices(
     request: KrxDailyPriceImportRequest,
 ) -> KrxDailyPriceImportResponse:
     try:
-        prices = fetch_krx_daily_prices(
+        prices = await run_in_threadpool(
+            fetch_krx_daily_prices,
             symbol=request.symbol,
             exchange=request.exchange,
             start=request.start,
@@ -6642,8 +6643,7 @@ async def import_krx_daily_prices(
         raise HTTPException(status_code=404, detail="KRX 일봉 데이터가 없습니다.")
 
     try:
-        with SessionLocal() as session:
-            response = _save_krx_daily_prices(session=session, request=request, prices=prices)
+        response = await run_in_threadpool(_save_krx_daily_prices_with_session, request, prices)
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=503,
@@ -6673,8 +6673,7 @@ async def import_krx_market_daily_prices(
         raise HTTPException(status_code=404, detail="KRX 시장 일봉 데이터가 없습니다.")
 
     try:
-        with SessionLocal() as session:
-            response = _save_krx_market_daily_prices(session=session, request=request, prices=prices)
+        response = await run_in_threadpool(_save_krx_market_daily_prices_with_session, request, prices)
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=503,
@@ -6697,7 +6696,7 @@ async def import_krx_daily_prices_for_strategy(
     if strategy is None and user_strategy is None:
         raise HTTPException(status_code=404, detail="전략을 찾지 못했습니다.")
 
-    return _import_krx_daily_prices_for_strategy_candidates(request)
+    return await run_in_threadpool(_import_krx_daily_prices_for_strategy_candidates, request)
 
 
 def _import_krx_daily_prices_for_strategy_candidates(
@@ -7461,6 +7460,14 @@ def _save_krx_daily_prices(
     )
 
 
+def _save_krx_daily_prices_with_session(
+    request: KrxDailyPriceImportRequest,
+    prices: list[dict[str, object]],
+) -> KrxDailyPriceImportResponse:
+    with SessionLocal() as session:
+        return _save_krx_daily_prices(session=session, request=request, prices=prices)
+
+
 def _save_krx_market_daily_prices(
     *,
     session,
@@ -7582,6 +7589,14 @@ def _save_krx_market_daily_prices(
         saved_count=saved_count,
         message=job.message,
     )
+
+
+def _save_krx_market_daily_prices_with_session(
+    request: KrxMarketDailyPriceImportRequest,
+    prices: list[dict[str, object]],
+) -> KrxMarketDailyPriceImportResponse:
+    with SessionLocal() as session:
+        return _save_krx_market_daily_prices(session=session, request=request, prices=prices)
 
 
 def _save_kis_daily_prices(

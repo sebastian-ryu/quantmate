@@ -914,7 +914,7 @@ def test_strategy_candidates_use_daily_prices_when_available(monkeypatch) -> Non
     assert response.status_code == 200
     assert data["source"] == "daily-price-candidates:Yahoo Finance"
     assert data["data_freshness"]["latest_daily_price_date"] == "2026-02-09"
-    assert data["data_freshness"]["expected_daily_price_date"] == main_module.today_kst().isoformat()
+    assert data["data_freshness"]["expected_daily_price_date"] == main_module._expected_latest_daily_price_date().isoformat()
     assert data["data_freshness"]["daily_price_status"] == "stale"
     assert data["data_freshness"]["warnings"]
     assert data["data_freshness"]["daily_price_providers"] == ["Yahoo Finance"]

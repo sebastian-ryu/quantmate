@@ -16,6 +16,8 @@ API_BASE_URL = os.getenv("ENRICHMENT_API_BASE_URL") or os.getenv("BACKFILL_API_B
 MARKETS = [item.strip().upper() for item in os.getenv("ENRICHMENT_MARKETS", "KOSPI KOSDAQ").replace(",", " ").split()]
 PAGE_SIZE = max(1, min(int(os.getenv("ENRICHMENT_PAGE_SIZE", "200")), 500))
 SYMBOL_LIMIT = max(0, int(os.getenv("ENRICHMENT_SYMBOL_LIMIT", "0")))
+REQUEST_TIMEOUT_SECONDS = max(5, int(os.getenv("ENRICHMENT_REQUEST_TIMEOUT_SECONDS", "1800")))
+INSTRUMENT_REQUEST_TIMEOUT_SECONDS = max(5, int(os.getenv("ENRICHMENT_INSTRUMENT_REQUEST_TIMEOUT_SECONDS", "60")))
 SLEEP_SECONDS = float(os.getenv("ENRICHMENT_SLEEP_SECONDS", "0.2"))
 CONTINUE_ON_ERROR = os.getenv("ENRICHMENT_CONTINUE_ON_ERROR", "true").lower() == "true"
 FORCE_UPDATE = os.getenv("ENRICHMENT_FORCE_UPDATE", "false").lower() == "true"
@@ -83,7 +85,13 @@ def month_chunks(start: date, end: date) -> list[MonthChunk]:
     return chunks
 
 
-def request_json(method: str, path: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+def request_json(
+    method: str,
+    path: str,
+    payload: dict[str, object] | None = None,
+    *,
+    timeout_seconds: int | None = None,
+) -> dict[str, object]:
     url = f"{API_BASE_URL}{path}"
     body = None
     headers = {"Accept": "application/json"}
@@ -99,7 +107,7 @@ def request_json(method: str, path: str, payload: dict[str, object] | None = Non
 
     request = urllib.request.Request(url=url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=1800) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds or REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -114,7 +122,12 @@ def get_instruments_for_market(market: str) -> list[Instrument]:
     offset = 0
     while True:
         params = urllib.parse.urlencode({"market": market, "limit": PAGE_SIZE, "offset": offset})
-        data = request_json("GET", f"/api/data/instruments/local?{params}")
+        print(f"종목 목록 조회 중: {market} offset={offset} limit={PAGE_SIZE}", flush=True)
+        data = request_json(
+            "GET",
+            f"/api/data/instruments/local?{params}",
+            timeout_seconds=INSTRUMENT_REQUEST_TIMEOUT_SECONDS,
+        )
         if DRY_RUN:
             return []
 
@@ -265,8 +278,13 @@ def run_step(index: int, total: int, label: str, payload: dict[str, object]) -> 
 
 
 def main() -> int:
+    print("초기 보조 데이터 적재 준비", flush=True)
+    print(f"API_BASE_URL={API_BASE_URL}", flush=True)
+    print(f"시장={' '.join(MARKETS)}, 기간={START_DATE}~{END_DATE}, 종목 제한={SYMBOL_LIMIT or '전체'}", flush=True)
+    print("종목 목록 조회 시작", flush=True)
     chunks = month_chunks(START_DATE, END_DATE)
     instruments = load_instruments()
+    print(f"종목 목록 조회 완료: {len(instruments)}개", flush=True)
     static_steps = len(instruments) if INCLUDE_STATIC and (INCLUDE_QUOTE or INCLUDE_KIS_FUNDAMENTALS or INCLUDE_OPEN_DART) else 0
     monthly_steps = (
         len(instruments) * len(chunks)
@@ -278,7 +296,6 @@ def main() -> int:
     skipped_count = 0
 
     print("초기 보조 데이터 적재 시작", flush=True)
-    print(f"API_BASE_URL={API_BASE_URL}", flush=True)
     print(f"시장={' '.join(MARKETS)}, 종목={len(instruments)}개, 기간={START_DATE}~{END_DATE}", flush=True)
     print(f"실행 단위=정적 종목 청크 + 월별 종목 청크, 전체 단계={total_steps}", flush=True)
     print(f"스킵 기준: FORCE_UPDATE={str(FORCE_UPDATE).lower()}, SKIP_MIN_RATIO={SKIP_MIN_RATIO}", flush=True)

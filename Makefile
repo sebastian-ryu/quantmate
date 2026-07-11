@@ -1,4 +1,4 @@
-.PHONY: dev dev-up dev-stop dev-down dev-logs backend-dev frontend-dev db-up db-down db-logs db-migrate db-revision db-seed install-backend install-frontend prod-build prod-up prod-down prod-logs krx-backfill
+.PHONY: dev dev-up dev-stop dev-down dev-logs backend-dev frontend-dev db-up db-down db-logs db-migrate db-revision db-seed install-backend install-frontend prod-build prod-up prod-down prod-logs deploy-update krx-backfill
 
 install-backend:
 	python3 -m pip install -e "backend[dev]"
@@ -54,6 +54,9 @@ prod-down:
 
 prod-logs:
 	docker compose -f docker-compose.prod.yml logs -f
+
+deploy-update:
+	sh scripts/deploy-update.sh
 
 krx-backfill:
 	sh scripts/krx-backfill-daily-prices.sh

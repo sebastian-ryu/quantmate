@@ -89,6 +89,18 @@ make prod-down
 
 자세한 절차와 NAS 경로 설정은 [Synology Docker 배포](docs/10-synology-deployment.md)를 본다.
 
+NAS에 이미 배포된 앱을 최신 코드로 갱신할 때는 배포 스크립트를 사용한다.
+
+```bash
+sh scripts/deploy-update.sh
+```
+
+백엔드만 갱신할 때:
+
+```bash
+sh scripts/deploy-update.sh backend
+```
+
 ## 안전 기준
 
 이 프로젝트는 투자 연구와 자동화를 위한 소프트웨어입니다. 투자 조언이 아닙니다.

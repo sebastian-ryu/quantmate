@@ -85,6 +85,50 @@ make prod-logs
 make prod-down
 ```
 
+## 배포 업데이트
+
+NAS에 이미 배포된 앱을 최신 코드로 갱신할 때는 긴 Docker Compose 명령을 직접 입력하지 않고 배포 스크립트를 사용한다.
+
+```bash
+cd /volume1/docker/quantmate/app
+sh scripts/deploy-update.sh
+```
+
+스크립트는 아래 순서로 처리한다.
+
+- `git pull --ff-only`로 최신 코드를 가져온다.
+- 운영 Compose 이미지와 컨테이너를 다시 빌드/시작한다.
+- 컨테이너 상태를 출력한다.
+- 백엔드와 프론트엔드 헬스체크를 수행한다.
+
+백엔드 코드만 바뀐 경우에는 백엔드만 갱신할 수 있다.
+
+```bash
+cd /volume1/docker/quantmate/app
+sh scripts/deploy-update.sh backend
+```
+
+프론트엔드만 갱신할 때:
+
+```bash
+cd /volume1/docker/quantmate/app
+sh scripts/deploy-update.sh frontend
+```
+
+지원 대상은 `all`, `backend`, `frontend`, `mysql`이다. 기본값은 `all`이다.
+
+NAS의 Docker 권한 때문에 기본적으로 스크립트 내부에서 `sudo env HOME=/volume1/docker/quantmate/docker-home docker compose ...` 형식으로 실행한다. 다른 경로를 사용할 경우 아래처럼 바꿀 수 있다.
+
+```bash
+DEPLOY_DOCKER_HOME=/volume1/docker/quantmate/docker-home sh scripts/deploy-update.sh backend
+```
+
+이미 NAS에서 직접 코드를 수정했거나 수동으로 `git pull`을 끝낸 상태라면 Git pull을 건너뛸 수 있다.
+
+```bash
+DEPLOY_SKIP_GIT_PULL=true sh scripts/deploy-update.sh backend
+```
+
 ## Container Manager에서 사용할 때
 
 1. QuantMate 프로젝트 폴더를 NAS에 복사한다.

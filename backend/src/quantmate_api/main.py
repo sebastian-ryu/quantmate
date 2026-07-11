@@ -8245,32 +8245,32 @@ def _save_kis_fundamental_ratios(
             continue
 
         values = {
-            "revenue_growth": _decimal_or_none(row.get("revenue_growth")),
-            "operating_income_growth": _decimal_or_none(row.get("operating_income_growth")),
-            "net_income_growth": _decimal_or_none(row.get("net_income_growth")),
-            "roe": _decimal_or_none(row.get("roe")),
-            "roa": _decimal_or_none(row.get("roa")),
-            "operating_margin": _decimal_or_none(row.get("operating_margin")),
-            "net_margin": _decimal_or_none(row.get("net_margin")),
+            "revenue_growth": _fundamental_percent_or_none("revenue_growth", row.get("revenue_growth")),
+            "operating_income_growth": _fundamental_percent_or_none("operating_income_growth", row.get("operating_income_growth")),
+            "net_income_growth": _fundamental_percent_or_none("net_income_growth", row.get("net_income_growth")),
+            "roe": _fundamental_percent_or_none("roe", row.get("roe")),
+            "roa": _fundamental_percent_or_none("roa", row.get("roa")),
+            "operating_margin": _fundamental_percent_or_none("operating_margin", row.get("operating_margin")),
+            "net_margin": _fundamental_percent_or_none("net_margin", row.get("net_margin")),
             "free_cash_flow": _decimal_or_none(row.get("free_cash_flow")),
             "dividends_paid": _decimal_or_none(row.get("dividends_paid")),
             "current_assets": _decimal_or_none(row.get("current_assets")),
             "current_liabilities": _decimal_or_none(row.get("current_liabilities")),
             "cash_and_cash_equivalents": _decimal_or_none(row.get("cash_and_cash_equivalents")),
             "ebitda": _decimal_or_none(row.get("ebitda")),
-            "fcf_yield": _decimal_or_none(row.get("fcf_yield")),
-            "ev_ebitda": _decimal_or_none(row.get("ev_ebitda")),
-            "dividend_yield": _decimal_or_none(row.get("dividend_yield")),
-            "payout_ratio": _decimal_or_none(row.get("payout_ratio")),
-            "current_ratio": _decimal_or_none(row.get("current_ratio")),
-            "dividend_growth": _decimal_or_none(row.get("dividend_growth")),
+            "fcf_yield": _fundamental_percent_or_none("fcf_yield", row.get("fcf_yield")),
+            "ev_ebitda": _fundamental_percent_or_none("ev_ebitda", row.get("ev_ebitda")),
+            "dividend_yield": _fundamental_percent_or_none("dividend_yield", row.get("dividend_yield")),
+            "payout_ratio": _fundamental_percent_or_none("payout_ratio", row.get("payout_ratio")),
+            "current_ratio": _fundamental_percent_or_none("current_ratio", row.get("current_ratio")),
+            "dividend_growth": _fundamental_percent_or_none("dividend_growth", row.get("dividend_growth")),
             "dividend_streak_years": _int_or_none(row.get("dividend_streak_years")),
             "dividend_stability_score": _int_or_none(row.get("dividend_stability_score")),
             "eps": _decimal_or_none(row.get("eps")),
             "sps": _decimal_or_none(row.get("sps")),
             "bps": _decimal_or_none(row.get("bps")),
-            "reserve_ratio": _decimal_or_none(row.get("reserve_ratio")),
-            "debt_ratio": _decimal_or_none(row.get("debt_ratio")),
+            "reserve_ratio": _fundamental_percent_or_none("reserve_ratio", row.get("reserve_ratio")),
+            "debt_ratio": _fundamental_percent_or_none("debt_ratio", row.get("debt_ratio")),
         }
         existing = session.scalar(
             select(FundamentalRatio).where(
@@ -8330,31 +8330,34 @@ def _save_open_dart_fundamental_summary(
     current_liabilities = _decimal_or_none(summary.get("current_liabilities"))
     cash_and_cash_equivalents = _decimal_or_none(summary.get("cash_and_cash_equivalents"))
     ebitda = _decimal_or_none(summary.get("ebitda"))
-    fcf_yield = _percent_from_amount(free_cash_flow, market_cap)
-    dividend_yield = _percent_from_amount(dividends_paid, market_cap)
-    payout_ratio = _percent_from_amount(dividends_paid, net_income)
-    ev_ebitda = _ev_ebitda_ratio(
-        market_cap=market_cap,
-        liabilities=liabilities,
-        cash_and_cash_equivalents=cash_and_cash_equivalents,
-        ebitda=ebitda,
+    fcf_yield = _fundamental_percent_or_none("fcf_yield", _percent_from_amount(free_cash_flow, market_cap))
+    dividend_yield = _fundamental_percent_or_none("dividend_yield", _percent_from_amount(dividends_paid, market_cap))
+    payout_ratio = _fundamental_percent_or_none("payout_ratio", _percent_from_amount(dividends_paid, net_income))
+    ev_ebitda = _fundamental_percent_or_none(
+        "ev_ebitda",
+        _ev_ebitda_ratio(
+            market_cap=market_cap,
+            liabilities=liabilities,
+            cash_and_cash_equivalents=cash_and_cash_equivalents,
+            ebitda=ebitda,
+        ),
     )
-    dividend_growth = _decimal_or_none(summary.get("dividend_growth"))
+    dividend_growth = _fundamental_percent_or_none("dividend_growth", summary.get("dividend_growth"))
     dividend_stability_score = _dividend_stability_score_from_values(
         dividend_yield=dividend_yield,
         payout_ratio=payout_ratio,
         fcf_yield=fcf_yield,
         dividend_growth=dividend_growth,
-        debt_ratio=_decimal_or_none(summary.get("debt_ratio")),
+        debt_ratio=_fundamental_percent_or_none("debt_ratio", summary.get("debt_ratio")),
     )
     values = {
-        "revenue_growth": _decimal_or_none(summary.get("revenue_growth")),
-        "operating_income_growth": _decimal_or_none(summary.get("operating_income_growth")),
-        "net_income_growth": _decimal_or_none(summary.get("net_income_growth")),
-        "roe": _decimal_or_none(summary.get("roe")),
-        "roa": _decimal_or_none(summary.get("roa")),
-        "operating_margin": _decimal_or_none(summary.get("operating_margin")),
-        "net_margin": _decimal_or_none(summary.get("net_margin")),
+        "revenue_growth": _fundamental_percent_or_none("revenue_growth", summary.get("revenue_growth")),
+        "operating_income_growth": _fundamental_percent_or_none("operating_income_growth", summary.get("operating_income_growth")),
+        "net_income_growth": _fundamental_percent_or_none("net_income_growth", summary.get("net_income_growth")),
+        "roe": _fundamental_percent_or_none("roe", summary.get("roe")),
+        "roa": _fundamental_percent_or_none("roa", summary.get("roa")),
+        "operating_margin": _fundamental_percent_or_none("operating_margin", summary.get("operating_margin")),
+        "net_margin": _fundamental_percent_or_none("net_margin", summary.get("net_margin")),
         "free_cash_flow": free_cash_flow,
         "dividends_paid": dividends_paid,
         "current_assets": current_assets,
@@ -8365,7 +8368,7 @@ def _save_open_dart_fundamental_summary(
         "ev_ebitda": ev_ebitda,
         "dividend_yield": dividend_yield,
         "payout_ratio": payout_ratio,
-        "current_ratio": _decimal_or_none(summary.get("current_ratio")),
+        "current_ratio": _fundamental_percent_or_none("current_ratio", summary.get("current_ratio")),
         "dividend_growth": dividend_growth,
         "dividend_streak_years": 1 if dividends_paid is not None and dividends_paid > 0 else None,
         "dividend_stability_score": dividend_stability_score,
@@ -8373,7 +8376,7 @@ def _save_open_dart_fundamental_summary(
         "sps": None,
         "bps": None,
         "reserve_ratio": None,
-        "debt_ratio": _decimal_or_none(summary.get("debt_ratio")),
+        "debt_ratio": _fundamental_percent_or_none("debt_ratio", summary.get("debt_ratio")),
     }
     if not any(value is not None for value in values.values()):
         return 0
@@ -8552,6 +8555,38 @@ def _decimal_or_none(value: object) -> Decimal | None:
     if isinstance(value, str) and not value.strip():
         return None
     return Decimal(str(value))
+
+
+FUNDAMENTAL_RATIO_LIMITS: dict[str, tuple[Decimal | None, Decimal | None]] = {
+    "revenue_growth": (Decimal("-10000"), Decimal("10000")),
+    "operating_income_growth": (Decimal("-10000"), Decimal("10000")),
+    "net_income_growth": (Decimal("-10000"), Decimal("10000")),
+    "roe": (Decimal("-10000"), Decimal("10000")),
+    "roa": (Decimal("-10000"), Decimal("10000")),
+    "operating_margin": (Decimal("-10000"), Decimal("10000")),
+    "net_margin": (Decimal("-10000"), Decimal("10000")),
+    "fcf_yield": (Decimal("-1000"), Decimal("1000")),
+    "ev_ebitda": (Decimal("0"), Decimal("1000")),
+    "dividend_yield": (Decimal("0"), Decimal("100")),
+    "payout_ratio": (Decimal("-1000"), Decimal("1000")),
+    "current_ratio": (Decimal("0"), Decimal("10000")),
+    "dividend_growth": (Decimal("-10000"), Decimal("10000")),
+    "reserve_ratio": (Decimal("-10000"), Decimal("10000")),
+    "debt_ratio": (Decimal("0"), Decimal("10000")),
+}
+
+
+def _fundamental_percent_or_none(field: str, value: object) -> Decimal | None:
+    decimal_value = _decimal_or_none(value)
+    if decimal_value is None:
+        return None
+
+    lower, upper = FUNDAMENTAL_RATIO_LIMITS.get(field, (Decimal("-99999999"), Decimal("99999999")))
+    if lower is not None and decimal_value < lower:
+        return None
+    if upper is not None and decimal_value > upper:
+        return None
+    return decimal_value
 
 
 def _int_or_none(value: object) -> int | None:

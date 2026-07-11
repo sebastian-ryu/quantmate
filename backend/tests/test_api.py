@@ -2644,6 +2644,74 @@ def test_import_open_dart_financial_statements_saves_summary(monkeypatch) -> Non
     assert float(ratio.ev_ebitda) == 52.5
 
 
+def test_open_dart_fundamental_summary_drops_outlier_derived_ratios(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+
+    with session_factory() as session:
+        market = Market(code="KR", name="Korea", country="KR", currency="KRW", timezone="Asia/Seoul")
+        session.add(market)
+        session.flush()
+        instrument = Instrument(
+            market_id=market.id,
+            symbol="000440",
+            name="중앙에너비스",
+            exchange="KOSDAQ",
+            asset_type="stock",
+            is_active=True,
+        )
+        session.add(instrument)
+        session.flush()
+        session.add(
+            QuoteSnapshot(
+                instrument_id=instrument.id,
+                snapshot_date=date(2026, 7, 11),
+                provider=main_module.KIS_QUOTE_SNAPSHOT_PROVIDER,
+                market_cap=100,
+                price=100,
+                change_pct=0,
+                volume=1,
+                trading_value=100,
+            )
+        )
+        session.commit()
+
+    with session_factory() as session:
+        saved_count = main_module._save_open_dart_fundamental_summary(
+            session=session,
+            symbol="000440",
+            name="중앙에너비스",
+            exchange="KOSDAQ",
+            business_year=2025,
+            summary={
+                "revenue_growth": -0.44,
+                "operating_income_growth": 0.13,
+                "net_income_growth": -18.21,
+                "roe": -2.14,
+                "roa": -2.03,
+                "operating_margin": -3.52,
+                "net_margin": -2.25,
+                "free_cash_flow": 484192640,
+                "dividends_paid": 1418827200,
+                "current_assets": 9354242983,
+                "current_liabilities": 1167171691,
+                "current_ratio": 801.45,
+                "cash_and_cash_equivalents": 18119373,
+                "ebitda": -1743958445,
+                "debt_ratio": 5.74,
+            },
+        )
+        ratio = session.scalar(
+            select(FundamentalRatio).where(FundamentalRatio.provider == main_module.OPEN_DART_FUNDAMENTAL_PROVIDER)
+        )
+
+    assert saved_count == 1
+    assert ratio is not None
+    assert ratio.fcf_yield is None
+    assert ratio.dividend_yield is None
+    assert ratio.dividend_stability_score is None
+    assert float(ratio.current_ratio) == 801.45
+
+
 def test_krx_instruments_preview_uses_market_data_provider(monkeypatch) -> None:
     def fake_fetch_krx_instruments(
         market: str,

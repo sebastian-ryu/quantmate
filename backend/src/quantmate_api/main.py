@@ -3260,9 +3260,10 @@ def _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 30,
-) -> None:
+) -> bool:
+    """새 일봉이 실제로 적재되면 True를 반환한다(호출부의 불필요한 후보 재계산 방지)."""
     try:
-        _import_yahoo_daily_prices_for_strategy_candidates(
+        response = _import_yahoo_daily_prices_for_strategy_candidates(
             YahooDailyPriceBatchImportRequest(
                 strategy_code=strategy_code,
                 start=_candidate_price_start_date(),
@@ -3271,8 +3272,9 @@ def _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
                 is_adjusted=False,
             )
         )
+        return response.success_count > 0
     except (HTTPException, SQLAlchemyError, ValueError):
-        return
+        return False
 
 
 def _auto_import_kis_daily_prices_for_strategy_candidates_if_needed(
@@ -3302,9 +3304,9 @@ def _auto_import_kis_quote_snapshots_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 12,
-) -> None:
+) -> bool:
     candidates = _seed_candidates_for_strategy(strategy_code, limit=max_symbols)
-    _auto_import_kis_quote_snapshots_for_candidates_if_needed(
+    return _auto_import_kis_quote_snapshots_for_candidates_if_needed(
         candidates=candidates,
         max_symbols=max_symbols,
     )
@@ -3314,15 +3316,16 @@ def _auto_import_kis_quote_snapshots_for_candidates_if_needed(
     *,
     candidates: list[dict[str, object]],
     max_symbols: int = 12,
-) -> None:
+) -> bool:
+    """새 현재가 스냅샷을 실제로 저장하면 True를 반환한다."""
     if not is_kis_open_api_ready():
-        return
+        return False
 
     safe_limit = max(1, min(max_symbols, _kis_current_quote_refresh_max_symbols()))
     target_candidates = candidates[:safe_limit]
     symbols = [str(item["symbol"]) for item in target_candidates]
     if not symbols:
-        return
+        return False
 
     try:
         max_age_minutes = _kis_current_quote_max_age_minutes()
@@ -3343,12 +3346,13 @@ def _auto_import_kis_quote_snapshots_for_candidates_if_needed(
                     ).all()
                 )
     except SQLAlchemyError:
-        return
+        return False
 
     missing_symbols = [symbol for symbol in symbols if symbol not in existing_symbols]
     if not missing_symbols:
-        return
+        return False
 
+    saved = 0
     for candidate in target_candidates:
         symbol = str(candidate["symbol"])
         if symbol not in missing_symbols:
@@ -3363,25 +3367,29 @@ def _auto_import_kis_quote_snapshots_for_candidates_if_needed(
                     fallback_name=str(candidate["name"]),
                     fallback_exchange=str(candidate["exchange"]),
                 )
+            saved += 1
         except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError):
             continue
+
+    return saved > 0
 
 
 def _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 12,
-) -> None:
+) -> bool:
+    """새 수급 데이터를 실제로 저장하면 True를 반환한다."""
     if not is_kis_open_api_ready():
-        return
+        return False
     if _is_kis_supply_flow_in_cooldown():
-        return
+        return False
 
     safe_limit = max(1, min(max_symbols, 12))
     candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
     symbols = [str(item["symbol"]) for item in candidates]
     if not symbols:
-        return
+        return False
 
     freshness_date = today_kst() - timedelta(days=5)
     try:
@@ -3399,8 +3407,9 @@ def _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
                 ).all()
             )
     except SQLAlchemyError:
-        return
+        return False
 
+    saved = 0
     for candidate in candidates:
         symbol = str(candidate["symbol"])
         if symbol in fresh_symbols:
@@ -3418,11 +3427,14 @@ def _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
                     exchange=str(candidate["exchange"]),
                     flows=flows,
                 )
+            saved += 1
         except MarketDataProviderUnavailable:
             _pause_kis_supply_flow_import(minutes=10)
             break
         except (SQLAlchemyError, ValueError):
             continue
+
+    return saved > 0
 
 
 def _is_kis_supply_flow_in_cooldown() -> bool:
@@ -3438,17 +3450,18 @@ def _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 12,
-) -> None:
+) -> bool:
+    """새 리스크 지표를 실제로 저장하면 True를 반환한다."""
     if not is_kis_open_api_ready():
-        return
+        return False
     if _is_kis_risk_indicator_in_cooldown():
-        return
+        return False
 
     safe_limit = max(1, min(max_symbols, 8))
     candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
     symbols = [str(item["symbol"]) for item in candidates]
     if not symbols:
-        return
+        return False
 
     freshness_date = today_kst() - timedelta(days=7)
     try:
@@ -3466,8 +3479,9 @@ def _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
                 ).all()
             )
     except SQLAlchemyError:
-        return
+        return False
 
+    saved = 0
     for candidate in candidates:
         symbol = str(candidate["symbol"])
         if symbol in fresh_symbols:
@@ -3514,12 +3528,15 @@ def _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
                     short_sale_rows=short_sale_rows,
                     credit_balance_rows=credit_balance_rows,
                 )
+            saved += 1
 
             if should_pause:
                 _pause_kis_risk_indicator_import(minutes=10)
                 break
         except (SQLAlchemyError, ValueError):
             continue
+
+    return saved > 0
 
 
 def _is_kis_risk_indicator_in_cooldown() -> bool:
@@ -3535,17 +3552,18 @@ def _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 6,
-) -> None:
+) -> bool:
+    """새 KIS 재무비율을 실제로 저장하면 True를 반환한다."""
     if not is_kis_open_api_ready():
-        return
+        return False
     if _is_kis_fundamental_in_cooldown():
-        return
+        return False
 
     safe_limit = max(1, min(max_symbols, 4))
     candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
     symbols = [str(item["symbol"]) for item in candidates]
     if not symbols:
-        return
+        return False
 
     try:
         with SessionLocal() as session:
@@ -3562,8 +3580,9 @@ def _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
                 ).all()
             )
     except SQLAlchemyError:
-        return
+        return False
 
+    saved = 0
     for candidate in candidates:
         symbol = str(candidate["symbol"])
         if symbol in fresh_symbols:
@@ -3581,6 +3600,7 @@ def _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
                     exchange=str(candidate["exchange"]),
                     ratios=rows,
                 )
+            saved += 1
         except MarketDataProviderUnavailable as exc:
             if _is_kis_temporary_limit_error(exc):
                 _pause_kis_fundamental_import(minutes=10)
@@ -3588,6 +3608,8 @@ def _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
             continue
         except (SQLAlchemyError, ValueError):
             continue
+
+    return saved > 0
 
 
 def _is_kis_fundamental_in_cooldown() -> bool:
@@ -3603,17 +3625,18 @@ def _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
     strategy_code: str,
     *,
     max_symbols: int = 6,
-) -> None:
+) -> bool:
+    """새 OpenDART 재무요약을 실제로 저장하면 True를 반환한다."""
     if not is_open_dart_ready():
-        return
+        return False
     if _is_open_dart_fundamental_in_cooldown():
-        return
+        return False
 
     safe_limit = max(1, min(max_symbols, 4))
     candidates = _seed_candidates_for_strategy(strategy_code, limit=safe_limit)
     symbols = [str(item["symbol"]) for item in candidates]
     if not symbols:
-        return
+        return False
 
     try:
         with SessionLocal() as session:
@@ -3633,8 +3656,9 @@ def _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
                 ).all()
             )
     except SQLAlchemyError:
-        return
+        return False
 
+    saved = 0
     for candidate in candidates:
         symbol = str(candidate["symbol"])
         if symbol in fresh_symbols:
@@ -3651,6 +3675,7 @@ def _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
                     business_year=business_year,
                     summary=summary,
                 )
+            saved += 1
         except MarketDataProviderUnavailable as exc:
             if _is_open_dart_temporary_limit_error(exc):
                 _pause_open_dart_fundamental_import(minutes=30)
@@ -3658,6 +3683,8 @@ def _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
             continue
         except (SQLAlchemyError, ValueError):
             continue
+
+    return saved > 0
 
 
 def _open_dart_candidate_business_years(max_years: int = 3) -> list[int]:
@@ -3800,44 +3827,51 @@ def _load_strategy_candidate_result(
                 daily_price_candidates = refreshed_kis_candidates
 
     if _candidate_result_count(daily_price_candidates) < target_count:
-        _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
+        yahoo_imported = _auto_import_yahoo_daily_prices_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=max(target_count, min(safe_limit, 30)),
         )
-        refreshed_yahoo_candidates = _build_daily_price_strategy_candidates_if_available(
-            strategy_code,
-            limit=safe_limit,
-        )
-        if refreshed_yahoo_candidates is not None:
-            daily_price_candidates = refreshed_yahoo_candidates
+        # 새 일봉이 실제로 적재됐을 때만 후보를 다시 계산한다(불필요한 재로딩 방지).
+        if yahoo_imported:
+            refreshed_yahoo_candidates = _build_daily_price_strategy_candidates_if_available(
+                strategy_code,
+                limit=safe_limit,
+            )
+            if refreshed_yahoo_candidates is not None:
+                daily_price_candidates = refreshed_yahoo_candidates
 
     if daily_price_candidates is not None:
-        _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
+        # 5개 보조 데이터 임포트를 모두 실행하되(각자 필요 시에만 실제 적재),
+        # 그중 하나라도 새 데이터를 저장했을 때만 후보를 다시 계산한다.
+        # (|= 로 단락 평가를 피해 모든 임포트가 반드시 실행되도록 한다.)
+        enrichment_changed = False
+        enrichment_changed |= _auto_import_kis_fundamentals_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 4),
         )
-        _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
+        enrichment_changed |= _auto_import_open_dart_fundamentals_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 4),
         )
-        _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
+        enrichment_changed |= _auto_import_kis_supply_flows_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 12),
         )
-        _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
+        enrichment_changed |= _auto_import_kis_risk_indicators_for_strategy_candidates_if_needed(
             strategy_code,
             max_symbols=min(target_count, 8),
         )
-        _auto_import_kis_quote_snapshots_for_candidates_if_needed(
+        enrichment_changed |= _auto_import_kis_quote_snapshots_for_candidates_if_needed(
             candidates=daily_price_candidates[1],
             max_symbols=min(safe_limit, _kis_current_quote_refresh_max_symbols()),
         )
-        refreshed_snapshot_candidates = _build_daily_price_strategy_candidates_if_available(
-            strategy_code,
-            limit=safe_limit,
-        )
-        if refreshed_snapshot_candidates is not None:
-            daily_price_candidates = refreshed_snapshot_candidates
+        if enrichment_changed:
+            refreshed_snapshot_candidates = _build_daily_price_strategy_candidates_if_available(
+                strategy_code,
+                limit=safe_limit,
+            )
+            if refreshed_snapshot_candidates is not None:
+                daily_price_candidates = refreshed_snapshot_candidates
 
     return daily_price_candidates
 

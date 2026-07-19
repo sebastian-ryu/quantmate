@@ -92,6 +92,13 @@ from quantmate_api.time_utils import now_kst_naive, today_kst
 MANUAL_DATA_REFRESH_JOBS: dict[str, dict[str, object]] = {}
 MANUAL_DATA_REFRESH_LOCK = threading.Lock()
 BACKTEST_MIN_START_YEAR = 2010
+# 전략 후보 지표(_build_price_metrics)의 최장 lookback은 return_252가 참조하는 253 거래일(약 12개월)이다.
+# 연휴/거래정지/결측을 감안해 253 거래일을 항상 확보하도록 약 18개월(550 달력일 ≈ 370+ 거래일) 창만 로딩한다.
+# 백테스트/성과 스냅샷은 별도 경로(_load_backtest_price_rows 등)에서 장기 범위를 그대로 사용하므로 영향받지 않는다.
+CANDIDATE_PRICE_LOOKBACK_DAYS = 550
+# 시드 후보는 종목별 "가장 최근 거래일 1건"만 필요하다. 전역 최신 거래일에서 최근 구간만 훑으면
+# 전체 이력 GROUP BY(전 종목 × 전 기간 스캔)를 피할 수 있다. 장기 연휴(설/추석)를 감안해 30일로 둔다.
+SEED_CANDIDATE_LOOKBACK_DAYS = 30
 
 
 class AppMode(StrEnum):
@@ -2802,21 +2809,32 @@ def _normalize_exchange(exchange: str) -> str:
 def _stored_price_seed_candidates(limit: int) -> list[dict[str, object]]:
     safe_limit = max(1, min(limit, 200))
     provider_priority = _daily_price_provider_priority()
-    latest_price_dates = (
-        select(
-            DailyPrice.instrument_id.label("instrument_id"),
-            func.max(DailyPrice.trade_date).label("latest_trade_date"),
-        )
-        .where(
-            DailyPrice.provider.in_(provider_priority),
-            DailyPrice.is_adjusted.is_(False),
-        )
-        .group_by(DailyPrice.instrument_id)
-        .subquery()
-    )
 
     try:
         with SessionLocal() as session:
+            # 전역 최신 거래일을 먼저 구해 최근 구간만 GROUP BY 한다.
+            # provider/is_adjusted 필터를 걸면 trade_date가 복합 인덱스의 마지막 컬럼이라 대량 범위 스캔(수십 초)이
+            # 되므로, 무필터 MAX(trade_date)를 쓴다("optimized away"로 수 ms). 최신 거래일은 어차피 최대 공급원(KRX)이
+            # 결정하고, 이후 30일 창 안에서 각 종목의 최신 거래일을 다시 집계하므로 결과 정확도에는 영향이 없다.
+            latest_trade_date = session.scalar(select(func.max(DailyPrice.trade_date)))
+            if latest_trade_date is None:
+                return []
+            seed_window_start = latest_trade_date - timedelta(days=SEED_CANDIDATE_LOOKBACK_DAYS)
+
+            latest_price_dates = (
+                select(
+                    DailyPrice.instrument_id.label("instrument_id"),
+                    func.max(DailyPrice.trade_date).label("latest_trade_date"),
+                )
+                .where(
+                    DailyPrice.provider.in_(provider_priority),
+                    DailyPrice.is_adjusted.is_(False),
+                    DailyPrice.trade_date >= seed_window_start,
+                )
+                .group_by(DailyPrice.instrument_id)
+                .subquery()
+            )
+
             rows = session.execute(
                 select(
                     Instrument.symbol,
@@ -3836,8 +3854,11 @@ def _candidate_daily_price_data_is_stale(
 
 
 def _candidate_price_start_date() -> date:
+    # 후보 지표는 최대 253 거래일만 필요하므로 5년 전체가 아니라 최근 lookback 창만 조회한다.
     today = today_kst()
-    return date(max(today.year - 5, BACKTEST_MIN_START_YEAR), 1, 1)
+    floor = date(BACKTEST_MIN_START_YEAR, 1, 1)
+    scoped = today - timedelta(days=CANDIDATE_PRICE_LOOKBACK_DAYS)
+    return max(scoped, floor)
 
 
 def _load_strategy_candidate_price_rows(

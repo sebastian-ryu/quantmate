@@ -73,6 +73,13 @@ class DailyPrice(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_daily_prices_trade_date", "trade_date"),
         Index("ix_daily_prices_instrument_date", "instrument_id", "trade_date"),
+        Index(
+            "ix_daily_prices_provider_adj_instrument_date",
+            "provider",
+            "is_adjusted",
+            "instrument_id",
+            "trade_date",
+        ),
         UniqueConstraint(
             "instrument_id",
             "trade_date",

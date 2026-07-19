@@ -13,6 +13,10 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
       - --default-time-zone=+09:00
+      # InnoDB 버퍼 풀. 기본 128MB로는 daily_prices(데이터 900MB+인덱스 800MB)가 안 담겨
+      # NAS HDD에서 반복 디스크 읽기가 발생한다. RAM 여유에 맞춰 .env의 MYSQL_INNODB_BUFFER_POOL_SIZE로 조정.
+      # 2GB NAS 기준 384M 권장(DSM/백엔드/프론트 컨테이너와 RAM 공유). RAM 증설 시 상향.
+      - --innodb-buffer-pool-size=${MYSQL_INNODB_BUFFER_POOL_SIZE:-384M}
     volumes:
       - ${QM_MYSQL_DATA_PATH:-./runtime/mysql}:/var/lib/mysql
     ports:

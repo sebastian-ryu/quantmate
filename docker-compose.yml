@@ -15,6 +15,8 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
       - --default-time-zone=+09:00
+      # 로컬은 데이터가 적어 성능 영향은 거의 없지만 운영(384M)과 설정 일관성 유지용.
+      - --innodb-buffer-pool-size=256M
     volumes:
       - quantmate_mysql_data:/var/lib/mysql
     healthcheck:

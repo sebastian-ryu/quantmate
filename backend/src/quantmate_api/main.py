@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
@@ -71,6 +71,7 @@ from quantmate_api.models import (
     Market,
     QuoteSnapshot,
     RiskIndicatorDaily,
+    StrategyCandidateSnapshot,
     StrategySelectionRun,
     SupplyFlowDaily,
     UserStrategy,
@@ -4412,13 +4413,110 @@ def _mixed_provider_label(providers: list[str]) -> str:
     return " + ".join(providers)
 
 
+def _candidate_data_fingerprint() -> str:
+    """후보 산출이 의존하는 데이터의 최신 기준일 조합. 캐시 저장 시점과 같으면 재계산이 불필요하다.
+
+    daily_prices 전역 MAX는 trade_date 인덱스로 즉시 나오고 나머지는 소량 테이블이라 저렴하다.
+    현재가는 intraday로 갱신될 수 있어 snapshot_date와 created_at을 모두 포함한다.
+    """
+    try:
+        with SessionLocal() as session:
+            daily = session.scalar(select(func.max(DailyPrice.trade_date)))
+            quote_date = session.scalar(select(func.max(QuoteSnapshot.snapshot_date)))
+            quote_at = session.scalar(select(func.max(QuoteSnapshot.created_at)))
+            supply = session.scalar(select(func.max(SupplyFlowDaily.trade_date)))
+            risk = session.scalar(select(func.max(RiskIndicatorDaily.trade_date)))
+            fund = session.scalar(select(func.max(FundamentalRatio.fiscal_period)))
+    except SQLAlchemyError:
+        return ""
+    return f"d={daily}|qd={quote_date}|qa={quote_at}|s={supply}|r={risk}|f={fund}"
+
+
+def _load_candidate_cache(strategy_code: str, limit: int) -> StrategyCandidateSnapshot | None:
+    try:
+        with SessionLocal() as session:
+            return session.scalars(
+                select(StrategyCandidateSnapshot).where(
+                    StrategyCandidateSnapshot.strategy_code == strategy_code,
+                    StrategyCandidateSnapshot.result_limit == limit,
+                )
+            ).first()
+    except SQLAlchemyError:
+        return None
+
+
+def _store_candidate_cache(
+    *, strategy_code: str, limit: int, fingerprint: str, response: StrategyCandidateResponse
+) -> None:
+    if not fingerprint:
+        return
+    payload = response.model_dump(mode="json")
+    payload.pop("run_id", None)
+    payload.pop("run_at", None)
+    body = json.dumps(payload, ensure_ascii=False)
+    try:
+        with SessionLocal() as session:
+            existing = session.scalars(
+                select(StrategyCandidateSnapshot).where(
+                    StrategyCandidateSnapshot.strategy_code == strategy_code,
+                    StrategyCandidateSnapshot.result_limit == limit,
+                )
+            ).first()
+            if existing is None:
+                session.add(
+                    StrategyCandidateSnapshot(
+                        strategy_code=strategy_code,
+                        result_limit=limit,
+                        data_fingerprint=fingerprint,
+                        source=response.source,
+                        response_json=body,
+                        computed_at=now_kst_naive(),
+                    )
+                )
+            else:
+                existing.data_fingerprint = fingerprint
+                existing.source = response.source
+                existing.response_json = body
+                existing.computed_at = now_kst_naive()
+            session.commit()
+    except SQLAlchemyError:
+        return
+
+
+def _candidate_response_from_cache(
+    snapshot: StrategyCandidateSnapshot,
+) -> StrategyCandidateResponse | None:
+    try:
+        payload = json.loads(snapshot.response_json)
+    except (ValueError, TypeError):
+        return None
+    payload.pop("run_id", None)
+    payload.pop("run_at", None)
+    try:
+        return StrategyCandidateResponse.model_validate(payload)
+    except ValidationError:
+        return None
+
+
 def _resolve_strategy_candidate_response(
     strategy_code: str,
     limit: int = 12,
     *,
     auto_import: bool = True,
+    cache: bool = False,
 ) -> StrategyCandidateResponse:
     safe_limit = max(1, min(limit, 100))
+
+    # 캐시 우선 경로(auto_import=False)에서만 시작 시 지문을 구해 캐시와 비교한다. 지문이 같으면
+    # 시드/로딩/스코어링을 모두 건너뛰고 캐시된 응답을 그대로 반환한다(할 일 #52 재계산 정책).
+    fingerprint = _candidate_data_fingerprint() if (cache and not auto_import) else ""
+    if cache and not auto_import and fingerprint:
+        cached = _load_candidate_cache(strategy_code, safe_limit)
+        if cached is not None and cached.data_fingerprint == fingerprint:
+            cached_response = _candidate_response_from_cache(cached)
+            if cached_response is not None:
+                return cached_response
+
     strategy = _find_system_strategy(strategy_code)
     strategy_name = strategy.name if strategy else ""
     user_strategy = None
@@ -4462,13 +4560,24 @@ def _resolve_strategy_candidate_response(
         )
         source = f"{source}:filtered"
 
-    return StrategyCandidateResponse(
+    response = StrategyCandidateResponse(
         strategy_code=strategy_code,
         strategy_name=strategy_name,
         source=source,
         data_freshness=_build_data_freshness_for_candidates(candidates),
         candidates=[StrategyCandidate(**candidate) for candidate in candidates],
     )
+
+    if cache:
+        # auto_import 경로는 임포트로 데이터가 바뀌었을 수 있어 저장 직전에 지문을 다시 구한다.
+        store_fingerprint = _candidate_data_fingerprint() if auto_import else fingerprint
+        _store_candidate_cache(
+            strategy_code=strategy_code,
+            limit=safe_limit,
+            fingerprint=store_fingerprint,
+            response=response,
+        )
+    return response
 
 
 def _strategy_execution_contract(strategy_code: str) -> StrategyExecutionContractResponse:
@@ -5092,11 +5201,15 @@ async def strategy_candidates(
     limit: int = 12,
     refresh: bool = True,
 ) -> StrategyCandidateResponse:
+    # 프론트엔드 일반 로드는 refresh=false를 보내 캐시 우선(데이터 지문이 캐시와 같으면 재계산 스킵,
+    #   바뀌었으면 임포트 없이 다시 계산해 캐시 갱신)으로 동작한다.
+    # refresh=true(수동 갱신, 기본값): 외부 데이터 자동 적재 후 강제로 다시 계산하고 캐시를 갱신한다.
     response = await run_in_threadpool(
         _resolve_strategy_candidate_response,
         strategy_code,
         limit=limit,
         auto_import=refresh,
+        cache=True,
     )
     run_id, run_at = _save_strategy_selection_run(response)
     response.run_id = run_id

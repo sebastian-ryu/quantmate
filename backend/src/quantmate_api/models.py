@@ -357,3 +357,29 @@ class DataStatusSnapshot(Base):
     invalid_ohlcv_count: Mapped[int] = mapped_column(BigInteger, default=0)
     # provider별 건수를 [[provider, count], ...] JSON 문자열로 저장한다.
     provider_counts_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class StrategyCandidateSnapshot(Base):
+    """전략 후보 산출 결과 캐시.
+
+    전략 페이지 진입 때마다 시드 조회 + 일봉 로딩 + 지표 스코어링을 다시 하지 않도록,
+    산출된 후보 응답을 (전략 코드, limit)별로 저장한다. 데이터 지문(일봉/현재가/수급/리스크/재무의
+    최신 기준일 조합)이 캐시 저장 시점과 같으면 재계산을 건너뛰고 캐시를 그대로 사용한다.
+    """
+
+    __tablename__ = "strategy_candidate_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_code", "result_limit", name="uq_strategy_candidate_snapshots_code_limit"
+        ),
+        Index("ix_strategy_candidate_snapshots_code", "strategy_code"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy_code: Mapped[str] = mapped_column(String(80))
+    result_limit: Mapped[int] = mapped_column(Integer)
+    data_fingerprint: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(200))
+    response_json: Mapped[str] = mapped_column(Text)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst_naive, server_default=func.now())

@@ -359,13 +359,14 @@
     await loadCandidateRowsForSelectedStrategy();
   }
 
-  async function loadCandidateRowsForSelectedStrategy() {
+  async function loadCandidateRowsForSelectedStrategy(refresh = false) {
     await tick();
-    await loadCandidateRows(selectedOption);
+    await loadCandidateRows(selectedOption, refresh);
   }
 
   async function reloadAfterDataRefresh() {
-    await loadCandidateRowsForSelectedStrategy();
+    // 수동 데이터 갱신 직후에는 강제 재계산으로 최신 데이터를 반영한다.
+    await loadCandidateRowsForSelectedStrategy(true);
     await loadStrategyPerformance(true);
   }
 
@@ -396,7 +397,7 @@
     }
   }
 
-  async function loadCandidateRows(option: StrategyOption | null) {
+  async function loadCandidateRows(option: StrategyOption | null, refresh = false) {
     const requestId = candidateRequestId + 1;
     candidateRequestId = requestId;
     candidatesError = '';
@@ -411,7 +412,7 @@
     candidatesLoading = true;
 
     try {
-      const response = await fetchStrategyCandidates(option.code);
+      const response = await fetchStrategyCandidates(option.code, refresh);
       if (candidateRequestId !== requestId) return;
       candidateRows = response.candidates.map(toStrategyCandidate);
       if (!buyableSymbol && candidateRows[0]?.symbol) buyableSymbol = candidateRows[0].symbol;

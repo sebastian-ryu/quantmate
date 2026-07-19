@@ -24,6 +24,7 @@ from quantmate_api.models import (
     Market,
     QuoteSnapshot,
     RiskIndicatorDaily,
+    StrategyCandidateSnapshot,
     StrategySelectionRun,
     SupplyFlowDaily,
 )
@@ -1319,6 +1320,86 @@ def test_strategy_candidates_can_skip_auto_import_when_refresh_false(monkeypatch
     assert data["source"] == "sample-engine"
     assert len(data["candidates"]) >= 10
     assert kis_daily_called is False
+
+
+def test_strategy_candidates_cache_hit_skips_recompute(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:12],
+        start=main_module.today_kst() - timedelta(days=400),
+        days=300,
+    )
+
+    # 1차: 캐시 미스 → 계산 후 스냅샷 저장
+    first = client.get("/api/strategies/relative-momentum-swing/candidates?refresh=false")
+    assert first.status_code == 200
+    first_symbols = [candidate["symbol"] for candidate in first.json()["candidates"]]
+    assert first_symbols
+
+    with session_factory() as session:
+        snapshots = session.scalars(
+            select(StrategyCandidateSnapshot).where(
+                StrategyCandidateSnapshot.strategy_code == "relative-momentum-swing"
+            )
+        ).all()
+    assert len(snapshots) == 1
+
+    # 재계산 경로를 막고 2차 호출 → 캐시에서만 응답해야 한다(재계산 시 예외로 500이 나야 함)
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("캐시 히트 시 재계산하면 안 된다")
+
+    monkeypatch.setattr(main_module, "_load_strategy_candidate_result", _boom)
+
+    second = client.get("/api/strategies/relative-momentum-swing/candidates?refresh=false")
+    assert second.status_code == 200
+    assert [candidate["symbol"] for candidate in second.json()["candidates"]] == first_symbols
+
+
+def test_strategy_candidates_cache_invalidates_on_new_data(monkeypatch) -> None:
+    session_factory = use_sqlite_session(monkeypatch)
+    seed_daily_prices(
+        session_factory,
+        symbols=CANDIDATE_UNIVERSE[:12],
+        start=main_module.today_kst() - timedelta(days=400),
+        days=300,
+    )
+
+    client.get("/api/strategies/relative-momentum-swing/candidates?refresh=false")
+    with session_factory() as session:
+        snapshot = session.scalars(
+            select(StrategyCandidateSnapshot).where(
+                StrategyCandidateSnapshot.strategy_code == "relative-momentum-swing"
+            )
+        ).first()
+        fingerprint_before = snapshot.data_fingerprint
+        # 더 최신 일봉을 추가해 데이터 지문을 바꾼다
+        instrument_id = session.scalars(select(Instrument.id)).first()
+        session.add(
+            DailyPrice(
+                instrument_id=instrument_id,
+                trade_date=main_module.today_kst(),
+                open_price=1,
+                high_price=2,
+                low_price=1,
+                close_price=1,
+                volume=1,
+                provider="Yahoo Finance",
+                is_adjusted=False,
+            )
+        )
+        session.commit()
+
+    client.get("/api/strategies/relative-momentum-swing/candidates?refresh=false")
+    with session_factory() as session:
+        snapshots = session.scalars(
+            select(StrategyCandidateSnapshot).where(
+                StrategyCandidateSnapshot.strategy_code == "relative-momentum-swing"
+            )
+        ).all()
+    # 지문이 바뀌었으므로 재계산되고 스냅샷은 중복 없이 갱신(1개 유지)된다
+    assert len(snapshots) == 1
+    assert snapshots[0].data_fingerprint != fingerprint_before
 
 
 def test_strategy_candidates_default_auto_imports_latest_data(monkeypatch) -> None:

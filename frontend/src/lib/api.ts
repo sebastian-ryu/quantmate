@@ -976,9 +976,15 @@ export async function importYahooDailyPricesForStrategy(
 }
 
 export async function fetchStrategyCandidates(
-  strategyCode: string
+  strategyCode: string,
+  refresh = false
 ): Promise<StrategyCandidateResponse> {
-  const response = await fetchWithTimeout(`${API_BASE_URL}/api/strategies/${strategyCode}/candidates?refresh=true`, {}, 30000);
+  // refresh=false: 후보 캐시 우선(데이터 기준일 불변 시 재계산 스킵). refresh=true: 수동 갱신(강제 재계산).
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/api/strategies/${strategyCode}/candidates?refresh=${refresh}`,
+    {},
+    30000
+  );
 
   if (!response.ok) {
     throw new Error(`전략 후보 종목을 불러오지 못했습니다. (${response.status})`);

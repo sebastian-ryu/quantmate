@@ -383,3 +383,24 @@ class StrategyCandidateSnapshot(Base):
     source: Mapped[str] = mapped_column(String(200))
     response_json: Mapped[str] = mapped_column(Text)
     computed_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst_naive, server_default=func.now())
+
+
+class StrategyPerformanceCache(Base):
+    """전략 소개 성과 스냅샷(1/3/5/10년 CAGR·MDD 등) 캐시.
+
+    성과 스냅샷은 전략 6개 각각 최대 10년 백테스트라 계산이 무겁다(수십 초). 인메모리 캐시만으로는
+    백엔드 재시작 때마다 첫 호출이 오래 걸리고 계산이 이벤트 루프를 막으므로, 계산 결과를 DB에 저장해
+    재시작 후에도 즉시 제공하고 갱신은 백그라운드로 처리한다. 전체 전략 성과를 한 행 JSON으로 보관한다.
+    """
+
+    __tablename__ = "strategy_performance_cache"
+    __table_args__ = (
+        Index("ix_strategy_performance_cache_computed_at", "computed_at"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(255))
+    # {전략코드: 성과 스냅샷 dict} JSON
+    payload_json: Mapped[str] = mapped_column(Text)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst_naive, server_default=func.now())

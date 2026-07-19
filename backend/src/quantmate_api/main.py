@@ -72,6 +72,7 @@ from quantmate_api.models import (
     QuoteSnapshot,
     RiskIndicatorDaily,
     StrategyCandidateSnapshot,
+    StrategyPerformanceCache,
     StrategySelectionRun,
     SupplyFlowDaily,
     UserStrategy,
@@ -98,6 +99,9 @@ MANUAL_DATA_REFRESH_LOCK = threading.Lock()
 DATA_STATUS_SNAPSHOT_TTL_MINUTES = 30
 DATA_STATUS_SNAPSHOT_LOCK = threading.Lock()
 DATA_STATUS_SNAPSHOT_REFRESHING = False
+# 전략 성과 스냅샷(6전략×10년 백테스트) 백그라운드 재계산 제어. 계산 중인 cache_key를 담아 중복 계산을 막는다.
+STRATEGY_PERFORMANCE_REFRESH_LOCK = threading.Lock()
+STRATEGY_PERFORMANCE_REFRESHING_KEY: str | None = None
 BACKTEST_MIN_START_YEAR = 2010
 # 전략 후보 지표(_build_price_metrics)의 최장 lookback은 return_252가 참조하는 253 거래일(약 12개월)이다.
 # 연휴/거래정지/결측을 감안해 253 거래일을 항상 확보하도록 약 18개월(550 달력일 ≈ 370+ 거래일) 창만 로딩한다.
@@ -2098,35 +2102,142 @@ def _find_system_strategy(strategy_code: str) -> Strategy | None:
     return next((item for item in STRATEGIES if item.code == strategy_code), None)
 
 
-def _strategies_with_performance() -> list[Strategy]:
+def _strategies_with_performance(*, force: bool = False) -> list[Strategy]:
+    """전략 목록에 성과 스냅샷을 붙여 반환한다.
+
+    일반 조회(force=False)는 성과 계산(6전략×최대 10년 백테스트)이 무거우므로 절대 블로킹하지 않는다:
+    1) 인메모리 캐시가 최신이면 그대로 사용.
+    2) 아니면 DB 영속 캐시를 읽어 즉시 사용(재시작 후에도 즉시). 기준일이 바뀌었으면 백그라운드 재계산 트리거.
+    3) 영속 캐시도 없으면 백그라운드 계산을 트리거하고, 일단 성과 없는 기본 전략 목록을 반환한다
+       (성과 숫자는 다음 조회부터 채워진다).
+
+    수동 갱신(force=True)은 지금 동기로 계산해 갱신된 성과를 바로 반환한다(사용자가 명시적으로 요청한 경우).
+    """
     cache_key = _strategy_performance_cache_key()
+
+    if force:
+        performances = _compute_strategy_performances()
+        _store_performance_snapshot(cache_key, performances)
+        enriched = _enrich_strategies_with_performances(performances) or list(STRATEGIES)
+        STRATEGY_PERFORMANCE_CACHE["key"] = cache_key
+        STRATEGY_PERFORMANCE_CACHE["strategies"] = enriched
+        return enriched
+
     cached_key = STRATEGY_PERFORMANCE_CACHE.get("key")
     cached_strategies = STRATEGY_PERFORMANCE_CACHE.get("strategies")
     if cached_key == cache_key and isinstance(cached_strategies, list):
         return cached_strategies
 
-    enriched = [
-        strategy.model_copy(
-            update={"performance": _build_strategy_performance_snapshot(strategy)}
-        )
-        for strategy in STRATEGIES
-    ]
-    STRATEGY_PERFORMANCE_CACHE["key"] = cache_key
-    STRATEGY_PERFORMANCE_CACHE["strategies"] = enriched
-    return enriched
+    persisted = _load_performance_snapshot()
+    if persisted is not None:
+        persisted_key, performances = persisted
+        enriched = _enrich_strategies_with_performances(performances)
+        if enriched is not None:
+            STRATEGY_PERFORMANCE_CACHE["key"] = persisted_key
+            STRATEGY_PERFORMANCE_CACHE["strategies"] = enriched
+            if persisted_key != cache_key:
+                _trigger_performance_snapshot_refresh(cache_key)
+            return enriched
+
+    _trigger_performance_snapshot_refresh(cache_key)
+    return list(STRATEGIES)
 
 
 def _strategy_performance_cache_key() -> str:
+    # 성과는 일봉 백테스트 기반이므로 최신 거래일이 바뀔 때만 다시 계산하면 된다.
+    # (기존엔 today와 count(*)까지 포함해 매일/매 조회 재계산·느린 카운트 쿼리가 있었다.)
     try:
         with SessionLocal() as session:
             latest_date = session.scalar(select(func.max(DailyPrice.trade_date)))
-            row_count = session.scalar(select(func.count()).select_from(DailyPrice)) or 0
     except SQLAlchemyError:
         latest_date = None
-        row_count = 0
+    return latest_date.isoformat() if isinstance(latest_date, date) else "none"
 
-    latest_label = latest_date.isoformat() if isinstance(latest_date, date) else "none"
-    return f"{today_kst().isoformat()}:{latest_label}:{row_count}"
+
+def _compute_strategy_performances() -> dict[str, object]:
+    """전략별 성과 스냅샷을 계산한다(무거움: 6전략×최대 10년 백테스트). 백그라운드에서 호출한다."""
+    return {
+        strategy.code: _build_strategy_performance_snapshot(strategy).model_dump(mode="json")
+        for strategy in STRATEGIES
+    }
+
+
+def _enrich_strategies_with_performances(
+    performances: dict[str, object],
+) -> list[Strategy] | None:
+    try:
+        enriched: list[Strategy] = []
+        for strategy in STRATEGIES:
+            payload = performances.get(strategy.code)
+            performance = (
+                StrategyPerformanceSnapshot.model_validate(payload) if payload is not None else None
+            )
+            enriched.append(strategy.model_copy(update={"performance": performance}))
+        return enriched
+    except ValidationError:
+        return None
+
+
+def _load_performance_snapshot() -> tuple[str, dict[str, object]] | None:
+    try:
+        with SessionLocal() as session:
+            snapshot = session.scalars(
+                select(StrategyPerformanceCache).order_by(StrategyPerformanceCache.computed_at.desc()).limit(1)
+            ).first()
+    except SQLAlchemyError:
+        return None
+    if snapshot is None:
+        return None
+    try:
+        performances = json.loads(snapshot.payload_json)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(performances, dict):
+        return None
+    return snapshot.cache_key, performances
+
+
+def _store_performance_snapshot(cache_key: str, performances: dict[str, object]) -> None:
+    try:
+        with SessionLocal() as session:
+            session.add(
+                StrategyPerformanceCache(
+                    cache_key=cache_key,
+                    payload_json=json.dumps(performances, ensure_ascii=False),
+                    computed_at=now_kst_naive(),
+                )
+            )
+            session.commit()
+    except SQLAlchemyError:
+        return
+
+
+def _refresh_performance_snapshot(cache_key: str) -> None:
+    """성과 스냅샷을 계산·저장하고 인메모리 캐시도 갱신한다. 백그라운드 스레드에서 호출한다."""
+    global STRATEGY_PERFORMANCE_REFRESHING_KEY
+    try:
+        performances = _compute_strategy_performances()
+        _store_performance_snapshot(cache_key, performances)
+        enriched = _enrich_strategies_with_performances(performances)
+        if enriched is not None:
+            STRATEGY_PERFORMANCE_CACHE["key"] = cache_key
+            STRATEGY_PERFORMANCE_CACHE["strategies"] = enriched
+    except SQLAlchemyError:
+        pass
+    finally:
+        with STRATEGY_PERFORMANCE_REFRESH_LOCK:
+            STRATEGY_PERFORMANCE_REFRESHING_KEY = None
+
+
+def _trigger_performance_snapshot_refresh(cache_key: str) -> bool:
+    """같은 cache_key로 이미 계산 중이면 False. 새로 시작하면 True."""
+    global STRATEGY_PERFORMANCE_REFRESHING_KEY
+    with STRATEGY_PERFORMANCE_REFRESH_LOCK:
+        if STRATEGY_PERFORMANCE_REFRESHING_KEY is not None:
+            return False
+        STRATEGY_PERFORMANCE_REFRESHING_KEY = cache_key
+    threading.Thread(target=_refresh_performance_snapshot, args=(cache_key,), daemon=True).start()
+    return True
 
 
 def _build_strategy_performance_snapshot(strategy: Strategy) -> StrategyPerformanceSnapshot:
@@ -5423,10 +5534,9 @@ async def dashboard(
     include_performance: bool = False,
     refresh_performance: bool = False,
 ) -> DashboardResponse:
-    if refresh_performance:
-        STRATEGY_PERFORMANCE_CACHE["key"] = None
-        STRATEGY_PERFORMANCE_CACHE["strategies"] = None
-    strategies = _strategies_with_performance() if include_performance else STRATEGIES
+    strategies = (
+        _strategies_with_performance(force=refresh_performance) if include_performance else STRATEGIES
+    )
 
     return DashboardResponse(
         as_of=today_kst(),
@@ -5443,13 +5553,11 @@ async def dashboard(
 
 @app.get("/api/strategies/performance")
 async def strategy_performance(refresh: bool = False) -> list[StrategyPerformanceResponse]:
-    if refresh:
-        STRATEGY_PERFORMANCE_CACHE["key"] = None
-        STRATEGY_PERFORMANCE_CACHE["strategies"] = None
-
+    # refresh=false(프론트 일반 로드): 영속 캐시에서 즉시 반환(없으면 백그라운드 계산 트리거).
+    # refresh=true(수동 갱신): 지금 동기로 계산해 갱신된 성과를 반환.
     return [
         StrategyPerformanceResponse(strategy_code=strategy.code, performance=strategy.performance)
-        for strategy in _strategies_with_performance()
+        for strategy in _strategies_with_performance(force=refresh)
         if strategy.performance is not None
     ]
 

@@ -228,9 +228,9 @@
 - [x] 대용량 데이터 쿼리 성능 점검: 전략 후보, 검색기, 백테스트, 데이터 상태/품질 API의 느린 쿼리를 `EXPLAIN`으로 확인하고 병목 SQL 목록 작성 (완료: daily_prices 917만행. 시드/커버리지/제공처 집계가 provider 선두 인덱스 부재로 200초대 풀스캔, data_quality의 OHLCV OR 스캔·전체 COUNT는 인덱스로 못 푸는 병목으로 확인)
 - [x] 주요 테이블 복합 인덱스 보강: `daily_prices`, `quote_snapshots`, `fundamental_ratios`, `supply_flow_dailies`, `risk_indicator_dailies`의 실제 조회 조건 기준으로 인덱스 추가 (완료: `daily_prices(provider, is_adjusted, instrument_id, trade_date)` 복합 인덱스 추가-마이그레이션 0013. 나머지 4개 테이블은 현재 수천 행 이하라 보류)
 - [ ] 대용량 조회 범위 제한 정책 추가: 화면/API별 기본 조회 기간, 최대 종목 수, 페이지네이션, 정렬 기준을 명시해 전체 테이블 스캔을 방지 (진행: 후보 가격 로딩 5년→18개월, 시드 후보 최신 30일 창으로 축소. 페이지네이션/상위 N개 제한과 검색기·데이터품질 API 범위 제한은 남음)
-- [ ] 데이터 현황 요약 테이블 추가: `data_status`/`data_quality`가 실시간 `count()`와 provider별 전체 집계 대신 사전 계산된 요약값을 읽도록 개선
-- [ ] 데이터 적재 완료 시 요약 테이블 갱신: 일봉/현재가/수급/리스크/재무/백테스트 저장 후 관련 count, 최신 기준일, 공급원별 건수, 커버리지 요약을 비동기 또는 배치로 갱신
-- [ ] 데이터 현황 요약값 신선도 표시: 요약 테이블의 마지막 계산 시각을 화면/API에 표시하고, 약간의 싱크 지연은 허용하는 정책 명시
+- [x] 데이터 현황 요약 테이블 추가: `data_status`/`data_quality`가 실시간 `count()`와 provider별 전체 집계 대신 사전 계산된 요약값을 읽도록 개선 (완료: `data_status_snapshots` 테이블-마이그레이션 0014. daily_prices 유래 무거운 집계(전체 건수, provider별 건수, 커버리지, OHLCV 이상값)를 캐시. NAS 측정: data_quality 200초+ → ~190ms, data_status 37초 → 230ms)
+- [x] 데이터 적재 완료 시 요약 테이블 갱신: 일봉/현재가/수급/리스크/재무/백테스트 저장 후 관련 count, 최신 기준일, 공급원별 건수, 커버리지 요약을 비동기 또는 배치로 갱신 (완료: 수동 갱신 Job 완료 시 백그라운드 재계산 트리거 + 요약이 TTL 30분 초과 시 조회 요청에서 백그라운드 재계산. 개별 auto-import 경로 연동은 후속)
+- [x] 데이터 현황 요약값 신선도 표시: 요약 테이블의 마지막 계산 시각을 화면/API에 표시하고, 약간의 싱크 지연은 허용하는 정책 명시 (완료: `data_quality` 응답 `generated_at`을 요약 계산 시각으로 노출, TTL 30분 내 지연 허용)
 - [ ] DB 성능 운영 점검 절차 추가: MySQL slow query log, 인덱스 사용 여부, 테이블 크기, 백테스트 실행 시간, 검색기 응답 시간을 주기적으로 확인
 - [ ] MySQL slow query log 수집 절차 추가: NAS MySQL 컨테이너에서 slow query log 활성화 여부, 임계 시간, 로그 저장 위치, 확인 명령을 문서화
 - [ ] 슬로우 쿼리 분석 리포트 추가: 느린 API, SQL 원문, 실행 시간, rows examined, 사용 인덱스, `EXPLAIN` 결과, 개선 후보를 정리

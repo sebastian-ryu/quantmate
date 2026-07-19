@@ -2253,6 +2253,9 @@ def test_data_status_returns_table_counts(monkeypatch) -> None:
             return self.counts.pop(0)
 
     monkeypatch.setattr(main_module, "SessionLocal", FakeSession)
+    # daily_prices 카운트는 요약 스냅샷 캐시를 우선 쓰므로, 여기서는 캐시 미스로 만들어
+    # 라이브 COUNT 폴백 경로(FakeSession)를 검증한다.
+    monkeypatch.setattr(main_module, "_get_daily_price_status_metrics", lambda **_: (None, None))
 
     response = client.get("/api/data/status")
     data = response.json()

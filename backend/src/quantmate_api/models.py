@@ -335,3 +335,25 @@ class StrategySelectionRun(TimestampMixin, Base):
     source: Mapped[str] = mapped_column(String(200))
     result_count: Mapped[int] = mapped_column(Integer)
     result_json: Mapped[str] = mapped_column(Text)
+
+
+class DataStatusSnapshot(Base):
+    """data_status/data_quality의 대용량 daily_prices 집계를 사전 계산해 저장하는 요약 테이블.
+
+    OHLCV 무결성 검사(컬럼 간 OR 비교)와 커버리지 HAVING 집계는 인덱스로 못 푸는 전체 스캔이라
+    매 요청 실시간 계산 시 수백 초가 걸린다. 이 스냅샷을 주기적으로 갱신하고 화면은 여기서 읽는다.
+    """
+
+    __tablename__ = "data_status_snapshots"
+    __table_args__ = (
+        Index("ix_data_status_snapshots_computed_at", "computed_at"),
+        {"mysql_charset": "utf8mb4"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst_naive, server_default=func.now())
+    daily_price_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    covered_symbol_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_ohlcv_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    # provider별 건수를 [[provider, count], ...] JSON 문자열로 저장한다.
+    provider_counts_json: Mapped[str] = mapped_column(Text, default="[]")

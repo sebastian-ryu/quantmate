@@ -65,6 +65,7 @@ from quantmate_api.models import (
     BrokerAuditLog,
     DailyPrice,
     DataImportJob,
+    DataStatusSnapshot,
     FundamentalRatio,
     Instrument,
     Market,
@@ -91,6 +92,11 @@ from quantmate_api.time_utils import now_kst_naive, today_kst
 
 MANUAL_DATA_REFRESH_JOBS: dict[str, dict[str, object]] = {}
 MANUAL_DATA_REFRESH_LOCK = threading.Lock()
+# data_status/data_quality의 대용량 daily_prices 집계 요약 스냅샷 갱신 제어.
+# 스냅샷이 이 시간보다 오래되면 백그라운드로 재계산하고, 그 사이엔 기존 값을 그대로 제공한다.
+DATA_STATUS_SNAPSHOT_TTL_MINUTES = 30
+DATA_STATUS_SNAPSHOT_LOCK = threading.Lock()
+DATA_STATUS_SNAPSHOT_REFRESHING = False
 BACKTEST_MIN_START_YEAR = 2010
 # 전략 후보 지표(_build_price_metrics)의 최장 lookback은 return_252가 참조하는 253 거래일(약 12개월)이다.
 # 연휴/거래정지/결측을 감안해 253 거래일을 항상 확보하도록 약 18개월(550 달력일 ≈ 370+ 거래일) 창만 로딩한다.
@@ -4937,6 +4943,8 @@ def _run_manual_data_refresh(job_id: str, request: ManualDataRefreshRequest) -> 
             message=f"최신 데이터 갱신 완료: 저장 {saved_count:,}건",
             warnings=warnings,
         )
+        # 새 일봉이 적재됐으니 data_status/data_quality 요약 스냅샷을 백그라운드로 다시 계산한다.
+        _trigger_daily_price_status_snapshot_refresh()
     except (MarketDataProviderUnavailable, SQLAlchemyError, ValueError) as exc:
         _update_manual_refresh_job(
             job_id,
@@ -5333,16 +5341,171 @@ async def strategy_performance(refresh: bool = False) -> list[StrategyPerformanc
     ]
 
 
+def _compute_daily_price_status_metrics(session) -> dict[str, object]:
+    """data_status/data_quality가 쓰는 대용량 daily_prices 집계를 한 번에 계산한다(무거움).
+
+    OHLCV 무결성(컬럼 간 OR 비교)과 커버리지 HAVING은 인덱스로 못 푸는 전체 스캔이라 수백 초가 걸린다.
+    """
+    provider_priority = tuple(_daily_price_provider_priority())
+    daily_price_count = session.scalar(select(func.count()).select_from(DailyPrice)) or 0
+    provider_rows = session.execute(
+        select(DailyPrice.provider, func.count(DailyPrice.id))
+        .group_by(DailyPrice.provider)
+        .order_by(DailyPrice.provider)
+    ).all()
+    covered_symbol_count = (
+        session.scalar(
+            select(func.count()).select_from(
+                select(DailyPrice.instrument_id)
+                .where(
+                    DailyPrice.provider.in_(provider_priority),
+                    DailyPrice.is_adjusted.is_(False),
+                )
+                .group_by(DailyPrice.instrument_id)
+                .having(func.count(DailyPrice.id) >= 20)
+                .subquery()
+            )
+        )
+        or 0
+    )
+    invalid_ohlcv_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(DailyPrice)
+            .where(
+                or_(
+                    DailyPrice.close_price <= 0,
+                    DailyPrice.high_price < DailyPrice.low_price,
+                    DailyPrice.open_price < DailyPrice.low_price,
+                    DailyPrice.open_price > DailyPrice.high_price,
+                    DailyPrice.close_price < DailyPrice.low_price,
+                    DailyPrice.close_price > DailyPrice.high_price,
+                    DailyPrice.volume < 0,
+                    DailyPrice.trading_value < 0,
+                )
+            )
+        )
+        or 0
+    )
+    return {
+        "daily_price_count": int(daily_price_count),
+        "covered_symbol_count": int(covered_symbol_count),
+        "invalid_ohlcv_count": int(invalid_ohlcv_count),
+        "provider_counts": [[str(row[0]), int(row[1])] for row in provider_rows],
+    }
+
+
+def _persist_daily_price_status_snapshot(metrics: dict[str, object]) -> None:
+    with SessionLocal() as session:
+        session.add(
+            DataStatusSnapshot(
+                daily_price_count=int(metrics["daily_price_count"]),
+                covered_symbol_count=int(metrics["covered_symbol_count"]),
+                invalid_ohlcv_count=int(metrics["invalid_ohlcv_count"]),
+                provider_counts_json=json.dumps(metrics["provider_counts"], ensure_ascii=False),
+            )
+        )
+        session.commit()
+
+
+def _load_latest_daily_price_status_snapshot() -> tuple[dict[str, object], datetime] | None:
+    try:
+        with SessionLocal() as session:
+            snapshot = session.scalars(
+                select(DataStatusSnapshot).order_by(DataStatusSnapshot.computed_at.desc()).limit(1)
+            ).first()
+    except SQLAlchemyError:
+        return None
+    if snapshot is None:
+        return None
+    try:
+        provider_counts = json.loads(snapshot.provider_counts_json or "[]")
+    except (ValueError, TypeError):
+        provider_counts = []
+    metrics = {
+        "daily_price_count": int(snapshot.daily_price_count),
+        "covered_symbol_count": int(snapshot.covered_symbol_count),
+        "invalid_ohlcv_count": int(snapshot.invalid_ohlcv_count),
+        "provider_counts": provider_counts,
+    }
+    return metrics, snapshot.computed_at
+
+
+def _refresh_daily_price_status_snapshot() -> None:
+    """무거운 집계를 계산해 스냅샷으로 저장한다. 백그라운드 스레드에서 호출한다."""
+    global DATA_STATUS_SNAPSHOT_REFRESHING
+    try:
+        with SessionLocal() as session:
+            metrics = _compute_daily_price_status_metrics(session)
+        _persist_daily_price_status_snapshot(metrics)
+    except SQLAlchemyError:
+        pass
+    finally:
+        with DATA_STATUS_SNAPSHOT_LOCK:
+            DATA_STATUS_SNAPSHOT_REFRESHING = False
+
+
+def _trigger_daily_price_status_snapshot_refresh() -> bool:
+    """이미 재계산 중이면 False, 새로 시작하면 True. 중복 재계산을 막는다."""
+    global DATA_STATUS_SNAPSHOT_REFRESHING
+    with DATA_STATUS_SNAPSHOT_LOCK:
+        if DATA_STATUS_SNAPSHOT_REFRESHING:
+            return False
+        DATA_STATUS_SNAPSHOT_REFRESHING = True
+    threading.Thread(target=_refresh_daily_price_status_snapshot, daemon=True).start()
+    return True
+
+
+def _get_daily_price_status_metrics(
+    *, allow_compute: bool = False
+) -> tuple[dict[str, object] | None, datetime | None]:
+    """캐시된 daily_prices 집계를 반환한다. 스냅샷이 있으면 즉시 반환하고, TTL을 초과했으면
+    백그라운드 재계산을 트리거하되 기존(오래된) 값을 그대로 돌려준다(요청 논블로킹).
+
+    스냅샷이 아예 없을 때:
+    - allow_compute=False: 백그라운드 재계산만 트리거하고 (None, None) 반환.
+    - allow_compute=True: 동기로 한 번 계산·저장 후 반환. 운영은 사전 시딩돼 있어 이 경로는 거의 안 타고,
+      데이터가 적은 테스트/최초 부트스트랩에서만 실행된다.
+    """
+    loaded = _load_latest_daily_price_status_snapshot()
+    if loaded is not None:
+        metrics, computed_at = loaded
+        age_minutes = (now_kst_naive() - computed_at).total_seconds() / 60
+        if age_minutes >= DATA_STATUS_SNAPSHOT_TTL_MINUTES:
+            _trigger_daily_price_status_snapshot_refresh()
+        return metrics, computed_at
+
+    if not allow_compute:
+        _trigger_daily_price_status_snapshot_refresh()
+        return None, None
+
+    try:
+        with SessionLocal() as session:
+            metrics = _compute_daily_price_status_metrics(session)
+    except SQLAlchemyError:
+        return None, None
+    computed_at = now_kst_naive()
+    _persist_daily_price_status_snapshot(metrics)
+    return metrics, computed_at
+
+
 @app.get("/api/data/status")
 async def data_status() -> DataStatusResponse:
     provider_status = provider_status_rows()
 
+    # daily_prices COUNT(*)는 900만 행이라 콜드 시 수십 초가 걸린다. 요약 스냅샷의 캐시 값을 우선 쓰고,
+    # 스냅샷이 아직 없을 때만 라이브로 계산한다(백그라운드 계산도 함께 트리거). 나머지 소량 테이블은 라이브.
+    cached_metrics, _ = _get_daily_price_status_metrics()
     try:
         with SessionLocal() as session:
             table_counts = {
                 "markets": session.scalar(select(func.count()).select_from(Market)) or 0,
                 "instruments": session.scalar(select(func.count()).select_from(Instrument)) or 0,
-                "daily_prices": session.scalar(select(func.count()).select_from(DailyPrice)) or 0,
+                "daily_prices": (
+                    int(cached_metrics["daily_price_count"])
+                    if cached_metrics is not None
+                    else session.scalar(select(func.count()).select_from(DailyPrice)) or 0
+                ),
                 "quote_snapshots": session.scalar(select(func.count()).select_from(QuoteSnapshot)) or 0,
                 "supply_flow_dailies": session.scalar(select(func.count()).select_from(SupplyFlowDaily)) or 0,
                 "risk_indicator_dailies": session.scalar(select(func.count()).select_from(RiskIndicatorDaily)) or 0,
@@ -5408,57 +5571,40 @@ async def get_manual_data_refresh(job_id: str) -> ManualDataRefreshJobResponse:
 
 @app.get("/api/data/quality")
 async def data_quality() -> DataQualityResponse:
-    provider_priority = tuple(_daily_price_provider_priority())
+    # 대용량 daily_prices 집계(제공처별/커버리지/OHLCV 이상값)는 사전 계산된 요약 스냅샷에서 읽고,
+    # 소량이라 빠른 종목 수·최신 거래일만 라이브로 조회한다.
+    cached_metrics, snapshot_computed_at = _get_daily_price_status_metrics(allow_compute=True)
 
     try:
         with SessionLocal() as session:
             instrument_count = session.scalar(select(func.count()).select_from(Instrument)) or 0
-            daily_price_count = session.scalar(select(func.count()).select_from(DailyPrice)) or 0
             latest_trade_date = session.scalar(select(func.max(DailyPrice.trade_date)))
-            provider_rows = session.execute(
-                select(DailyPrice.provider, func.count(DailyPrice.id))
-                .group_by(DailyPrice.provider)
-                .order_by(DailyPrice.provider)
-            ).all()
-            covered_symbol_count = (
-                session.scalar(
-                    select(func.count()).select_from(
-                        select(DailyPrice.instrument_id)
-                        .where(
-                            DailyPrice.provider.in_(provider_priority),
-                            DailyPrice.is_adjusted.is_(False),
-                        )
-                        .group_by(DailyPrice.instrument_id)
-                        .having(func.count(DailyPrice.id) >= 20)
-                        .subquery()
-                    )
-                )
-                or 0
-            )
-            invalid_ohlcv_count = (
-                session.scalar(
-                    select(func.count())
-                    .select_from(DailyPrice)
-                    .where(
-                        or_(
-                            DailyPrice.close_price <= 0,
-                            DailyPrice.high_price < DailyPrice.low_price,
-                            DailyPrice.open_price < DailyPrice.low_price,
-                            DailyPrice.open_price > DailyPrice.high_price,
-                            DailyPrice.close_price < DailyPrice.low_price,
-                            DailyPrice.close_price > DailyPrice.high_price,
-                            DailyPrice.volume < 0,
-                            DailyPrice.trading_value < 0,
-                        )
-                    )
-                )
-                or 0
-            )
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"데이터 품질 검사 DB 조회 실패: {exc.__class__.__name__}",
         ) from exc
+
+    if cached_metrics is None:
+        # 아직 요약 스냅샷이 없다(최초 1회). 위 _get_...에서 백그라운드 계산이 트리거됐으니 안내만 반환한다.
+        return DataQualityResponse(
+            generated_at=now_kst_naive(),
+            summary_status="warning",
+            checks=[
+                _quality_check(
+                    code="daily-price-summary",
+                    label="일봉 요약",
+                    status="warning",
+                    value="계산 중",
+                    message="대용량 일봉 요약을 처음 계산하고 있습니다. 잠시 후 새로고침하세요.",
+                )
+            ],
+        )
+
+    daily_price_count = int(cached_metrics["daily_price_count"])
+    covered_symbol_count = int(cached_metrics["covered_symbol_count"])
+    invalid_ohlcv_count = int(cached_metrics["invalid_ohlcv_count"])
+    provider_rows = [(str(item[0]), int(item[1])) for item in cached_metrics["provider_counts"]]
 
     checks: list[DataQualityCheck] = []
     checks.append(
@@ -5563,7 +5709,8 @@ async def data_quality() -> DataQualityResponse:
     )
 
     return DataQualityResponse(
-        generated_at=now_kst_naive(),
+        # generated_at은 요약 스냅샷이 계산된 시각을 노출해 화면에서 신선도(마지막 집계 시각)를 표시한다.
+        generated_at=snapshot_computed_at or now_kst_naive(),
         summary_status=_quality_summary_status(checks),
         checks=checks,
     )
